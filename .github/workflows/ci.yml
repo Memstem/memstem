@@ -25,10 +25,36 @@ jobs:
         run: mypy src/ tests/ scripts/
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12"]
+        experimental: [false]
+        include:
+          # macOS is supported for v0.1 manual installs but not gated in CI:
+          # actions/setup-python's macOS builds ship Python without
+          # `enable_load_extension`, which sqlite-vec requires. The hosted
+          # runner image is the constraint here, not Memstem itself — users
+          # with `brew install python@3.11` are fine. Marked experimental so
+          # failures surface in CI without blocking merge until the runner
+          # image catches up.
+          - os: macos-latest
+            python-version: "3.11"
+            experimental: true
+          - os: macos-latest
+            python-version: "3.12"
+            experimental: true
+          # Windows isn't supported in v0.1 (use WSL2). We run it in CI anyway
+          # for visibility, marked experimental so failures don't block merge.
+          - os: windows-latest
+            python-version: "3.11"
+            experimental: true
+          - os: windows-latest
+            python-version: "3.12"
+            experimental: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,6 +67,6 @@ jobs:
         run: pytest --cov-report=xml
       - name: Upload coverage
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.11'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         with:
           fail_ci_if_error: false
