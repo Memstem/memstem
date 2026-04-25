@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records via `watchdog` inotify. Classifies files by name (`SKILL.md`,
   `YYYY-MM-DD.md`, else memory) and falls back to filename/H1 for titles
   when frontmatter is absent
+- `memstem.adapters.claude_code`: `ClaudeCodeAdapter` reads Claude Code
+  session JSONL files into one `MemoryRecord` per session (type=session).
+  Body is the concatenated user/assistant transcript with tool blocks
+  summarized (`[tool_use: Bash]`, `[tool_result]`) so it stays readable.
+  Title falls back from `ai-title` → first user prompt → session UUID.
+  Re-emits the full session on file change; pipeline upserts by `ref`
 
 ### Changed
 
