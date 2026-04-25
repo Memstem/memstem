@@ -85,6 +85,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["N802"]  # test method names
 
+[tool.ruff.lint.isort]
+known-first-party = ["memstem"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

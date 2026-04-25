@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.storage import (
     InvalidFrontmatterError,

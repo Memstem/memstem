@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
+
 from memstem.core.frontmatter import (
     Confidence,
     Frontmatter,
@@ -15,7 +17,6 @@ from memstem.core.frontmatter import (
     serialize,
     validate,
 )
-from pydantic import ValidationError
 
 
 def _minimal_metadata(**overrides: object) -> dict[str, object]:
