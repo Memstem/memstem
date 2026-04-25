@@ -96,14 +96,24 @@ warn_unused_configs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["frontmatter"]
+module = ["frontmatter", "sqlite_vec"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pytest's decorator typings (fixture, parametrize) and float/int inference
+# in numeric helpers create more friction than value when strict mode is on.
+module = ["tests.*"]
+disallow_untyped_decorators = false
+warn_return_any = false
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra -q --cov=memstem --cov-report=term-missing"
+addopts = "-ra -q --cov=memstem --cov-report=term-missing -m 'not requires_ollama'"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "requires_ollama: integration test that requires a running Ollama server (skipped by default)",
+]
 
 [tool.coverage.run]
 source = ["src/memstem"]
