@@ -3,9 +3,9 @@
 ## Phase 0 — Foundations (current)
 
 - [x] Repo scaffold, docs, CI
-- [ ] Frontmatter spec finalized
-- [ ] MCP tool definitions finalized
-- [ ] Adapter interface defined
+- [x] Frontmatter spec finalized
+- [x] MCP tool definitions finalized
+- [x] Adapter interface defined
 
 ## Phase 1 — v0.1 (single-user, local, working)
 
