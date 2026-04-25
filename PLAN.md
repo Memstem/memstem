@@ -158,14 +158,19 @@ and Claude Code instructions) we extended scope before cutover.
   preserved for back-compat
 - [x] CLI daemon reads adapter config and switches mode automatically
 - [x] 16 new tests for workspace mode + watch
-- [ ] **PR #14:** setup wizard in `memstem init` — auto-discover OpenClaw
+- [x] `memstem.migrate` honors workspace config (so the migration emits
+  records with the right `agent:<tag>` per source)
+- [x] **PR #15:** `scripts/install.sh` (one-line installer with `--yes` /
+  `--no-ollama` / `--vault` flags) and `memstem doctor` CLI command —
+  unblocks the agent-driven install path (`curl ... | bash -s -- --yes`).
+  ADR 0007 documents the remote-ingestion design choice (sync-and-watch
+  for v0.1; HTTP push as Phase 3 nice-to-have; full multi-device sync in
+  Phase 4)
+- [ ] **PR #16:** setup wizard in `memstem init` — auto-discover OpenClaw
   agent candidates (glob `~/*/openclaw.json`), prompt for selection,
   populate `_meta/config.yaml`. `--non-interactive` flag for headless installs
-- [ ] **PR #15:** ClaudeCodeAdapter extra_files — also pull
-  `~/.claude/CLAUDE.md` and any project-level CLAUDE.md files; ADR 0007
-  on the remote-ingest design choice (sync-and-watch is sufficient for
-  v0.1; HTTP push is a Phase 3 nice-to-have; full multi-device sync
-  stays in Phase 4)
+- [ ] **PR #17:** ClaudeCodeAdapter `extra_files` — also pull
+  `~/.claude/CLAUDE.md` and any project-level CLAUDE.md files
 
 ### Step 9: Integration and cutover
 

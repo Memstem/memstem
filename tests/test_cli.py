@@ -181,7 +181,7 @@ class TestCommands:
     def test_help_lists_all_commands(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("init", "search", "reindex", "mcp", "daemon"):
+        for cmd in ("init", "search", "reindex", "mcp", "daemon", "doctor"):
             assert cmd in result.output
 
     def test_mcp_help(self, runner: CliRunner) -> None:
@@ -194,3 +194,74 @@ class TestCommands:
         result = runner.invoke(app, ["daemon", "--help"])
         assert result.exit_code == 0
         assert "daemon" in result.output.lower()
+
+
+class TestDoctor:
+    def test_passes_on_clean_install(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Patch the Ollama embedder to a stub so the doctor doesn't talk to a
+        # real server.
+        class _StubEmbedder:
+            def __init__(self, **_: object) -> None: ...
+
+            def embed(self, _: str) -> list[float]:
+                return [0.0] * 768
+
+            def close(self) -> None: ...
+
+        monkeypatch.setattr("memstem.cli.OllamaEmbedder", _StubEmbedder)
+        result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output
+        assert "Python 3" in result.output
+        assert "Index opens cleanly" in result.output
+
+    def test_reports_missing_vault(self, tmp_path: Path, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["doctor", "--vault", str(tmp_path / "no-such-vault")])
+        # No vault → vault check fails, exit code 1.
+        assert result.exit_code == 1
+        assert "✗ Vault" in result.output
+
+    def test_reports_unreachable_ollama(self, initialized_vault: Path, runner: CliRunner) -> None:
+        # Re-write config to point Ollama at an unreachable URL.
+        cfg_path = initialized_vault / "_meta" / "config.yaml"
+        cfg_path.write_text(
+            "vault_path: " + str(initialized_vault) + "\n"
+            "embedding:\n"
+            "  provider: ollama\n"
+            "  model: nomic-embed-text\n"
+            "  base_url: http://127.0.0.1:1\n"
+            "  dimensions: 768\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
+        assert result.exit_code == 1
+        assert "✗ Ollama" in result.output
+
+    def test_reports_missing_workspace(self, initialized_vault: Path, runner: CliRunner) -> None:
+        cfg_path = initialized_vault / "_meta" / "config.yaml"
+        cfg_path.write_text(
+            "vault_path: " + str(initialized_vault) + "\n"
+            "embedding:\n"
+            "  provider: none\n"
+            "  model: nomic-embed-text\n"
+            "  base_url: http://127.0.0.1:1\n"
+            "  dimensions: 768\n"
+            "adapters:\n"
+            "  openclaw:\n"
+            "    agent_workspaces:\n"
+            "      - { path: /nonexistent/agent, tag: ghost }\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
+        assert result.exit_code == 1
+        assert "directory missing" in result.output
+
+    def test_doctor_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["doctor", "--help"])
+        assert result.exit_code == 0
+        assert "Verify the install" in result.output

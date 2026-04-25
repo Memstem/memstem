@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Annotated
@@ -12,6 +13,7 @@ from typing import Annotated
 import typer
 import yaml
 
+import memstem
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
@@ -180,6 +182,122 @@ def mcp(
         server.run()
     finally:
         index.close()
+
+
+def _doctor_check(label: str, ok_status: bool, detail: str = "") -> bool:
+    mark = "✓" if ok_status else "✗"
+    suffix = f"  ({detail})" if detail else ""
+    typer.echo(f"  {mark} {label}{suffix}")
+    return ok_status
+
+
+def _doctor_run(cfg: Config) -> int:
+    """Returns the count of failed checks."""
+    failures = 0
+
+    py_ok = sys.version_info >= (3, 11)
+    if not _doctor_check(
+        f"Python {sys.version_info.major}.{sys.version_info.minor}",
+        py_ok,
+        "" if py_ok else "need 3.11+",
+    ):
+        failures += 1
+
+    if not _doctor_check(f"memstem {memstem.__version__}", True):
+        failures += 1
+
+    vault_ok = cfg.vault_path.is_dir()
+    if not _doctor_check(f"Vault: {cfg.vault_path}", vault_ok):
+        failures += 1
+
+    cfg_path = cfg.vault_path / "_meta" / "config.yaml"
+    if not _doctor_check(f"Config: {cfg_path}", cfg_path.is_file()):
+        failures += 1
+
+    if vault_ok:
+        try:
+            idx = _open_index(cfg)
+            idx.close()
+            _doctor_check("Index opens cleanly", True)
+        except Exception as exc:
+            _doctor_check("Index opens cleanly", False, str(exc))
+            failures += 1
+
+    if cfg.embedding.provider == "ollama":
+        try:
+            embedder = OllamaEmbedder(
+                model=cfg.embedding.model,
+                base_url=cfg.embedding.base_url,
+                dimensions=cfg.embedding.dimensions,
+            )
+            vec = embedder.embed("doctor probe")
+            embedder.close()
+            _doctor_check(
+                f"Ollama at {cfg.embedding.base_url} ({cfg.embedding.model})",
+                True,
+                f"{len(vec)} dims",
+            )
+        except Exception as exc:
+            _doctor_check(
+                f"Ollama at {cfg.embedding.base_url} ({cfg.embedding.model})",
+                False,
+                str(exc),
+            )
+            failures += 1
+
+    oc = cfg.adapters.openclaw
+    if oc.agent_workspaces:
+        for ws in oc.agent_workspaces:
+            ws_path = Path(ws.path).expanduser()
+            if not _doctor_check(
+                f"OpenClaw workspace: {ws_path} (tag={ws.tag})",
+                ws_path.is_dir(),
+                "" if ws_path.is_dir() else "directory missing",
+            ):
+                failures += 1
+    for shared in oc.shared_files:
+        sp = Path(shared).expanduser()
+        if not _doctor_check(
+            f"OpenClaw shared: {sp}",
+            sp.is_file(),
+            "" if sp.is_file() else "file missing",
+        ):
+            failures += 1
+
+    cc = cfg.adapters.claude_code
+    for root in cc.project_roots:
+        rp = Path(root).expanduser()
+        if not _doctor_check(
+            f"Claude Code root: {rp}",
+            rp.is_dir(),
+            "" if rp.is_dir() else "directory missing",
+        ):
+            failures += 1
+    for extra in cc.extra_files:
+        ep = Path(extra).expanduser()
+        if not _doctor_check(
+            f"Claude Code extra: {ep}",
+            ep.is_file(),
+            "" if ep.is_file() else "file missing",
+        ):
+            failures += 1
+
+    return failures
+
+
+@app.command()
+def doctor(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+) -> None:
+    """Verify the install: Python, vault, index, Ollama, adapter targets."""
+    cfg = _load_config(_resolve_vault_path(vault))
+    typer.echo(f"Memstem doctor (vault={cfg.vault_path}):\n")
+    failures = _doctor_run(cfg)
+    typer.echo()
+    if failures > 0:
+        typer.echo(f"{failures} issue(s). Run with --vault to point at a different vault.")
+        raise typer.Exit(1)
+    typer.echo("All checks passed.")
 
 
 async def _drain_into_pipeline(

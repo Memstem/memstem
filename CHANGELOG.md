@@ -71,6 +71,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `instructions` for CLAUDE.md). Shared files (e.g. HARD-RULES.md)
   emit with a `shared` tag instead. Legacy paths-only mode preserved
   for back-compat
+- `scripts/install.sh`: one-line installer for an unattended install
+  (`curl ... | bash -s -- --yes`). Verifies Python 3.11+, installs
+  pipx and memstem, optionally installs Ollama and pulls
+  `nomic-embed-text`, scaffolds the vault, runs `memstem doctor` to
+  confirm. `--no-ollama`, `--no-model`, `--vault`, `--from-git` knobs
+- `memstem doctor`: CLI command that verifies Python version, vault +
+  config existence, index health, embedder reachability, and every
+  configured adapter target (OpenClaw workspaces / shared files,
+  Claude Code roots / extras). Exits non-zero if any check fails
+- ADR 0007: remote-machine ingestion is out of scope until Phase 3+;
+  documented sync-and-watch as the recommended workaround
 
 ### Changed
 
