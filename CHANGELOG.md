@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs OpenClaw + Claude Code adapters into the pipeline (reconcile +
   watch); `search` and `reindex` operate on the local vault; `mcp`
   serves the FastMCP tools on stdio for Claude Code et al.
+- `memstem.migrate` + `scripts/migrate-from-flipclaw.py`: one-shot
+  migration that walks `~/ari/memory/`, `~/ari/skills/`, and recent
+  Claude Code sessions, tags every record with `flipclaw-migration`,
+  and runs them through the standard pipeline. Default is dry-run
+  (counts + sample preview); `--apply` writes
 
 ### Changed
 

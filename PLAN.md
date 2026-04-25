@@ -131,15 +131,15 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 8: Migration from FlipClaw
 
-- [ ] `scripts/migrate-from-flipclaw.py`
-  - Import `~/ari/memory/*.md` → `~/memstem-vault/memories/`
-  - Import `~/ari/skills/*/SKILL.md` → `~/memstem-vault/skills/`
+- [x] `scripts/migrate-from-flipclaw.py` (thin wrapper) + `memstem.migrate` (testable module)
+  - Import `~/ari/memory/*.md` → `~/memstem-vault/memories/openclaw/`
+  - Import `~/ari/skills/*/SKILL.md` → `~/memstem-vault/skills/<slug>.md`
   - Import recent (last 30 days) Claude Code sessions from `~/.claude/projects/*/`
-  - Preserve creation dates from filesystem mtimes where possible
-  - Tag everything with `provenance: flipclaw-migration`
+  - Preserve creation dates via the adapter's mtime fallback
+  - Tag every record with `flipclaw-migration` (idempotent)
   - Dry-run mode (default) and `--apply` flag
-- [ ] Run dry-run, audit a sample of 20 records by hand
-- [ ] Run `--apply`, verify counts
+- [ ] Run dry-run on the live box, audit a sample of 20 records by hand (Step 9)
+- [ ] Run `--apply`, verify counts (Step 9)
 
 ### Step 9: Integration and cutover
 
