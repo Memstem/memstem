@@ -92,6 +92,10 @@ warn_return_any = true
 warn_unused_configs = true
 no_implicit_optional = true
 
+[[tool.mypy.overrides]]
+module = ["frontmatter"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra -q --cov=memstem --cov-report=term-missing"
