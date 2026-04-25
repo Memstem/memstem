@@ -5,7 +5,7 @@
 
 ## Snapshot (2026-04-25)
 
-- **Repo:** [bbesner/memstem](https://github.com/bbesner/memstem) (private; transfer to `memstem/memstem` once org is created)
+- **Repo:** [bbesner/memstem](https://github.com/memstem/memstem) (private; transfer to `memstem/memstem` once org is created)
 - **Phase:** 0 → entering Phase 1 implementation
 - **Lines of code:** ~150 (skeleton only)
 - **Tests passing:** 0 (none written yet)

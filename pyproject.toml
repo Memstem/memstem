@@ -48,9 +48,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bbesner/memstem"
-Issues = "https://github.com/bbesner/memstem/issues"
-Documentation = "https://github.com/bbesner/memstem/tree/main/docs"
+Homepage = "https://github.com/memstem/memstem"
+Issues = "https://github.com/memstem/memstem/issues"
+Documentation = "https://github.com/memstem/memstem/tree/main/docs"
 
 [project.scripts]
 memstem = "memstem.cli:app"

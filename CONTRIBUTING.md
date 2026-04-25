@@ -5,7 +5,7 @@ Thanks for your interest! Memstem is in pre-alpha — APIs, schemas, and archite
 ## Development setup
 
 ```bash
-git clone https://github.com/bbesner/memstem.git
+git clone https://github.com/memstem/memstem.git
 cd memstem
 python3.11 -m venv .venv
 source .venv/bin/activate

@@ -21,7 +21,7 @@ This will replace the current FlipClaw / Ari memory pipeline.
 
 **Phase 1: v0.1 implementation.** Goal is a working local daemon that ingests from Claude Code + Ari, exposes MCP search, and lets us retire FlipClaw.
 
-The repo is private at https://github.com/bbesner/memstem. Source skeleton is in place; nothing is implemented yet.
+The repo is private at https://github.com/memstem/memstem. Source skeleton is in place; nothing is implemented yet.
 
 ## How to work
 
@@ -88,4 +88,4 @@ Adapters live in `src/memstem/adapters/`. They produce normalized `MemoryRecord`
 - Frontmatter schema: [`docs/frontmatter-spec.md`](./docs/frontmatter-spec.md)
 - MCP API: [`docs/mcp-api.md`](./docs/mcp-api.md)
 - Decisions: [`docs/decisions/`](./docs/decisions/)
-- Repo: https://github.com/bbesner/memstem
+- Repo: https://github.com/memstem/memstem
