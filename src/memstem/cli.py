@@ -433,11 +433,20 @@ def _build_openclaw_adapter(cfg: Config) -> tuple[OpenClawAdapter, list[Path]]:
     return OpenClawAdapter(), list(DEFAULT_OPENCLAW_PATHS)
 
 
-def _build_claude_paths(cfg: Config) -> list[Path]:
+def _build_claude_adapter(cfg: Config) -> tuple[ClaudeCodeAdapter, list[Path]]:
+    """Build the Claude Code adapter from config.
+
+    Returns `(adapter, project_paths)`. The adapter is constructed with any
+    `extra_files` from config; `project_paths` are the JSONL session roots.
+    """
     cc = cfg.adapters.claude_code
-    if cc.project_roots:
-        return [Path(p).expanduser() for p in cc.project_roots]
-    return list(DEFAULT_CLAUDE_CODE_PATHS)
+    paths = (
+        [Path(p).expanduser() for p in cc.project_roots]
+        if cc.project_roots
+        else list(DEFAULT_CLAUDE_CODE_PATHS)
+    )
+    extras = [Path(p).expanduser() for p in cc.extra_files]
+    return ClaudeCodeAdapter(extra_files=extras), paths
 
 
 async def _run_daemon(
@@ -446,6 +455,7 @@ async def _run_daemon(
     embedder: OllamaEmbedder | None,
     openclaw_adapter: OpenClawAdapter,
     openclaw_paths: list[Path],
+    claude_adapter: ClaudeCodeAdapter,
     claude_paths: list[Path],
 ) -> None:
     pipeline = Pipeline(vault_obj, index, embedder)
@@ -457,15 +467,13 @@ async def _run_daemon(
     )
     await _reconcile_into_pipeline(
         pipeline,
-        ClaudeCodeAdapter().reconcile(claude_paths),
+        claude_adapter.reconcile(claude_paths),
         label="claude-code",
     )
 
     tasks = [
         asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
-        asyncio.create_task(
-            _drain_into_pipeline(pipeline, ClaudeCodeAdapter().watch(claude_paths))
-        ),
+        asyncio.create_task(_drain_into_pipeline(pipeline, claude_adapter.watch(claude_paths))),
     ]
     try:
         await asyncio.gather(*tasks)
@@ -485,7 +493,7 @@ def daemon(
     embedder = _maybe_embedder(cfg)
 
     openclaw_adapter, openclaw_paths = _build_openclaw_adapter(cfg)
-    claude_paths = _build_claude_paths(cfg)
+    claude_adapter, claude_paths = _build_claude_adapter(cfg)
 
     typer.echo(f"daemon: vault={cfg.vault_path}")
     if openclaw_adapter.workspaces:
@@ -498,6 +506,8 @@ def daemon(
             f"  openclaw shared files: {', '.join(str(p) for p in openclaw_adapter.shared_files)}"
         )
     typer.echo(f"  claude-code roots: {', '.join(str(p) for p in claude_paths)}")
+    if claude_adapter.extra_files:
+        typer.echo(f"  claude-code extras: {', '.join(str(p) for p in claude_adapter.extra_files)}")
 
     try:
         asyncio.run(
@@ -507,6 +517,7 @@ def daemon(
                 embedder=embedder,
                 openclaw_adapter=openclaw_adapter,
                 openclaw_paths=openclaw_paths,
+                claude_adapter=claude_adapter,
                 claude_paths=claude_paths,
             )
         )

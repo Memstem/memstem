@@ -100,3 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompts; `-y` / `--non-interactive` auto-includes every candidate
   with content. `--home <path>` lets tests and headless installs scope
   the discovery to a sandbox.
+
+### PR #17 additions (Claude Code extras)
+
+- `ClaudeCodeAdapter` now accepts `extra_files`. Each is read as a
+  markdown instructions file and emitted as a record with the
+  `instructions` tag (type=memory). Reconcile yields them alongside
+  session JSONLs; watch picks up changes via the parent dir.
+- CLI daemon constructs the Claude Code adapter from
+  `cfg.adapters.claude_code.extra_files` and lists the watched extras
+  in its startup banner.

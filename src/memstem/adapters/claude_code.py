@@ -1,14 +1,20 @@
-"""Claude Code session JSONL adapter.
+"""Claude Code session + instructions adapter.
 
-Watches the JSONL session files Claude Code writes under
-`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`. Each file is one
-conversation; this adapter folds it into a single per-session
-`MemoryRecord` (type=session) carrying the chronological turn transcript.
+Two ingestion paths:
 
-For v0.1 the policy is "re-emit the full session on every file change."
-The consuming pipeline upserts by `ref`, so re-emits idempotently replace
-the prior record. A future version can track per-file line offsets to
-emit incrementally — see PLAN step 5.
+1. **Session JSONLs** under `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` —
+   each file is one conversation, folded into one `MemoryRecord` per
+   session (type=session) with the chronological transcript.
+
+2. **Instructions files** (e.g. `~/.claude/CLAUDE.md`, project-level
+   CLAUDE.md, etc.) — passed in as `extra_files` to the constructor.
+   Each becomes a single record tagged `instructions` so a search for
+   "what does the global CLAUDE.md say about X" actually finds it.
+
+For v0.1 the policy is "re-emit the full file on every change." The
+consuming pipeline upserts by `ref`, so re-emits idempotently replace
+the prior record. A future version can track per-line offsets to emit
+incrementally for sessions — see PLAN step 5.
 """
 
 from __future__ import annotations
@@ -16,17 +22,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import frontmatter as fm
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from memstem.adapters.base import Adapter, MemoryRecord
 
 logger = logging.getLogger(__name__)
+
+H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _extract_text(content: Any) -> str:
@@ -65,6 +75,49 @@ def _format_turn(role: str, text: str) -> str:
 
 def _file_mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
+
+
+def _extract_h1(body: str) -> str | None:
+    match = H1_RE.search(body)
+    return match.group(1).strip() if match else None
+
+
+def _instructions_record(path: Path, source_name: str = "claude-code") -> MemoryRecord | None:
+    """Read a markdown instructions file as an `instructions`-tagged record."""
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning("could not read %s: %s", path, exc)
+        return None
+    try:
+        post = fm.loads(text)
+    except Exception as exc:
+        logger.warning("frontmatter parse failed for %s: %s", path, exc)
+        return None
+
+    body = post.content
+    meta = dict(post.metadata)
+    title_raw = meta.get("title")
+    if isinstance(title_raw, str) and title_raw.strip():
+        title = title_raw.strip()
+    else:
+        title = _extract_h1(body) or path.stem
+
+    mtime = _file_mtime_iso(path)
+    return MemoryRecord(
+        source=source_name,
+        ref=str(path),
+        title=title,
+        body=body,
+        tags=["instructions"],
+        metadata={
+            "type": "memory",
+            "created": str(meta.get("created") or mtime),
+            "updated": mtime,
+        },
+    )
 
 
 def _parse_session_file(path: Path) -> dict[str, Any] | None:
@@ -182,14 +235,16 @@ class _EventHandler(FileSystemEventHandler):
         self,
         loop: asyncio.AbstractEventLoop,
         queue: asyncio.Queue[Path],
+        suffixes: tuple[str, ...] = (".jsonl",),
     ) -> None:
         super().__init__()
         self._loop = loop
         self._queue = queue
+        self._suffixes = suffixes
 
     def _enqueue(self, src: str) -> None:
         path = Path(src)
-        if path.suffix != ".jsonl":
+        if path.suffix not in self._suffixes:
             return
         self._loop.call_soon_threadsafe(self._queue.put_nowait, path)
 
@@ -208,9 +263,13 @@ class _EventHandler(FileSystemEventHandler):
 
 
 class ClaudeCodeAdapter(Adapter):
-    """Reads Claude Code session JSONL files into per-session `MemoryRecord` objects."""
+    """Reads Claude Code session JSONLs and instructions files."""
 
     name = "claude-code"
+
+    def __init__(self, extra_files: list[Path] | None = None) -> None:
+        # Resolve once up front so equality checks during watch are reliable.
+        self.extra_files = [Path(p).expanduser().resolve() for p in (extra_files or [])]
 
     async def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         for root in paths:
@@ -218,24 +277,45 @@ class ClaudeCodeAdapter(Adapter):
                 record = _session_to_record(path, self.name)
                 if record is not None:
                     yield record
+        for extra in self.extra_files:
+            instr = _instructions_record(extra, self.name)
+            if instr is not None:
+                yield instr
 
     async def watch(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         queue: asyncio.Queue[Path] = asyncio.Queue()
         loop = asyncio.get_running_loop()
         observer = Observer()
-        handler = _EventHandler(loop=loop, queue=queue)
+        handler = _EventHandler(loop=loop, queue=queue, suffixes=(".jsonl", ".md"))
+
         for root in paths:
             if root.exists():
                 observer.schedule(handler, str(root), recursive=True)
+        # Watch the parent dir of each extras file so we can pick up its changes.
+        watched_parents: set[Path] = set()
+        for extra in self.extra_files:
+            if extra.parent.exists() and extra.parent not in watched_parents:
+                observer.schedule(handler, str(extra.parent), recursive=False)
+                watched_parents.add(extra.parent)
+
         observer.start()
         try:
             while True:
-                path = await queue.get()
-                if not path.is_file():
+                changed = await queue.get()
+                if not changed.is_file():
                     continue
-                record = _session_to_record(path, self.name)
-                if record is not None:
-                    yield record
+                resolved = changed.resolve()
+
+                if resolved.suffix == ".jsonl":
+                    record = _session_to_record(resolved, self.name)
+                    if record is not None:
+                        yield record
+                    continue
+
+                if resolved in self.extra_files:
+                    instr = _instructions_record(resolved, self.name)
+                    if instr is not None:
+                        yield instr
         finally:
             observer.stop()
             observer.join()
