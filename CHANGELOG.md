@@ -15,3 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontmatter specification and MCP API specification
 - CI workflow, issue/PR templates, contributing guide
 - MIT license, security policy
+- `memstem.core.frontmatter`: typed `Frontmatter` model, `parse`, `serialize`,
+  and `validate` helpers conforming to `docs/frontmatter-spec.md`
+- `memstem.core.storage`: `Vault` class with `read`, `write`, `walk`, `delete`;
+  typed `Memory` model wrapping frontmatter + body + vault-relative path
