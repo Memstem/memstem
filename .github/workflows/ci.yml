@@ -22,7 +22,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy src/ tests/
+        run: mypy src/ tests/ scripts/
 
   test:
     runs-on: ubuntu-latest
