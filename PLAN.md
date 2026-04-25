@@ -5,7 +5,7 @@
 
 ## Snapshot (2026-04-25)
 
-- **Repo:** [bbesner/memstem](https://github.com/memstem/memstem) (private; transfer to `memstem/memstem` once org is created)
+- **Repo:** [memstem/memstem](https://github.com/memstem/memstem) (private; lives under the `Memstem` GitHub org)
 - **Phase:** 0 → entering Phase 1 implementation
 - **Lines of code:** ~150 (skeleton only)
 - **Tests passing:** 0 (none written yet)
@@ -194,7 +194,7 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ## Open questions / parking lot
 
-- [ ] Create `memstem` GitHub org and transfer repo (recommend: now, before publishing or sharing)
+- [x] Create `memstem` GitHub org and transfer repo (done 2026-04-25 — repo now at `memstem/memstem`)
 - [ ] Buy `memstem.com` and `memstem.ai` (recommend: this week)
 - [ ] Reserve `memstem` on PyPI + npm with stub packages (recommend: before v0.1 release)
 - [ ] When to flip the repo public (recommend: end of Phase 2, when it's actually working)
