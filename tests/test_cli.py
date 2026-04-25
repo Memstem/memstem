@@ -54,15 +54,28 @@ def runner() -> CliRunner:
 @pytest.fixture
 def initialized_vault(tmp_path: Path, runner: CliRunner) -> Iterator[Path]:
     vault_path = tmp_path / "vault"
-    result = runner.invoke(app, ["init", str(vault_path)])
-    assert result.exit_code == 0
+    empty_home = tmp_path / "empty_home"
+    empty_home.mkdir()
+    result = runner.invoke(
+        app,
+        ["init", "-y", "--home", str(empty_home), str(vault_path)],
+    )
+    assert result.exit_code == 0, result.output
     yield vault_path
+
+
+def _empty_home(tmp_path: Path) -> Path:
+    home = tmp_path / "empty_home"
+    home.mkdir(exist_ok=True)
+    return home
 
 
 class TestInit:
     def test_creates_vault_tree(self, tmp_path: Path, runner: CliRunner) -> None:
         vault_path = tmp_path / "fresh"
-        result = runner.invoke(app, ["init", str(vault_path)])
+        result = runner.invoke(
+            app, ["init", "-y", "--home", str(_empty_home(tmp_path)), str(vault_path)]
+        )
         assert result.exit_code == 0, result.output
         for sub in ("memories", "skills", "sessions", "daily", "_meta"):
             assert (vault_path / sub).is_dir()
@@ -70,7 +83,7 @@ class TestInit:
 
     def test_writes_default_config(self, tmp_path: Path, runner: CliRunner) -> None:
         vault_path = tmp_path / "fresh"
-        runner.invoke(app, ["init", str(vault_path)])
+        runner.invoke(app, ["init", "-y", "--home", str(_empty_home(tmp_path)), str(vault_path)])
         cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
         assert cfg["embedding"]["provider"] == "ollama"
         assert cfg["embedding"]["dimensions"] == 768
@@ -78,25 +91,104 @@ class TestInit:
 
     def test_skips_existing_without_force(self, tmp_path: Path, runner: CliRunner) -> None:
         vault_path = tmp_path / "fresh"
-        runner.invoke(app, ["init", str(vault_path)])
-        # Mark the config so we can verify it wasn't overwritten.
+        home = _empty_home(tmp_path)
+        runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
         cfg_path = vault_path / "_meta" / "config.yaml"
         cfg_path.write_text("custom: marker\n")
-
-        result = runner.invoke(app, ["init", str(vault_path)])
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
         assert result.exit_code == 0
         assert "config.yaml exists" in result.output
         assert cfg_path.read_text() == "custom: marker\n"
 
     def test_force_overwrites(self, tmp_path: Path, runner: CliRunner) -> None:
         vault_path = tmp_path / "fresh"
-        runner.invoke(app, ["init", str(vault_path)])
+        home = _empty_home(tmp_path)
+        runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
         cfg_path = vault_path / "_meta" / "config.yaml"
         cfg_path.write_text("custom: marker\n")
-
-        result = runner.invoke(app, ["init", str(vault_path), "--force"])
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), "--force", str(vault_path)])
         assert result.exit_code == 0
         assert "custom: marker" not in cfg_path.read_text()
+
+
+class TestInitWizard:
+    def _seed_agent(self, home: Path, name: str, *, with_content: bool) -> Path:
+        ws = home / name
+        ws.mkdir(parents=True)
+        (ws / "openclaw.json").write_text("{}")
+        (ws / "MEMORY.md").write_text("# core\n")
+        (ws / "CLAUDE.md").write_text("# rules\n")
+        if with_content:
+            (ws / "memory").mkdir()
+            (ws / "memory" / "people.md").write_text("# people\n")
+            (ws / "skills" / "deploy").mkdir(parents=True)
+            (ws / "skills" / "deploy" / "SKILL.md").write_text("# deploy\n")
+        return ws
+
+    def test_non_interactive_auto_selects_content_agents(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        self._seed_agent(home, "ari", with_content=True)
+        self._seed_agent(home, "blake", with_content=False)
+        # `blake` only has MEMORY.md + CLAUDE.md (no memory/ or skills/) — counts
+        # as content because top-level files exist; we want it included too.
+        # Force a true "empty" agent for the negative case:
+        empty_dir = home / "ghost"
+        empty_dir.mkdir()
+        (empty_dir / "openclaw.json").write_text("{}")
+
+        vault_path = tmp_path / "vault"
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        tags = {ws["tag"] for ws in cfg["adapters"]["openclaw"]["agent_workspaces"]}
+        assert "ari" in tags
+        assert "blake" in tags
+        assert "ghost" not in tags
+
+    def test_wizard_prompts_per_agent(self, tmp_path: Path, runner: CliRunner) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        self._seed_agent(home, "ari", with_content=True)
+        self._seed_agent(home, "blake", with_content=True)
+
+        vault_path = tmp_path / "vault"
+        # Defaults: ari yes, blake no. Plus declines for any shared/claude prompts.
+        result = runner.invoke(
+            app,
+            ["init", "--home", str(home), str(vault_path)],
+            input="y\nn\n",
+        )
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        tags = {ws["tag"] for ws in cfg["adapters"]["openclaw"]["agent_workspaces"]}
+        assert tags == {"ari"}
+
+    def test_wizard_includes_shared_files(self, tmp_path: Path, runner: CliRunner) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        ws = self._seed_agent(home, "ari", with_content=True)
+        rules = ws / "HARD-RULES.md"
+        rules.write_text("# rules\n")
+
+        vault_path = tmp_path / "vault"
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert str(rules) in cfg["adapters"]["openclaw"]["shared_files"]
+
+    def test_wizard_picks_up_claude_code_root(self, tmp_path: Path, runner: CliRunner) -> None:
+        home = tmp_path / "home"
+        (home / ".claude" / "projects").mkdir(parents=True)
+
+        vault_path = tmp_path / "vault"
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
+        assert result.exit_code == 0
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        roots = cfg["adapters"]["claude_code"]["project_roots"]
+        assert any("projects" in r for r in roots)
 
 
 class TestSearch:
