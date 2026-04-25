@@ -96,7 +96,13 @@ warn_unused_configs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["frontmatter", "sqlite_vec", "watchdog.events", "watchdog.observers"]
+module = [
+    "frontmatter",
+    "sqlite_vec",
+    "watchdog.events",
+    "watchdog.observers",
+    "yaml",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

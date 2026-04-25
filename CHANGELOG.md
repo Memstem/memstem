@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `memstem_list_skills`, `memstem_get_skill`, `memstem_upsert`. Auto-
   generates vault paths on upsert when none is supplied (memories /
   skills / sessions / daily layouts)
+- `memstem.core.pipeline`: `Pipeline` converts adapter-emitted
+  `MemoryRecord` objects into canonical `Memory` writes — stable id per
+  `(source, ref)`, vault write, index upsert, embed-and-store chunks
+- CLI commands (`memstem init|daemon|search|reindex|mcp`) wired up via
+  Typer. `init` scaffolds a vault and `_meta/config.yaml`; `daemon`
+  runs OpenClaw + Claude Code adapters into the pipeline (reconcile +
+  watch); `search` and `reindex` operate on the local vault; `mcp`
+  serves the FastMCP tools on stdio for Claude Code et al.
 
 ### Changed
 

@@ -1,0 +1,174 @@
+"""Record → Memory ingestion pipeline.
+
+Adapters emit `MemoryRecord` objects describing what they saw on disk.
+The pipeline turns each record into a canonical `Memory`: writes the
+markdown file, upserts the index, and (if an embedder is configured)
+chunks the body, embeds each chunk, and stores the vectors.
+
+Identity is stable per `(source, ref)`. We store the mapping from a
+record's source ref to its assigned memory id in a small SQLite table
+so that re-emits of the same record (which adapters do on file change)
+update the same Memory instead of creating duplicates.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import UUID, uuid4
+
+from memstem.adapters.base import MemoryRecord
+from memstem.core.embeddings import OllamaEmbedder, chunk_text
+from memstem.core.frontmatter import Frontmatter, MemoryType, validate
+from memstem.core.index import Index
+from memstem.core.storage import Memory, MemoryNotFoundError, Vault
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_record_map(db: sqlite3.Connection) -> None:
+    """Idempotently create the `record_map` table for source-ref → id lookup."""
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS record_map (
+            source TEXT NOT NULL,
+            ref TEXT NOT NULL,
+            memory_id TEXT NOT NULL,
+            PRIMARY KEY (source, ref)
+        )
+        """
+    )
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _path_for_memory(fm: Frontmatter, record: MemoryRecord) -> Path:
+    if fm.type is MemoryType.SKILL:
+        slug_source = fm.title or str(fm.id)
+        slug = slug_source.lower().replace(" ", "-")[:64]
+        return Path(f"skills/{slug}.md")
+    if fm.type is MemoryType.SESSION:
+        session_id = record.metadata.get("session_id") or str(fm.id)
+        return Path(f"sessions/{session_id}.md")
+    if fm.type is MemoryType.DAILY:
+        return Path(f"daily/{fm.created.date().isoformat()}.md")
+    return Path(f"memories/{record.source}/{fm.id}.md")
+
+
+class Pipeline:
+    """Convert adapter `MemoryRecord` objects into canonical `Memory` writes."""
+
+    def __init__(
+        self,
+        vault: Vault,
+        index: Index,
+        embedder: OllamaEmbedder | None = None,
+    ) -> None:
+        self.vault = vault
+        self.index = index
+        self.embedder = embedder
+        _ensure_record_map(self.index.db)
+
+    def process(self, record: MemoryRecord) -> Memory:
+        """Persist one record as a canonical Memory; idempotent for re-emits."""
+        memory_id = self._lookup_or_assign_id(record.source, record.ref)
+        fm = self._build_frontmatter(record, memory_id)
+        path = self._existing_path(memory_id) or _path_for_memory(fm, record)
+        memory = Memory(frontmatter=fm, body=record.body, path=path)
+
+        self.vault.write(memory)
+        self.index.upsert(memory)
+        self._record_mapping(record.source, record.ref, memory_id)
+        self._embed_and_index_chunks(memory_id, record.body)
+        return memory
+
+    def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
+        row = self.index.db.execute(
+            "SELECT memory_id FROM record_map WHERE source = ? AND ref = ?",
+            (source, ref),
+        ).fetchone()
+        if row is not None:
+            return UUID(row["memory_id"])
+        return uuid4()
+
+    def _existing_path(self, memory_id: UUID) -> Path | None:
+        row = self.index.db.execute(
+            "SELECT path FROM memories WHERE id = ?", (str(memory_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        # Confirm the on-disk file still exists; fall back to a fresh path if not.
+        try:
+            self.vault.read(row["path"])
+            return Path(row["path"])
+        except MemoryNotFoundError:
+            return None
+
+    def _build_frontmatter(self, record: MemoryRecord, memory_id: UUID) -> Frontmatter:
+        meta = dict(record.metadata)
+        type_str = meta.get("type", "memory")
+        created = _parse_iso(meta.get("created")) or datetime.now(tz=UTC)
+        updated = _parse_iso(meta.get("updated")) or datetime.now(tz=UTC)
+        provenance = {
+            "source": record.source,
+            "ref": record.ref,
+            "ingested_at": datetime.now(tz=UTC).isoformat(),
+        }
+        payload: dict[str, Any] = {
+            "id": str(memory_id),
+            "type": type_str,
+            "created": created.isoformat(),
+            "updated": updated.isoformat(),
+            "source": record.source,
+            "title": record.title,
+            "tags": list(record.tags),
+            "provenance": provenance,
+        }
+        # Skill-typed records need scope+verification; default to permissive.
+        if type_str == "skill":
+            raw_fm = (
+                meta.get("raw_frontmatter") if isinstance(meta.get("raw_frontmatter"), dict) else {}
+            )
+            assert isinstance(raw_fm, dict)
+            payload.setdefault("scope", str(raw_fm.get("scope") or "universal"))
+            payload.setdefault("verification", str(raw_fm.get("verification") or "verify by hand"))
+        return validate(payload)
+
+    def _record_mapping(self, source: str, ref: str, memory_id: UUID) -> None:
+        with self.index.db:
+            self.index.db.execute(
+                """
+                INSERT OR REPLACE INTO record_map(source, ref, memory_id)
+                VALUES (?, ?, ?)
+                """,
+                (source, ref, str(memory_id)),
+            )
+
+    def _embed_and_index_chunks(self, memory_id: UUID, body: str) -> None:
+        if self.embedder is None:
+            return
+        chunks = chunk_text(body)
+        if not chunks:
+            return
+        try:
+            embeddings = self.embedder.embed_batch(chunks)
+        except Exception as exc:
+            logger.warning("embedding failed for %s: %s", memory_id, exc)
+            return
+        try:
+            self.index.upsert_vectors(str(memory_id), chunks, embeddings)
+        except ValueError as exc:
+            logger.warning("vector upsert failed for %s: %s", memory_id, exc)
+
+
+__all__ = ["Pipeline"]
