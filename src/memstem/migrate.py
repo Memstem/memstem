@@ -28,6 +28,7 @@ from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
 from memstem.cli import _load_config, _maybe_embedder, _open_index, _resolve_vault_path
+from memstem.config import Config
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
 
@@ -65,6 +66,16 @@ async def collect_openclaw(paths: list[Path]) -> list[MemoryRecord]:
     return [tag_for_migration(r) async for r in OpenClawAdapter().reconcile(paths)]
 
 
+async def collect_openclaw_workspaces(cfg: Config) -> list[MemoryRecord]:
+    """Workspace-mode collection: walk per-agent layouts and shared files."""
+    oc = cfg.adapters.openclaw
+    adapter = OpenClawAdapter(
+        workspaces=list(oc.agent_workspaces),
+        shared_files=[Path(p).expanduser() for p in oc.shared_files],
+    )
+    return [tag_for_migration(r) async for r in adapter.reconcile([])]
+
+
 async def _claude_records_in_window(
     root: Path, cutoff: datetime
 ) -> AsyncGenerator[MemoryRecord, None]:
@@ -87,6 +98,17 @@ async def collect_all(
     """Collect both OpenClaw and Claude Code records into separate lists."""
     return (
         await collect_openclaw(openclaw_paths),
+        await collect_claude(days, claude_root),
+    )
+
+
+async def _collect_workspaces(
+    days: int,
+    cfg: Config,
+    claude_root: Path,
+) -> tuple[list[MemoryRecord], list[MemoryRecord]]:
+    return (
+        await collect_openclaw_workspaces(cfg),
         await collect_claude(days, claude_root),
     )
 
@@ -115,7 +137,9 @@ def main(
     ] = None,
     openclaw: Annotated[
         list[str] | None,
-        typer.Option(help="OpenClaw paths (defaults to ~/ari/memory and ~/ari/skills)"),
+        typer.Option(
+            help="OpenClaw paths (overrides config; defaults to ~/ari/memory + ~/ari/skills)"
+        ),
     ] = None,
     claude_root: Annotated[
         str | None,
@@ -128,12 +152,27 @@ def main(
     typer.echo(f"mode:   {'APPLY' if apply else 'DRY-RUN'}")
     typer.echo(f"window: last {days} days for Claude Code sessions")
 
-    openclaw_paths = (
-        [Path(p).expanduser() for p in openclaw] if openclaw else list(ARI_MEMORY_PATHS)
+    use_workspaces = not openclaw and bool(
+        cfg.adapters.openclaw.agent_workspaces or cfg.adapters.openclaw.shared_files
     )
+    if use_workspaces:
+        oc = cfg.adapters.openclaw
+        for ws in oc.agent_workspaces:
+            typer.echo(f"  workspace: {ws.path} (tag={ws.tag})")
+        for shared in oc.shared_files:
+            typer.echo(f"  shared:    {shared}")
+
     claude_path = Path(claude_root).expanduser() if claude_root else CLAUDE_PROJECTS
 
-    openclaw_records, claude_records = asyncio.run(collect_all(days, openclaw_paths, claude_path))
+    if use_workspaces:
+        openclaw_records, claude_records = asyncio.run(_collect_workspaces(days, cfg, claude_path))
+    else:
+        openclaw_paths = (
+            [Path(p).expanduser() for p in openclaw] if openclaw else list(ARI_MEMORY_PATHS)
+        )
+        openclaw_records, claude_records = asyncio.run(
+            collect_all(days, openclaw_paths, claude_path)
+        )
 
     _print_summary("openclaw memory + skills", openclaw_records)
     _print_summary("claude-code sessions", claude_records)
@@ -168,5 +207,6 @@ __all__ = [
     "collect_all",
     "collect_claude",
     "collect_openclaw",
+    "collect_openclaw_workspaces",
     "tag_for_migration",
 ]
