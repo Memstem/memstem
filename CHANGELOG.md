@@ -26,3 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   versioned migrations, `upsert` / `upsert_vectors` / `delete`, and
   `query_fts` / `query_vec` returning typed `FtsHit` / `VecHit` records;
   cascading deletes for tags/links/vectors and a wikilink extractor
+- `memstem.core.search`: `Search` orchestrator for hybrid retrieval —
+  Reciprocal Rank Fusion over BM25 + vector hits, materializing typed
+  `Result` records (memory + score + per-source ranks) from the vault.
+  Sanitizes FTS5-special characters from natural-language queries; falls
+  back to BM25-only if the embedder errors so the daemon never goes mute
