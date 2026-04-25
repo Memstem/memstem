@@ -120,13 +120,14 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 7: CLI
 
-- [ ] Wire up `cli.py` stubs:
+- [x] `core/pipeline.py` — `Pipeline.process(record)` writes Memory to vault, upserts index, embeds chunks. Stable `(source, ref) → memory_id` mapping in a `record_map` table for idempotent re-emits.
+- [x] Wire up `cli.py` stubs:
   - `memstem init <path>` — creates vault directory tree, writes `_meta/config.yaml`
-  - `memstem daemon` — starts adapters + MCP server + (later) hygiene worker
+  - `memstem daemon` — runs adapter reconcile + watch loop into the pipeline
   - `memstem search <query>` — one-shot CLI search
-  - `memstem reindex` — wipe + rebuild index from canonical
-  - `memstem mcp` — alias for daemon in MCP-only mode (used by Claude Code)
-- [ ] `tests/test_cli.py` — typer's CliRunner
+  - `memstem reindex` — rebuild the index by walking the canonical vault
+  - `memstem mcp` — runs the MCP server on stdio (used by Claude Code)
+- [x] `tests/test_cli.py` — typer's CliRunner; `tests/test_pipeline.py` for ingestion logic
 
 ### Step 8: Migration from FlipClaw
 
