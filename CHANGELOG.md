@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summarized (`[tool_use: Bash]`, `[tool_result]`) so it stays readable.
   Title falls back from `ai-title` → first user prompt → session UUID.
   Re-emits the full session on file change; pipeline upserts by `ref`
+- `memstem.servers.mcp_server`: `build_server(vault, index, embedder=None)`
+  factory returning a `FastMCP` instance with five tools matching the
+  spec in `docs/mcp-api.md`: `memstem_search`, `memstem_get`,
+  `memstem_list_skills`, `memstem_get_skill`, `memstem_upsert`. Auto-
+  generates vault paths on upsert when none is supplied (memories /
+  skills / sessions / daily layouts)
 
 ### Changed
 
