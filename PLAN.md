@@ -141,6 +141,32 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 - [ ] Run dry-run on the live box, audit a sample of 20 records by hand (Step 9)
 - [ ] Run `--apply`, verify counts (Step 9)
 
+### Step 8.5: Multi-agent + extra-files ingestion (added after dry-run review)
+
+The original adapter only saw `~/ari/memory/` and `~/ari/skills/`. After
+inspecting the live box (7 OpenClaw agent workspaces, plus shared rules
+and Claude Code instructions) we extended scope before cutover.
+
+- [x] `memstem.config.OpenClawWorkspace`, `OpenClawAdapterConfig`,
+  `ClaudeCodeAdapterConfig`, `AdaptersConfig` — typed config blocks for
+  per-agent workspaces and shared/extra files
+- [x] `OpenClawAdapter` workspace mode: walks `<workspace>/MEMORY.md`,
+  `<workspace>/CLAUDE.md`, `<workspace>/memory/*.md`, and
+  `<workspace>/skills/*/SKILL.md` per workspace, tagging records with
+  `agent:<tag>` (and `core` / `instructions` for top-level files).
+  Shared files emit with a `shared` tag. Legacy paths-only mode
+  preserved for back-compat
+- [x] CLI daemon reads adapter config and switches mode automatically
+- [x] 16 new tests for workspace mode + watch
+- [ ] **PR #14:** setup wizard in `memstem init` — auto-discover OpenClaw
+  agent candidates (glob `~/*/openclaw.json`), prompt for selection,
+  populate `_meta/config.yaml`. `--non-interactive` flag for headless installs
+- [ ] **PR #15:** ClaudeCodeAdapter extra_files — also pull
+  `~/.claude/CLAUDE.md` and any project-level CLAUDE.md files; ADR 0007
+  on the remote-ingest design choice (sync-and-watch is sufficient for
+  v0.1; HTTP push is a Phase 3 nice-to-have; full multi-device sync
+  stays in Phase 4)
+
 ### Step 9: Integration and cutover
 
 - [ ] Register Memstem MCP server in `~/.claude/settings.json`

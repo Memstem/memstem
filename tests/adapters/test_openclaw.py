@@ -10,9 +10,11 @@ from memstem.adapters.base import MemoryRecord
 from memstem.adapters.openclaw import (
     OpenClawAdapter,
     _classify_type,
+    _classify_workspace_path,
     _extract_h1,
     _file_to_record,
 )
+from memstem.config import OpenClawWorkspace
 
 
 def _write(file: Path, content: str) -> Path:
@@ -159,3 +161,172 @@ class TestWatch:
             await watcher.aclose()
         assert record.title == "Watched"
         assert record.source == "openclaw"
+
+
+class TestClassifyWorkspacePath:
+    def test_memory_md(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        (tmp_path / "ari").mkdir()
+        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "MEMORY.md", ws)
+        assert interesting is True
+        assert extra == ["core"]
+
+    def test_claude_md(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        (tmp_path / "ari").mkdir()
+        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "CLAUDE.md", ws)
+        assert interesting is True
+        assert extra == ["instructions"]
+
+    def test_memory_subdir_file(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        (tmp_path / "ari" / "memory").mkdir(parents=True)
+        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "memory" / "people.md", ws)
+        assert interesting is True
+        assert extra == []
+
+    def test_skill_md(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        (tmp_path / "ari" / "skills" / "deploy").mkdir(parents=True)
+        interesting, extra = _classify_workspace_path(
+            tmp_path / "ari" / "skills" / "deploy" / "SKILL.md", ws
+        )
+        assert interesting is True
+        assert extra == []
+
+    def test_random_file_in_workspace_ignored(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        (tmp_path / "ari").mkdir()
+        interesting, _ = _classify_workspace_path(tmp_path / "ari" / "openclaw.json", ws)
+        assert interesting is False
+
+    def test_path_outside_workspace(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        (tmp_path / "ari").mkdir()
+        interesting, _ = _classify_workspace_path(tmp_path / "elsewhere.md", ws)
+        assert interesting is False
+
+
+class TestWorkspaceMode:
+    def _seed_workspace(self, root: Path, agent: str) -> Path:
+        ws_root = root / agent
+        _write(ws_root / "MEMORY.md", "# Core for " + agent)
+        _write(ws_root / "CLAUDE.md", "# How " + agent + " operates")
+        _write(ws_root / "memory" / "people.md", "# People\n\nBrad")
+        _write(ws_root / "memory" / "2026-04-25.md", "# Daily 2026-04-25\n\nlog")
+        _write(ws_root / "skills" / "deploy" / "SKILL.md", "# Deploy skill")
+        return ws_root
+
+    async def test_emits_records_per_workspace_with_agent_tag(self, tmp_path: Path) -> None:
+        ari_root = self._seed_workspace(tmp_path, "ari")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        records = await _drain(adapter.reconcile([]))
+        # 5 files: MEMORY.md, CLAUDE.md, 2 memory/, 1 skill
+        assert len(records) == 5
+        for r in records:
+            assert "agent:ari" in r.tags
+
+    async def test_memory_md_gets_core_tag(self, tmp_path: Path) -> None:
+        ari_root = self._seed_workspace(tmp_path, "ari")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        records = await _drain(adapter.reconcile([]))
+        memory_md = next(r for r in records if r.ref.endswith("MEMORY.md"))
+        assert "core" in memory_md.tags
+        assert "agent:ari" in memory_md.tags
+
+    async def test_claude_md_gets_instructions_tag(self, tmp_path: Path) -> None:
+        ari_root = self._seed_workspace(tmp_path, "ari")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        records = await _drain(adapter.reconcile([]))
+        claude_md = next(r for r in records if r.ref.endswith("CLAUDE.md"))
+        assert "instructions" in claude_md.tags
+
+    async def test_multi_agent_records_tagged_distinctly(self, tmp_path: Path) -> None:
+        self._seed_workspace(tmp_path, "ari")
+        self._seed_workspace(tmp_path, "sarah")
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(path=tmp_path / "ari", tag="ari"),
+                OpenClawWorkspace(path=tmp_path / "sarah", tag="sarah"),
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        ari_only = [r for r in records if "agent:ari" in r.tags]
+        sarah_only = [r for r in records if "agent:sarah" in r.tags]
+        assert len(ari_only) == 5
+        assert len(sarah_only) == 5
+        # No record should carry both agent tags.
+        for r in records:
+            agent_tags = [t for t in r.tags if t.startswith("agent:")]
+            assert len(agent_tags) == 1
+
+    async def test_shared_files_get_shared_tag(self, tmp_path: Path) -> None:
+        rules = _write(tmp_path / "HARD-RULES.md", "# Hard Rules\n\ncontent")
+        adapter = OpenClawAdapter(shared_files=[rules])
+        records = await _drain(adapter.reconcile([]))
+        assert len(records) == 1
+        assert "shared" in records[0].tags
+        assert not any(t.startswith("agent:") for t in records[0].tags)
+
+    async def test_missing_shared_file_silently_skipped(self, tmp_path: Path) -> None:
+        adapter = OpenClawAdapter(shared_files=[tmp_path / "missing.md"])
+        records = await _drain(adapter.reconcile([]))
+        assert records == []
+
+    async def test_missing_workspace_silently_skipped(self, tmp_path: Path) -> None:
+        adapter = OpenClawAdapter(
+            workspaces=[OpenClawWorkspace(path=tmp_path / "nonexistent", tag="ghost")]
+        )
+        records = await _drain(adapter.reconcile([]))
+        assert records == []
+
+    async def test_legacy_mode_still_works(self, tmp_path: Path) -> None:
+        # No workspace config → reconcile should walk the path argument.
+        _write(tmp_path / "memory" / "a.md", "# A")
+        records = await _drain(OpenClawAdapter().reconcile([tmp_path]))
+        assert len(records) == 1
+        assert "agent:" not in " ".join(records[0].tags or [""])
+
+
+class TestWorkspaceWatch:
+    async def test_picks_up_memory_md_change(self, tmp_path: Path) -> None:
+        ari_root = tmp_path / "ari"
+        ari_root.mkdir()
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        watcher = adapter.watch([])
+
+        async def grab_first() -> MemoryRecord:
+            return await watcher.__anext__()
+
+        task = asyncio.create_task(grab_first())
+        await asyncio.sleep(0.1)
+        _write(ari_root / "MEMORY.md", "# Core\n\nbody")
+        try:
+            record = await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await watcher.aclose()
+        assert "agent:ari" in record.tags
+        assert "core" in record.tags
+
+    async def test_ignores_unrelated_files_in_workspace(self, tmp_path: Path) -> None:
+        ari_root = tmp_path / "ari"
+        ari_root.mkdir()
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        watcher = adapter.watch([])
+
+        async def grab_first() -> MemoryRecord:
+            return await watcher.__anext__()
+
+        task = asyncio.create_task(grab_first())
+        await asyncio.sleep(0.1)
+        # Write an unrelated file first, then a real one. Only the real one should arrive.
+        _write(ari_root / "notes.txt", "irrelevant")  # not .md
+        _write(ari_root / "openclaw.json", "{}")
+        await asyncio.sleep(0.1)
+        _write(ari_root / "MEMORY.md", "# Core")
+        try:
+            record = await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await watcher.aclose()
+        # The first record we receive should be MEMORY.md.
+        assert record.ref.endswith("MEMORY.md")
