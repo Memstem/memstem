@@ -585,5 +585,6 @@ class TestConnectClients:
     def test_help(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["connect-clients", "--help"])
         assert result.exit_code == 0
-        assert "memstem" in result.output.lower()
-        assert "--dry-run" in result.output
+        # Rich may wrap or style flag names depending on terminal width, so we
+        # only assert on the stable docstring text.
+        assert "wire memstem" in result.output.lower()
