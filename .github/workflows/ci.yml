@@ -30,10 +30,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12"]
         experimental: [false]
         include:
+          # macOS is supported for v0.1 manual installs but not gated in CI:
+          # actions/setup-python's macOS builds ship Python without
+          # `enable_load_extension`, which sqlite-vec requires. The hosted
+          # runner image is the constraint here, not Memstem itself — users
+          # with `brew install python@3.11` are fine. Marked experimental so
+          # failures surface in CI without blocking merge until the runner
+          # image catches up.
+          - os: macos-latest
+            python-version: "3.11"
+            experimental: true
+          - os: macos-latest
+            python-version: "3.12"
+            experimental: true
           # Windows isn't supported in v0.1 (use WSL2). We run it in CI anyway
           # for visibility, marked experimental so failures don't block merge.
           - os: windows-latest
