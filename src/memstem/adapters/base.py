@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -21,7 +22,7 @@ class MemoryRecord(BaseModel):
     title: str | None = None
     body: str
     tags: list[str] = []
-    metadata: dict = {}
+    metadata: dict[str, Any] = {}
 
 
 class Adapter(ABC):
