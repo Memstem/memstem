@@ -87,3 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Adapter.watch` and `Adapter.reconcile` are declared without `async`
   in the ABC so subclass async generators type-check cleanly
+
+### PR #16 additions (setup wizard)
+
+- `memstem.discovery`: auto-discovery helpers for OpenClaw agent
+  workspaces (`~/*/openclaw.json`), shared rules files (`HARD-RULES.md`),
+  Claude Code session roots (`~/.claude/projects`), and per-user
+  Claude Code instructions (`~/.claude/CLAUDE.md`). Each candidate
+  carries a content count so the installer can highlight non-empty
+  agents.
+- `memstem init` setup wizard: defaults to interactive per-candidate
+  prompts; `-y` / `--non-interactive` auto-includes every candidate
+  with content. `--home <path>` lets tests and headless installs scope
+  the discovery to a sandbox.

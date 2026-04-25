@@ -17,12 +17,25 @@ import memstem
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
-from memstem.config import Config
+from memstem.config import (
+    AdaptersConfig,
+    ClaudeCodeAdapterConfig,
+    Config,
+    OpenClawAdapterConfig,
+    OpenClawWorkspace,
+)
 from memstem.core.embeddings import OllamaEmbedder, chunk_text
 from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.search import Search
 from memstem.core.storage import Vault
+from memstem.discovery import (
+    build_default_adapters_config,
+    discover_claude_code_extras,
+    discover_claude_code_root,
+    discover_openclaw_candidates,
+    discover_shared_files,
+)
 from memstem.servers.mcp_server import build_server
 
 logger = logging.getLogger(__name__)
@@ -84,12 +97,72 @@ def _maybe_embedder(config: Config) -> OllamaEmbedder | None:
         return None
 
 
+def _run_init_wizard(home: Path) -> AdaptersConfig:
+    """Interactive wizard: ask which OpenClaw agents and Claude Code paths to ingest."""
+    candidates = discover_openclaw_candidates(home)
+
+    workspaces: list[OpenClawWorkspace] = []
+    if candidates:
+        typer.echo(f"\nFound {len(candidates)} OpenClaw agent candidates:")
+        for cand in candidates:
+            typer.echo(f"  {cand.tag:<10} — {cand.describe()}")
+        typer.echo("")
+        for cand in candidates:
+            include = typer.confirm(f"Include {cand.tag}?", default=cand.has_content)
+            if include:
+                workspaces.append(OpenClawWorkspace(path=cand.workspace, tag=cand.tag))
+    else:
+        typer.echo("\nNo OpenClaw agents found.")
+
+    shared_candidates = discover_shared_files(home)
+    chosen_shared: list[Path] = []
+    for shared in shared_candidates:
+        if typer.confirm(f"Include shared file {shared}?", default=True):
+            chosen_shared.append(shared)
+
+    claude_root = discover_claude_code_root(home)
+    project_roots: list[Path] = []
+    if claude_root is not None and typer.confirm(
+        f"Include Claude Code sessions from {claude_root}?", default=True
+    ):
+        project_roots.append(claude_root)
+
+    extras_found = discover_claude_code_extras(home)
+    chosen_extras: list[Path] = []
+    for extra in extras_found:
+        if typer.confirm(f"Include Claude Code instructions {extra}?", default=True):
+            chosen_extras.append(extra)
+
+    return AdaptersConfig(
+        openclaw=OpenClawAdapterConfig(
+            agent_workspaces=workspaces,
+            shared_files=chosen_shared,
+        ),
+        claude_code=ClaudeCodeAdapterConfig(
+            project_roots=project_roots,
+            extra_files=chosen_extras,
+        ),
+    )
+
+
 @app.command()
 def init(
-    vault_path: str = typer.Argument(..., help="Path to create the vault at"),
-    force: bool = typer.Option(False, help="Overwrite an existing config.yaml"),
+    vault_path: Annotated[str, typer.Argument(help="Path to create the vault at")],
+    force: Annotated[bool, typer.Option(help="Overwrite an existing config.yaml")] = False,
+    non_interactive: Annotated[
+        bool,
+        typer.Option(
+            "--non-interactive",
+            "-y",
+            help="Skip prompts; auto-include every discovered agent with content",
+        ),
+    ] = False,
+    home: Annotated[
+        str | None,
+        typer.Option(help="Home directory to scan for agents (default: $HOME)"),
+    ] = None,
 ) -> None:
-    """Initialize a new Memstem vault."""
+    """Initialize a new Memstem vault, with an optional setup wizard."""
     path = Path(vault_path).expanduser().resolve()
     for sub in DEFAULT_VAULT_DIRS:
         (path / sub).mkdir(parents=True, exist_ok=True)
@@ -97,12 +170,26 @@ def init(
     if cfg_path.exists() and not force:
         typer.echo(f"config.yaml exists at {cfg_path}; use --force to overwrite")
         raise typer.Exit(0)
-    cfg = Config(vault_path=path)
+
+    home_path = Path(home).expanduser() if home else Path.home()
+    if non_interactive:
+        adapters = build_default_adapters_config(home_path)
+        typer.echo(
+            f"Auto-selected {len(adapters.openclaw.agent_workspaces)} OpenClaw "
+            f"workspace(s), {len(adapters.openclaw.shared_files)} shared file(s), "
+            f"{len(adapters.claude_code.project_roots)} Claude Code root(s)."
+        )
+    else:
+        adapters = _run_init_wizard(home_path)
+
+    cfg = Config(vault_path=path, adapters=adapters)
     cfg_path.write_text(
         yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False),
         encoding="utf-8",
     )
-    typer.echo(f"initialized vault at {path}")
+    typer.echo(f"\ninitialized vault at {path}")
+    typer.echo(f"config:  {cfg_path}")
+    typer.echo(f"Run `memstem doctor --vault {path}` to verify.")
 
 
 @app.command()
