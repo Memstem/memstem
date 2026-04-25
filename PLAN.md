@@ -63,18 +63,18 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 2: Index layer
 
-- [ ] `src/memstem/core/index.py` — SQLite + FTS5 + sqlite-vec setup
+- [x] `src/memstem/core/index.py` — SQLite + FTS5 + sqlite-vec setup
   - Tables: `memories`, `memories_fts` (FTS5 virtual), `memories_vec` (sqlite-vec virtual), `tags`, `links`
-  - `Index` class with `connect`, `insert`, `update`, `delete`, `query_fts`, `query_vec`
+  - `Index` class with `connect`, `upsert`, `upsert_vectors`, `delete`, `query_fts`, `query_vec`
   - Migration system (single `schema_version` row)
   - Indexed columns: id, type, source, created, updated, importance
-- [ ] `src/memstem/core/embeddings.py` — Ollama HTTP client
+- [x] `src/memstem/core/embeddings.py` — Ollama HTTP client
   - `OllamaEmbedder(base_url, model)`
   - `embed(text: str) -> list[float]`
   - `embed_batch(texts: list[str]) -> list[list[float]]`
-  - Chunk strategy for long text (split at paragraphs, max 512 tokens)
-- [ ] `tests/test_index.py` — schema creation + basic CRUD
-- [ ] `tests/test_embeddings.py` — smoke test against running Ollama (mark with `@pytest.mark.requires_ollama`)
+  - Chunk strategy for long text (split at paragraphs, max 2048 chars)
+- [x] `tests/test_index.py` — schema creation + basic CRUD
+- [x] `tests/test_embeddings.py` — smoke test against running Ollama (mark with `@pytest.mark.requires_ollama`)
 
 ### Step 3: Hybrid search
 

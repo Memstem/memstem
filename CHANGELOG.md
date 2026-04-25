@@ -19,3 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `validate` helpers conforming to `docs/frontmatter-spec.md`
 - `memstem.core.storage`: `Vault` class with `read`, `write`, `walk`, `delete`;
   typed `Memory` model wrapping frontmatter + body + vault-relative path
+- `memstem.core.embeddings`: `OllamaEmbedder` HTTP client (uses `/api/embed`)
+  with single + batch methods, paragraph-aware `chunk_text` helper, and a
+  `requires_ollama` pytest marker registered for integration tests
+- `memstem.core.index`: SQLite + FTS5 + sqlite-vec hybrid index with
+  versioned migrations, `upsert` / `upsert_vectors` / `delete`, and
+  `query_fts` / `query_vec` returning typed `FtsHit` / `VecHit` records;
+  cascading deletes for tags/links/vectors and a wikilink extractor
