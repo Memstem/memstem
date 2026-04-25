@@ -36,6 +36,13 @@ from memstem.discovery import (
     discover_openclaw_candidates,
     discover_shared_files,
 )
+from memstem.integration import (
+    Change,
+    apply_directive,
+    claude_md_targets_for_openclaw,
+    register_mcp_server,
+    remove_flipclaw_hook,
+)
 from memstem.servers.mcp_server import build_server
 
 logger = logging.getLogger(__name__)
@@ -47,6 +54,8 @@ DEFAULT_OPENCLAW_PATHS = (
     Path.home() / "ari" / "skills",
 )
 DEFAULT_CLAUDE_CODE_PATHS = (Path.home() / ".claude" / "projects",)
+DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+DEFAULT_CLAUDE_USER_MD = Path.home() / ".claude" / "CLAUDE.md"
 
 
 app = typer.Typer(
@@ -480,6 +489,131 @@ async def _run_daemon(
     finally:
         for task in tasks:
             task.cancel()
+
+
+def _print_change(change: Change, dry_run: bool) -> None:
+    prefix = "would " if dry_run else ""
+    if change.action == "noop":
+        typer.echo(f"  · {change.path}: {change.message}")
+        return
+    verb = {"created": "create", "updated": "update"}.get(change.action, change.action)
+    typer.echo(f"  ✓ {change.path}: {prefix}{verb} ({change.message})")
+    if dry_run and change.diff:
+        for line in change.diff.splitlines():
+            typer.echo(f"    {line}")
+
+
+def _resolve_openclaw_targets(cfg: Config, overrides: list[str] | None) -> list[Path]:
+    """Resolve `--openclaw` overrides (or vault config workspaces) to CLAUDE.md paths."""
+    if overrides:
+        sources = [Path(p).expanduser() for p in overrides]
+    else:
+        sources = [Path(ws.path).expanduser() for ws in cfg.adapters.openclaw.agent_workspaces]
+    targets: list[Path] = []
+    for src in sources:
+        resolved = claude_md_targets_for_openclaw(src)
+        if resolved:
+            targets.extend(resolved)
+        else:
+            typer.echo(f"  · {src}: no CLAUDE.md found, skipping")
+    return targets
+
+
+@app.command("connect-clients")
+def connect_clients(
+    claude_code: Annotated[
+        bool,
+        typer.Option(
+            "--claude-code/--no-claude-code",
+            help="Register Memstem in ~/.claude/settings.json and patch ~/.claude/CLAUDE.md",
+        ),
+    ] = True,
+    openclaw: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--openclaw",
+            help=(
+                "OpenClaw workspace dir or CLAUDE.md path to patch with the "
+                "Memstem directive. Repeatable. Defaults to every workspace "
+                "in the vault config."
+            ),
+        ),
+    ] = None,
+    remove_flipclaw: Annotated[
+        bool,
+        typer.Option(
+            "--remove-flipclaw/--keep-flipclaw",
+            help="Strip the FlipClaw claude-code-bridge.py SessionEnd hook from settings.json",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview changes (unified diff) without writing"),
+    ] = False,
+    settings_path: Annotated[
+        str | None,
+        typer.Option(
+            "--settings",
+            help="Override the Claude Code settings.json path (default: ~/.claude/settings.json)",
+        ),
+    ] = None,
+    claude_md_path: Annotated[
+        str | None,
+        typer.Option(
+            "--claude-md",
+            help="Override the Claude Code user CLAUDE.md path (default: ~/.claude/CLAUDE.md)",
+        ),
+    ] = None,
+    vault: Annotated[
+        str | None,
+        typer.Option(help="Vault path override (used to read OpenClaw workspaces)"),
+    ] = None,
+) -> None:
+    """Wire Memstem into Claude Code and OpenClaw client config files.
+
+    Adds the MCP server registration to settings.json, ensures the
+    Memstem directive block is present in each CLAUDE.md, and (with
+    --remove-flipclaw) disables the legacy FlipClaw bridge hook.
+
+    Each edit writes a `.bak` next to the file before changing it.
+    Re-running is safe: every step is idempotent.
+    """
+    cfg = _load_config(_resolve_vault_path(vault))
+    settings_target = Path(settings_path).expanduser() if settings_path else DEFAULT_CLAUDE_SETTINGS
+    user_md = Path(claude_md_path).expanduser() if claude_md_path else DEFAULT_CLAUDE_USER_MD
+
+    typer.echo(f"connect-clients ({'dry-run' if dry_run else 'apply'}):\n")
+
+    if claude_code:
+        typer.echo(f"Claude Code settings: {settings_target}")
+        change = register_mcp_server(settings_target, dry_run=dry_run)
+        _print_change(change, dry_run)
+
+        typer.echo(f"\nClaude Code instructions: {user_md}")
+        # Create the user CLAUDE.md if it doesn't exist — we want every
+        # session to see the directive, even on a fresh box.
+        change = apply_directive(user_md, dry_run=dry_run, create_if_missing=True)
+        _print_change(change, dry_run)
+    else:
+        typer.echo("Skipping Claude Code (--no-claude-code).")
+
+    targets = _resolve_openclaw_targets(cfg, list(openclaw) if openclaw else None)
+    if targets:
+        typer.echo("\nOpenClaw CLAUDE.md targets:")
+        for target in targets:
+            change = apply_directive(target, dry_run=dry_run)
+            _print_change(change, dry_run)
+    elif openclaw:
+        typer.echo("\nNo OpenClaw CLAUDE.md targets resolved from --openclaw arguments.")
+    elif cfg.adapters.openclaw.agent_workspaces:
+        typer.echo("\nNo CLAUDE.md found in any configured OpenClaw workspace.")
+
+    if remove_flipclaw:
+        typer.echo(f"\nRemoving FlipClaw SessionEnd hook from {settings_target}:")
+        change = remove_flipclaw_hook(settings_target, dry_run=dry_run)
+        _print_change(change, dry_run)
+
+    typer.echo("\nDone." if not dry_run else "\nDry run complete; no files written.")
 
 
 @app.command()

@@ -26,6 +26,8 @@ set -euo pipefail
 YES_FLAG=false
 INSTALL_OLLAMA=true
 PULL_MODEL=true
+CONNECT_CLIENTS=false
+REMOVE_FLIPCLAW=false
 VAULT_PATH="${MEMSTEM_VAULT:-$HOME/memstem-vault}"
 SOURCE="${MEMSTEM_INSTALL_SOURCE:-pypi}"
 
@@ -36,6 +38,8 @@ while [[ $# -gt 0 ]]; do
     --no-model) PULL_MODEL=false; shift ;;
     --vault) VAULT_PATH="$2"; shift 2 ;;
     --from-git) SOURCE=git; shift ;;
+    --connect-clients) CONNECT_CLIENTS=true; shift ;;
+    --remove-flipclaw) REMOVE_FLIPCLAW=true; shift ;;
     -h|--help)
       cat <<'EOF'
 Memstem installer.
@@ -43,12 +47,17 @@ Memstem installer.
 Usage: install.sh [options]
 
 Options:
-  --yes, -y         Run unattended (no prompts; use defaults).
-  --no-ollama       Don't install Ollama.
-  --no-model        Don't pull the embedding model (assume it's already there).
-  --vault PATH      Vault location (default: ~/memstem-vault).
-  --from-git        Install from the GitHub source instead of PyPI.
-  -h, --help        Show this help.
+  --yes, -y           Run unattended (no prompts; use defaults).
+  --no-ollama         Don't install Ollama.
+  --no-model          Don't pull the embedding model (assume it's already there).
+  --vault PATH        Vault location (default: ~/memstem-vault).
+  --from-git          Install from the GitHub source instead of PyPI.
+  --connect-clients   After install, run `memstem connect-clients` to wire
+                      Claude Code (settings.json + CLAUDE.md) and every
+                      OpenClaw workspace's CLAUDE.md.
+  --remove-flipclaw   With --connect-clients, also strip the legacy
+                      claude-code-bridge.py SessionEnd hook.
+  -h, --help          Show this help.
 
 Environment:
   MEMSTEM_INSTALL_SOURCE=git|pypi   Equivalent to --from-git when set to git.
@@ -160,8 +169,35 @@ fi
 say "Running memstem doctor..."
 memstem doctor --vault "$VAULT_PATH" || warn "doctor reported issues — review above"
 
+# --- Connect clients --------------------------------------------------------
+if $CONNECT_CLIENTS; then
+  say "Running memstem connect-clients..."
+  CONNECT_ARGS=(connect-clients --vault "$VAULT_PATH")
+  if $REMOVE_FLIPCLAW; then
+    CONNECT_ARGS+=(--remove-flipclaw)
+  fi
+  memstem "${CONNECT_ARGS[@]}" || warn "connect-clients reported issues — review above"
+fi
+
 # --- Next steps --------------------------------------------------------------
-cat <<EOF
+if $CONNECT_CLIENTS; then
+  cat <<EOF
+
+\033[1mMemstem is installed and wired into Claude Code.\033[0m
+
+Next steps:
+
+  1) Start the daemon to ingest your memory:
+       memstem daemon
+
+  2) Try a one-shot search:
+       memstem search "your query here"
+
+Vault:  $VAULT_PATH
+Config: $VAULT_PATH/_meta/config.yaml
+EOF
+else
+  cat <<EOF
 
 \033[1mMemstem is installed.\033[0m
 
@@ -170,10 +206,9 @@ Next steps:
   1) Start the daemon to ingest your memory:
        memstem daemon
 
-  2) Add to ~/.claude/settings.json so Claude Code can query it:
-       "mcpServers": {
-         "memstem": { "command": "memstem", "args": ["mcp"] }
-       }
+  2) Wire Memstem into Claude Code (and any OpenClaw CLAUDE.md):
+       memstem connect-clients
+     or re-run this installer with --connect-clients to do it automatically.
 
   3) Try a one-shot search:
        memstem search "your query here"
@@ -181,3 +216,4 @@ Next steps:
 Vault:  $VAULT_PATH
 Config: $VAULT_PATH/_meta/config.yaml
 EOF
+fi

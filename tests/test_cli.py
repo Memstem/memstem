@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -273,7 +274,7 @@ class TestCommands:
     def test_help_lists_all_commands(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("init", "search", "reindex", "mcp", "daemon", "doctor"):
+        for cmd in ("init", "search", "reindex", "mcp", "daemon", "doctor", "connect-clients"):
             assert cmd in result.output
 
     def test_mcp_help(self, runner: CliRunner) -> None:
@@ -357,3 +358,233 @@ class TestDoctor:
         result = runner.invoke(app, ["doctor", "--help"])
         assert result.exit_code == 0
         assert "Verify the install" in result.output
+
+
+class TestConnectClients:
+    def _vault_with_workspace(self, tmp_path: Path, runner: CliRunner) -> tuple[Path, Path]:
+        """Initialize a vault whose config points at a single OpenClaw workspace.
+
+        Returns `(vault, workspace)`.
+        """
+        home = tmp_path / "home"
+        ws = home / "ari"
+        ws.mkdir(parents=True)
+        (ws / "openclaw.json").write_text("{}")
+        (ws / "MEMORY.md").write_text("# core\n")
+        (ws / "CLAUDE.md").write_text("# rules\n")
+        (ws / "memory").mkdir()
+        (ws / "memory" / "x.md").write_text("# x\n")
+        (ws / "skills" / "deploy").mkdir(parents=True)
+        (ws / "skills" / "deploy" / "SKILL.md").write_text("# deploy\n")
+        vault = tmp_path / "vault"
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault)])
+        assert result.exit_code == 0, result.output
+        return vault, ws
+
+    def test_writes_settings_and_user_md(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault, _ = self._vault_with_workspace(tmp_path, runner)
+        settings = tmp_path / "settings.json"
+        user_md = tmp_path / "CLAUDE.md"
+        result = runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(settings.read_text())
+        assert data["mcpServers"]["memstem"] == {"command": "memstem", "args": ["mcp"]}
+        text = user_md.read_text()
+        assert "<!-- memstem:directive v1 -->" in text
+        assert "<!-- /memstem:directive -->" in text
+
+    def test_patches_workspace_claude_md_from_config(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        vault, ws = self._vault_with_workspace(tmp_path, runner)
+        settings = tmp_path / "settings.json"
+        user_md = tmp_path / "CLAUDE.md"
+        runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+            ],
+        )
+        ws_md = (ws / "CLAUDE.md").read_text()
+        assert "<!-- memstem:directive v1 -->" in ws_md
+        # Pre-existing content was preserved.
+        assert "# rules" in ws_md
+
+    def test_explicit_openclaw_overrides_config(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault, ws = self._vault_with_workspace(tmp_path, runner)
+        # Provide an explicit `--openclaw` pointing at a different file.
+        other = tmp_path / "OTHER.md"
+        other.write_text("# other\n")
+        settings = tmp_path / "settings.json"
+        user_md = tmp_path / "CLAUDE.md"
+        result = runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+                "--openclaw",
+                str(other),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # The explicit target was patched.
+        assert "<!-- memstem:directive v1 -->" in other.read_text()
+        # The configured workspace was NOT patched (explicit overrides config).
+        assert "<!-- memstem:directive v1 -->" not in (ws / "CLAUDE.md").read_text()
+
+    def test_dry_run_writes_nothing(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault, ws = self._vault_with_workspace(tmp_path, runner)
+        settings = tmp_path / "settings.json"
+        user_md = tmp_path / "CLAUDE.md"
+        ws_md_before = (ws / "CLAUDE.md").read_text()
+        result = runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run complete" in result.output
+        assert not settings.exists()
+        assert not user_md.exists()
+        assert (ws / "CLAUDE.md").read_text() == ws_md_before
+
+    def test_idempotent_second_run_is_noop(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault, ws = self._vault_with_workspace(tmp_path, runner)
+        settings = tmp_path / "settings.json"
+        user_md = tmp_path / "CLAUDE.md"
+        runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+            ],
+        )
+        snapshot_settings = settings.read_text()
+        snapshot_ws = (ws / "CLAUDE.md").read_text()
+        result = runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Output should report "already registered" / "already current".
+        assert "already" in result.output
+        # Files unchanged on the second run.
+        assert settings.read_text() == snapshot_settings
+        assert (ws / "CLAUDE.md").read_text() == snapshot_ws
+
+    def test_no_claude_code_skips_settings(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault, ws = self._vault_with_workspace(tmp_path, runner)
+        settings = tmp_path / "settings.json"
+        user_md = tmp_path / "CLAUDE.md"
+        result = runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+                "--no-claude-code",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert not settings.exists()
+        assert not user_md.exists()
+        # Workspace CLAUDE.md still patched.
+        assert "<!-- memstem:directive v1 -->" in (ws / "CLAUDE.md").read_text()
+
+    def test_remove_flipclaw_strips_session_end_hook(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        vault, _ = self._vault_with_workspace(tmp_path, runner)
+        settings = tmp_path / "settings.json"
+        # Pre-seed settings with a FlipClaw-style hook.
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionEnd": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "python3 /home/x/claude-code-bridge.py",
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+        user_md = tmp_path / "CLAUDE.md"
+        result = runner.invoke(
+            app,
+            [
+                "connect-clients",
+                "--vault",
+                str(vault),
+                "--settings",
+                str(settings),
+                "--claude-md",
+                str(user_md),
+                "--remove-flipclaw",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(settings.read_text())
+        # Memstem registered AND FlipClaw hook removed.
+        assert "memstem" in data["mcpServers"]
+        assert "SessionEnd" not in data.get("hooks", {})
+
+    def test_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["connect-clients", "--help"])
+        assert result.exit_code == 0
+        # Rich may wrap or style flag names depending on terminal width, so we
+        # only assert on the stable docstring text.
+        assert "wire memstem" in result.output.lower()
