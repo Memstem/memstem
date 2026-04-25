@@ -110,12 +110,13 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 6: MCP server
 
-- [ ] `src/memstem/servers/mcp_server.py`
-  - Use `mcp` Python SDK (already in dependencies)
+- [x] `src/memstem/servers/mcp_server.py`
+  - Built on `FastMCP` from the `mcp` Python SDK
+  - `build_server(vault, index, embedder=None, name="memstem")` factory
   - Tools: `memstem_search`, `memstem_get`, `memstem_list_skills`, `memstem_get_skill`, `memstem_upsert`
   - Tool definitions match `docs/mcp-api.md`
-  - stdio loop
-- [ ] `tests/test_mcp_server.py` — in-process MCP client → server → mock vault
+  - stdio loop wired by the CLI's `memstem mcp` command (Step 7)
+- [x] `tests/test_mcp_server.py` — in-process MCP client → server, real Vault + Index
 
 ### Step 7: CLI
 
