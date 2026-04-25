@@ -65,6 +65,14 @@ For Claude Code integration, register Memstem's MCP server in `~/.claude/setting
 }
 ```
 
+## Platform support
+
+| OS | v0.1 support | Notes |
+|---|---|---|
+| Linux | ✅ Tested | Primary development platform. CI runs Python 3.11 + 3.12. |
+| macOS | ✅ Tested | `watchdog` uses FSEvents. CI runs Python 3.11 + 3.12. |
+| Windows | ❌ Use WSL2 | Native Windows runs in CI for visibility (`continue-on-error: true`) but is not supported. Run Memstem inside WSL2 for v0.1; native PowerShell support is on the v0.2+ roadmap. |
+
 ## Documentation
 
 - [Architecture](./ARCHITECTURE.md) — system design and rationale

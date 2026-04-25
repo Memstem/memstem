@@ -25,10 +25,23 @@ jobs:
         run: mypy src/ tests/ scripts/
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12"]
+        experimental: [false]
+        include:
+          # Windows isn't supported in v0.1 (use WSL2). We run it in CI anyway
+          # for visibility, marked experimental so failures don't block merge.
+          - os: windows-latest
+            python-version: "3.11"
+            experimental: true
+          - os: windows-latest
+            python-version: "3.12"
+            experimental: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,6 +54,6 @@ jobs:
         run: pytest --cov-report=xml
       - name: Upload coverage
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.11'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         with:
           fail_ci_if_error: false
