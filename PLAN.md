@@ -171,9 +171,12 @@ and Claude Code instructions) we extended scope before cutover.
   paths. `init` defaults to interactive per-candidate prompts; `-y` /
   `--non-interactive` auto-includes every candidate with content. `--home`
   lets tests and headless runs scope the discovery
-- [ ] **PR #17:** ClaudeCodeAdapter `extra_files` — pull
-  `~/.claude/CLAUDE.md` and any project-level CLAUDE.md files via the
-  same path-watching machinery
+- [x] **PR #17:** ClaudeCodeAdapter `extra_files` — `~/.claude/CLAUDE.md`
+  (and any project-level or otherwise configured CLAUDE.md) ingest as
+  `instructions`-tagged records (type=memory). Watch picks up changes
+  via the parent dir; reconcile yields them alongside session JSONLs.
+  CLI daemon reads `cfg.adapters.claude_code.extra_files` and passes
+  them through
 
 ### Step 9: Integration and cutover
 

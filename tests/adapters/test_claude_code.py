@@ -251,3 +251,72 @@ class TestWatch:
             await watcher.aclose()
         assert record.title == "Watched Session"
         assert record.source == "claude-code"
+
+
+class TestExtraFiles:
+    def _write_md(self, path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    async def test_reconcile_emits_extras_with_instructions_tag(self, tmp_path: Path) -> None:
+        extra = self._write_md(tmp_path / ".claude" / "CLAUDE.md", "# Global Rules\n\nbody text")
+        adapter = ClaudeCodeAdapter(extra_files=[extra])
+        records = await _drain(adapter.reconcile([]))
+        assert len(records) == 1
+        assert "instructions" in records[0].tags
+        assert records[0].title == "Global Rules"
+        assert records[0].body == "# Global Rules\n\nbody text"
+        assert records[0].source == "claude-code"
+        assert records[0].metadata["type"] == "memory"
+
+    async def test_reconcile_emits_sessions_and_extras_together(self, tmp_path: Path) -> None:
+        _write_session(tmp_path / "proj/s.jsonl")
+        extra = self._write_md(tmp_path / ".claude" / "CLAUDE.md", "# Rules\nbody")
+        adapter = ClaudeCodeAdapter(extra_files=[extra])
+        records = await _drain(adapter.reconcile([tmp_path]))
+        # 1 session + 1 instructions
+        assert len(records) == 2
+        types = {r.metadata.get("type") for r in records}
+        assert types == {"session", "memory"}
+
+    async def test_reconcile_skips_missing_extras(self, tmp_path: Path) -> None:
+        adapter = ClaudeCodeAdapter(extra_files=[tmp_path / ".claude" / "missing.md"])
+        records = await _drain(adapter.reconcile([]))
+        assert records == []
+
+    async def test_extras_use_filename_when_no_h1(self, tmp_path: Path) -> None:
+        extra = self._write_md(tmp_path / ".claude" / "CLAUDE.md", "no heading here")
+        adapter = ClaudeCodeAdapter(extra_files=[extra])
+        records = await _drain(adapter.reconcile([]))
+        assert len(records) == 1
+        assert records[0].title == "CLAUDE"
+
+    async def test_watch_picks_up_extra_change(self, tmp_path: Path) -> None:
+        extras_dir = tmp_path / ".claude"
+        extras_dir.mkdir()
+        extra = extras_dir / "CLAUDE.md"
+        # Create the file BEFORE starting watch so the parent dir exists.
+        extra.write_text("# Initial\n", encoding="utf-8")
+        adapter = ClaudeCodeAdapter(extra_files=[extra])
+        watcher = adapter.watch([])
+
+        async def grab_first() -> MemoryRecord:
+            return await watcher.__anext__()
+
+        task = asyncio.create_task(grab_first())
+        await asyncio.sleep(0.1)
+        extra.write_text("# Updated rule\n\nbody", encoding="utf-8")
+        try:
+            record = await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await watcher.aclose()
+        assert "instructions" in record.tags
+        assert record.title == "Updated rule"
+
+    async def test_constructor_resolves_extra_paths(self, tmp_path: Path) -> None:
+        # Pass an unresolved (but valid) Path; the adapter should resolve it.
+        extra = self._write_md(tmp_path / ".claude" / "CLAUDE.md", "# x\n")
+        adapter = ClaudeCodeAdapter(extra_files=[extra])
+        # Constructor stored it as the resolved version.
+        assert all(p.is_absolute() for p in adapter.extra_files)
