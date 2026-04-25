@@ -1,6 +1,6 @@
 [project]
 name = "memstem"
-version = "0.0.1"
+version = "0.1.0"
 description = "Unified memory and skill infrastructure for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -10,7 +10,7 @@ authors = [
 requires-python = ">=3.11"
 keywords = ["mcp", "memory", "ai-agent", "claude", "llm", "second-brain"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",

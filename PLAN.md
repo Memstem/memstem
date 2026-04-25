@@ -48,16 +48,18 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
    - Lay out the v0.2 tiered-memory plan that Brad asked about: importance scoring, distillations ("dreaming"), hygiene worker. See "Phase 2 plan — Tiered memory (v0.2)" section below for the agreed-on shape.
    - Brad will review the ADR before we start coding any of it.
 
-3. [ ] **PR #20 — cross-platform CI** *(small, separate as Brad asked)*
-   - Add `macos-latest` to the `test` matrix in `.github/workflows/ci.yml`.
-   - Also add `windows-latest` with `continue-on-error: true` for visibility without blocking.
-   - Update README to document Windows = WSL2 for v0.1.
-   - No code changes; just CI config + docs.
+3. [ ] **PR #21 — cross-platform CI** *(originally #20 in this list; ADR 0008 ate #20 because PR-before-merge applied to it too)*
+   - Adds `macos-latest` and `windows-latest` to the test matrix.
+   - Both are `continue-on-error: true`. macOS hits a known
+     `actions/setup-python` issue (Python build without
+     `enable_load_extension`); user-installed Python (Homebrew, python.org)
+     works fine. Windows is WSL2-only for v0.1 by design.
+   - README documents the support story.
 
-4. [ ] **PR #21 — README + v0.1 release prep** *(no actual release)*
-   - Write an honest "Install in one line, run the daemon, here's how to query" section in `README.md`.
-   - Bump version to `0.1.0` in `pyproject.toml` and `src/memstem/__init__.py`.
-   - Move CHANGELOG entries from `[Unreleased]` to `[0.1.0] - 2026-04-XX` (placeholder date — Brad fills in at tag time).
+4. [x] **PR #22 — README + v0.1 release prep** *(originally #21; renumbered)*
+   - Honest "Install in one line, run the daemon, here's how to query" section in `README.md`.
+   - Version bumped to `0.1.0` in `pyproject.toml` and `src/memstem/__init__.py`.
+   - CHANGELOG entries rolled from `[Unreleased]` to `[0.1.0] - 2026-04-XX` (placeholder date — Brad fills in at tag time).
    - **Do NOT tag, do NOT push tags, do NOT publish to PyPI.** Those are Brad's calls after he validates cutover.
 
 ### Brad-required (do NOT start)
@@ -280,8 +282,8 @@ These came out of the discussion about "agents installing this for the user" and
 
 - [x] **PR #19 — `memstem connect-clients`** (the headline; details under "Resume here" above)
 - [x] **ADR 0008 — tiered memory design** (no code; sets the v0.2 direction)
-- [ ] **PR #20 — cross-platform CI** (macOS + Windows job, `continue-on-error: true` for Windows)
-- [ ] **PR #21 — README + version bump to `0.1.0`** (no tag, no PyPI publish)
+- [ ] **PR #21 — cross-platform CI** (macOS + Windows jobs, both `continue-on-error: true`)
+- [x] **PR #22 — README + version bump to `0.1.0`** (no tag, no PyPI publish)
 
 ### Step 9: Integration and cutover (live box, requires Brad)
 
