@@ -16,7 +16,7 @@ Existing AI memory systems break when their host upgrades. Push-based hooks fail
 
 Memstem solves this by:
 
-- **Pull-based ingestion** via `inotify` filesystem watchers — no hooks, no push APIs to break
+- **Pull-based ingestion** via `inotify` / FSEvents filesystem watchers — no hooks, no push APIs to break
 - **Markdown-canonical storage** — files are the truth, the index is rebuildable
 - **Hybrid search** — BM25 (FTS5) + cosine similarity (sqlite-vec) + reciprocal rank fusion
 - **Multi-AI adapters** — pluggable per-system ingestion (Claude Code, OpenClaw, Codex, etc.)
@@ -24,45 +24,104 @@ Memstem solves this by:
 
 ## Architecture (one paragraph)
 
-Markdown files in a structured tree are the canonical store. A SQLite database with FTS5 and sqlite-vec is the rebuildable index. A daemon watches each connected AI's filesystem with `inotify` plus a 5-minute reconciliation pass, ingests deltas, and updates the index. An MCP server exposes search, get, and skill retrieval to clients. A hygiene worker dedupes, decays, and auto-extracts skills from session transcripts.
+Markdown files in a structured tree are the canonical store. A SQLite database with FTS5 and sqlite-vec is the rebuildable index. A daemon watches each connected AI's filesystem and ingests deltas. An MCP server exposes search, get, and skill retrieval to clients. A hygiene worker (Phase 2) dedupes, decays, and writes distillations from session transcripts.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./ROADMAP.md) for the phase plan.
 
 ## Status
 
-🚧 **Pre-alpha.** Public API and storage layout are not yet stable. Repo is private until v0.1 ships.
+**v0.1 — feature-complete, soaking before tag.** The codebase ships with multi-agent OpenClaw + Claude Code adapters, hybrid search, an MCP server with five tools, a one-line installer, and an idempotent client-wiring command (`memstem connect-clients`). The repo is private until v0.1 is tagged and the soak window passes.
 
-## Quickstart (planned)
+## Quickstart
 
 ```bash
-# Install
-pip install memstem
+# 1. One-line install (Linux or macOS). Adds memstem via pipx, installs
+#    Ollama if missing, pulls the embedding model, scaffolds a vault,
+#    runs `memstem doctor`, and (with --connect-clients) wires up
+#    Claude Code's settings.json + CLAUDE.md.
+curl -fsSL https://memstem.com/install.sh | bash -s -- --yes --connect-clients
 
-# Initialize a vault
-memstem init ~/memstem-vault
-
-# Connect adapters
-memstem adapter add claude-code --watch ~/.claude/projects
-memstem adapter add openclaw --watch ~/ari/memory
-
-# Start the daemon
+# 2. Start the daemon (runs adapter reconcile + watch loop).
 memstem daemon
 
-# Search
-memstem search "what did I decide about pricing"
+# 3. Search.
+memstem search "what did we decide about pricing"
 ```
 
-For Claude Code integration, register Memstem's MCP server in `~/.claude/settings.json`:
+Manual install if you'd rather not pipe a script:
 
-```json
-{
-  "mcpServers": {
-    "memstem": {
-      "command": "memstem",
-      "args": ["mcp"]
-    }
-  }
-}
+```bash
+pipx install memstem                         # or: pip install memstem
+ollama pull nomic-embed-text                 # 768-dim local embedder
+memstem init ~/memstem-vault                 # interactive wizard
+memstem connect-clients                      # patch settings + CLAUDE.md
+memstem doctor                               # verify
+memstem daemon                               # ingest + watch
+```
+
+`memstem init` runs an interactive setup wizard that finds OpenClaw agent workspaces (any directory under `$HOME` with an `openclaw.json`), shared rules files (`HARD-RULES.md`), and Claude Code's session root, then writes `~/memstem-vault/_meta/config.yaml`. Pass `-y` to auto-include every candidate with content.
+
+`memstem connect-clients` is the cutover wiring step — it adds an `mcpServers.memstem` entry to `~/.claude/settings.json` and inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
+
+## Querying from an agent
+
+Once `memstem connect-clients` has run, an MCP-aware client (Claude Code, etc.) sees five tools:
+
+| Tool | Purpose |
+|---|---|
+| `memstem_search` | Hybrid (FTS5 + vector) search across the vault |
+| `memstem_get` | Fetch a memory by id or vault path |
+| `memstem_list_skills` | List skills, optionally filtered by scope |
+| `memstem_get_skill` | Fetch a skill by title |
+| `memstem_upsert` | Create or update a memory record |
+
+See [docs/mcp-api.md](./docs/mcp-api.md) for the full schema.
+
+## Configuration
+
+`~/memstem-vault/_meta/config.yaml` controls embedding, search, and adapters. The wizard writes a sensible default; common edits:
+
+```yaml
+embedding:
+  provider: ollama
+  model: nomic-embed-text
+  base_url: http://localhost:11434
+  dimensions: 768
+
+adapters:
+  openclaw:
+    agent_workspaces:
+      - { path: ~/ari, tag: ari }
+      - { path: ~/blake, tag: blake }
+    shared_files:
+      - ~/ari/HARD-RULES.md
+  claude_code:
+    project_roots:
+      - ~/.claude/projects
+    extra_files:
+      - ~/.claude/CLAUDE.md
+```
+
+Run `memstem doctor` after edits to verify every configured target exists and the embedder is reachable.
+
+## Verifying it works
+
+`memstem doctor` is the single source of truth for "is the install healthy?":
+
+```text
+$ memstem doctor
+Memstem doctor (vault=/home/ubuntu/memstem-vault):
+
+  ✓ Python 3.11
+  ✓ memstem 0.1.0
+  ✓ Vault: /home/ubuntu/memstem-vault
+  ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
+  ✓ Index opens cleanly
+  ✓ Ollama at http://localhost:11434 (nomic-embed-text)  (768 dims)
+  ✓ OpenClaw workspace: /home/ubuntu/ari (tag=ari)
+  ✓ Claude Code root: /home/ubuntu/.claude/projects
+
+All checks passed.
 ```
 
 ## Platform support
@@ -76,11 +135,11 @@ For Claude Code integration, register Memstem's MCP server in `~/.claude/setting
 ## Documentation
 
 - [Architecture](./ARCHITECTURE.md) — system design and rationale
-- [Roadmap](./ROADMAP.md) — release plan
+- [Roadmap](./ROADMAP.md) — release plan (Phases 1–5)
 - [Frontmatter spec](./docs/frontmatter-spec.md) — the markdown schema
 - [MCP API](./docs/mcp-api.md) — tool definitions
-- [Adapters](./docs/adapters/) — per-system ingestion
 - [Decisions](./docs/decisions/) — Architecture Decision Records
+- [Plan](./PLAN.md) — current work breakdown
 
 ## License
 

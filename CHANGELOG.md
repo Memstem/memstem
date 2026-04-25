@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet — Phase 2 work begins after the v0.1 soak window._
+
+## [0.1.0] - 2026-04-XX
+
+First tagged release. Phase 1 v0.1 — running on the live EC2 box,
+ingesting from Claude Code + multi-agent OpenClaw, exposing MCP
+search, with FlipClaw retired. Tag date is filled in at release
+time after Brad validates the cutover.
+
 ### Added
 
 - Initial repo scaffold (README, ARCHITECTURE, ROADMAP)
-- Architecture Decision Records (ADRs 0001-0006)
+- Architecture Decision Records (ADRs 0001-0008)
 - Source skeleton for `memstem` package (core, adapters, hygiene, servers)
 - Frontmatter specification and MCP API specification
 - CI workflow, issue/PR templates, contributing guide
@@ -75,59 +84,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`curl ... | bash -s -- --yes`). Verifies Python 3.11+, installs
   pipx and memstem, optionally installs Ollama and pulls
   `nomic-embed-text`, scaffolds the vault, runs `memstem doctor` to
-  confirm. `--no-ollama`, `--no-model`, `--vault`, `--from-git` knobs
+  confirm. `--no-ollama`, `--no-model`, `--vault`, `--from-git`,
+  `--connect-clients`, `--remove-flipclaw` knobs
 - `memstem doctor`: CLI command that verifies Python version, vault +
   config existence, index health, embedder reachability, and every
   configured adapter target (OpenClaw workspaces / shared files,
   Claude Code roots / extras). Exits non-zero if any check fails
-- ADR 0007: remote-machine ingestion is out of scope until Phase 3+;
-  documented sync-and-watch as the recommended workaround
-
-### Changed
-
-- `Adapter.watch` and `Adapter.reconcile` are declared without `async`
-  in the ABC so subclass async generators type-check cleanly
-
-### PR #16 additions (setup wizard)
-
 - `memstem.discovery`: auto-discovery helpers for OpenClaw agent
   workspaces (`~/*/openclaw.json`), shared rules files (`HARD-RULES.md`),
   Claude Code session roots (`~/.claude/projects`), and per-user
   Claude Code instructions (`~/.claude/CLAUDE.md`). Each candidate
   carries a content count so the installer can highlight non-empty
-  agents.
+  agents
 - `memstem init` setup wizard: defaults to interactive per-candidate
   prompts; `-y` / `--non-interactive` auto-includes every candidate
   with content. `--home <path>` lets tests and headless installs scope
-  the discovery to a sandbox.
-
-### PR #17 additions (Claude Code extras)
-
-- `ClaudeCodeAdapter` now accepts `extra_files`. Each is read as a
+  the discovery to a sandbox
+- `ClaudeCodeAdapter` accepts `extra_files`. Each is read as a
   markdown instructions file and emitted as a record with the
   `instructions` tag (type=memory). Reconcile yields them alongside
-  session JSONLs; watch picks up changes via the parent dir.
-- CLI daemon constructs the Claude Code adapter from
-  `cfg.adapters.claude_code.extra_files` and lists the watched extras
-  in its startup banner.
-
-### PR #19 additions (connect-clients)
-
-- `memstem.integration`: idempotent wiring of Memstem into client config.
-  `register_mcp_server` adds a `mcpServers.memstem` block to a Claude
-  Code `settings.json` (preserving other servers). `apply_directive`
-  inserts or updates a versioned `<!-- memstem:directive v1 -->` block
-  in a CLAUDE.md, leaving surrounding content untouched.
-  `remove_flipclaw_hook` strips the legacy `claude-code-bridge.py`
-  SessionEnd hook. Each edit writes a `.bak` and supports `dry_run` to
-  preview a unified diff.
+  session JSONLs; watch picks up changes via the parent dir
+- `memstem.integration`: idempotent wiring of Memstem into client
+  config. `register_mcp_server` adds a `mcpServers.memstem` block to a
+  Claude Code `settings.json` (preserving other servers).
+  `apply_directive` inserts or updates a versioned
+  `<!-- memstem:directive v1 -->` block in a CLAUDE.md, leaving
+  surrounding content untouched. `remove_flipclaw_hook` strips the
+  legacy `claude-code-bridge.py` SessionEnd hook. Each edit writes a
+  `.bak` and supports `dry_run` to preview a unified diff
 - `memstem connect-clients` CLI command wraps the above. Defaults patch
   `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, and the CLAUDE.md
   in every workspace from the vault config. `--openclaw <path>` is
   repeatable; `--remove-flipclaw` disables the legacy bridge;
   `--dry-run` previews; `--settings` and `--claude-md` override paths
-  for tests and non-default installs.
-- `install.sh --connect-clients` runs the new command at the end of
-  the installer so a single `curl ... | bash -s -- --yes
-  --connect-clients` leaves Claude Code wired up. `--remove-flipclaw`
-  passes through.
+  for tests and non-default installs
+- ADR 0007: remote-machine ingestion is out of scope until Phase 3+;
+  documented sync-and-watch as the recommended workaround
+- ADR 0008: tiered-memory design (importance scoring, distillations,
+  hygiene worker) for v0.2. Status proposed; no code lands until Brad
+  reviews
+
+### Changed
+
+- `Adapter.watch` and `Adapter.reconcile` are declared without `async`
+  in the ABC so subclass async generators type-check cleanly
+- CI test matrix runs Linux at full strictness; macOS and Windows are
+  marked experimental for visibility-only
