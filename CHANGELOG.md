@@ -62,6 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Claude Code sessions, tags every record with `flipclaw-migration`,
   and runs them through the standard pipeline. Default is dry-run
   (counts + sample preview); `--apply` writes
+- Multi-agent OpenClaw support: `OpenClawWorkspace(path, tag)`,
+  `OpenClawAdapterConfig(agent_workspaces, shared_files)`,
+  `ClaudeCodeAdapterConfig(project_roots, extra_files)`, all wired
+  through `Config.adapters`. The adapter walks per-agent
+  `MEMORY.md` / `CLAUDE.md` / `memory/*.md` / `skills/*/SKILL.md`,
+  tagging records with `agent:<tag>` (plus `core` for MEMORY.md and
+  `instructions` for CLAUDE.md). Shared files (e.g. HARD-RULES.md)
+  emit with a `shared` tag instead. Legacy paths-only mode preserved
+  for back-compat
 
 ### Changed
 

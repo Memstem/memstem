@@ -209,10 +209,37 @@ async def _reconcile_into_pipeline(
     return count
 
 
+def _build_openclaw_adapter(cfg: Config) -> tuple[OpenClawAdapter, list[Path]]:
+    """Build the OpenClaw adapter from config; fall back to legacy paths.
+
+    Returns `(adapter, fallback_paths)`. `fallback_paths` is empty when
+    workspaces are configured (the adapter walks them via its constructor)
+    and only used in legacy mode.
+    """
+    oc = cfg.adapters.openclaw
+    if oc.agent_workspaces or oc.shared_files:
+        return (
+            OpenClawAdapter(
+                workspaces=list(oc.agent_workspaces),
+                shared_files=[Path(p).expanduser() for p in oc.shared_files],
+            ),
+            [],
+        )
+    return OpenClawAdapter(), list(DEFAULT_OPENCLAW_PATHS)
+
+
+def _build_claude_paths(cfg: Config) -> list[Path]:
+    cc = cfg.adapters.claude_code
+    if cc.project_roots:
+        return [Path(p).expanduser() for p in cc.project_roots]
+    return list(DEFAULT_CLAUDE_CODE_PATHS)
+
+
 async def _run_daemon(
     vault_obj: Vault,
     index: Index,
     embedder: OllamaEmbedder | None,
+    openclaw_adapter: OpenClawAdapter,
     openclaw_paths: list[Path],
     claude_paths: list[Path],
 ) -> None:
@@ -220,7 +247,7 @@ async def _run_daemon(
 
     await _reconcile_into_pipeline(
         pipeline,
-        OpenClawAdapter().reconcile(openclaw_paths),
+        openclaw_adapter.reconcile(openclaw_paths),
         label="openclaw",
     )
     await _reconcile_into_pipeline(
@@ -230,9 +257,7 @@ async def _run_daemon(
     )
 
     tasks = [
-        asyncio.create_task(
-            _drain_into_pipeline(pipeline, OpenClawAdapter().watch(openclaw_paths))
-        ),
+        asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
         asyncio.create_task(
             _drain_into_pipeline(pipeline, ClaudeCodeAdapter().watch(claude_paths))
         ),
@@ -254,15 +279,30 @@ def daemon(
     index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)
 
+    openclaw_adapter, openclaw_paths = _build_openclaw_adapter(cfg)
+    claude_paths = _build_claude_paths(cfg)
+
     typer.echo(f"daemon: vault={cfg.vault_path}")
+    if openclaw_adapter.workspaces:
+        for ws in openclaw_adapter.workspaces:
+            typer.echo(f"  openclaw workspace: {ws.path}  (tag={ws.tag})")
+    elif openclaw_paths:
+        typer.echo(f"  openclaw legacy paths: {', '.join(str(p) for p in openclaw_paths)}")
+    if openclaw_adapter.shared_files:
+        typer.echo(
+            f"  openclaw shared files: {', '.join(str(p) for p in openclaw_adapter.shared_files)}"
+        )
+    typer.echo(f"  claude-code roots: {', '.join(str(p) for p in claude_paths)}")
+
     try:
         asyncio.run(
             _run_daemon(
                 vault_obj=vault_obj,
                 index=index,
                 embedder=embedder,
-                openclaw_paths=list(DEFAULT_OPENCLAW_PATHS),
-                claude_paths=list(DEFAULT_CLAUDE_CODE_PATHS),
+                openclaw_adapter=openclaw_adapter,
+                openclaw_paths=openclaw_paths,
+                claude_paths=claude_paths,
             )
         )
     except KeyboardInterrupt:
