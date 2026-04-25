@@ -78,13 +78,13 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 3: Hybrid search
 
-- [ ] `src/memstem/core/search.py`
+- [x] `src/memstem/core/search.py`
   - `Search(vault, index, embedder)`
   - `query_bm25(query: str, limit: int) -> list[Hit]`
   - `query_vec(query_embedding: list[float], limit: int) -> list[Hit]`
   - `rrf_combine(bm25_hits, vec_hits, k=60) -> list[Hit]`
   - `search(query: str, limit: int = 10, types: list | None = None) -> list[Result]`
-- [ ] `tests/test_search.py` — fixture corpus of 20 sample memories, verify hybrid recall
+- [x] `tests/test_search.py` — fixture corpus of 20 sample memories, verify hybrid recall
 
 ### Step 4: OpenClaw adapter (do this first — easier)
 
