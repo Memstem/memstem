@@ -110,3 +110,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI daemon constructs the Claude Code adapter from
   `cfg.adapters.claude_code.extra_files` and lists the watched extras
   in its startup banner.
+
+### PR #19 additions (connect-clients)
+
+- `memstem.integration`: idempotent wiring of Memstem into client config.
+  `register_mcp_server` adds a `mcpServers.memstem` block to a Claude
+  Code `settings.json` (preserving other servers). `apply_directive`
+  inserts or updates a versioned `<!-- memstem:directive v1 -->` block
+  in a CLAUDE.md, leaving surrounding content untouched.
+  `remove_flipclaw_hook` strips the legacy `claude-code-bridge.py`
+  SessionEnd hook. Each edit writes a `.bak` and supports `dry_run` to
+  preview a unified diff.
+- `memstem connect-clients` CLI command wraps the above. Defaults patch
+  `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, and the CLAUDE.md
+  in every workspace from the vault config. `--openclaw <path>` is
+  repeatable; `--remove-flipclaw` disables the legacy bridge;
+  `--dry-run` previews; `--settings` and `--claude-md` override paths
+  for tests and non-default installs.
+- `install.sh --connect-clients` runs the new command at the end of
+  the installer so a single `curl ... | bash -s -- --yes
+  --connect-clients` leaves Claude Code wired up. `--remove-flipclaw`
+  passes through.

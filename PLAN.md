@@ -13,7 +13,7 @@
 
 Pick them up in this order. They're all branch-from-main + PR + self-merge on green CI, the same pattern as PRs #4–#17.
 
-1. [ ] **PR #19 — `memstem connect-clients`** *(highest priority)*
+1. [x] **PR #19 — `memstem connect-clients`** *(highest priority)*
    - New CLI command in `src/memstem/cli.py` that automates cutover wiring.
    - Edits `~/.claude/settings.json` to add `mcpServers.memstem` (merge, don't overwrite other servers).
    - Adds/updates `<!-- memstem:directive v1 -->` blocks in `~/.claude/CLAUDE.md` and per-agent CLAUDE.md files.
@@ -278,7 +278,7 @@ and Claude Code instructions) we extended scope before cutover.
 
 These came out of the discussion about "agents installing this for the user" and the multi-config question. Strictly nice-to-have for v0.1, but each of them removes manual labor from Step 9 cutover so they're worth landing first.
 
-- [ ] **PR #19 — `memstem connect-clients`** (the headline; details under "Resume here" above)
+- [x] **PR #19 — `memstem connect-clients`** (the headline; details under "Resume here" above)
 - [ ] **ADR 0008 — tiered memory design** (no code; sets the v0.2 direction)
 - [ ] **PR #20 — cross-platform CI** (macOS + Windows job, `continue-on-error: true` for Windows)
 - [ ] **PR #21 — README + version bump to `0.1.0`** (no tag, no PyPI publish)
