@@ -98,13 +98,15 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 5: Claude Code adapter
 
-- [ ] `src/memstem/adapters/claude_code.py`
-  - Watch paths: `~/.claude/projects/*/sessions/*.jsonl`
+- [x] `src/memstem/adapters/claude_code.py`
+  - Watch paths: `~/.claude/projects/*/<session-uuid>.jsonl`
   - `reconcile()`: parse complete JSONL files, extract `(role, content)` turns
-  - `watch()`: tail JSONL files as they grow (line-buffered)
-  - Per-session deduplication: track last-seen line offset per file
-  - Convert turns → MemoryRecord (one record per turn or per session — TBD; default one per session, summarized)
-- [ ] `tests/adapters/test_claude_code.py` — fixture JSONL, verify ingestion
+  - `watch()`: re-emit on file change (idempotent — pipeline upserts by `ref`)
+  - One `MemoryRecord` per session with type=`session`, body=concatenated turns
+  - Tool blocks summarized (`[tool_use: Bash]`, `[tool_result]`) so the body stays readable
+  - Title: `ai-title` if present, else first user prompt truncated, else `session <uuid8>`
+  - Future: per-line offset tracking for incremental ingestion (v0.2)
+- [x] `tests/adapters/test_claude_code.py` — fixture JSONL, verify ingestion
 
 ### Step 6: MCP server
 
