@@ -88,13 +88,13 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 4: OpenClaw adapter (do this first — easier)
 
-- [ ] `src/memstem/adapters/openclaw.py`
+- [x] `src/memstem/adapters/openclaw.py`
   - Subclass `Adapter`
   - Watch paths: `~/ari/memory/*.md`, `~/ari/skills/*/SKILL.md`, daily logs
   - `reconcile()`: walk paths, yield `MemoryRecord` for each file
   - `watch()`: use `watchdog.observers.Observer` for inotify, yield records on file events
   - File-to-record conversion: existing files are already markdown; just normalize frontmatter
-- [ ] `tests/adapters/test_openclaw.py` — fixture vault, verify reconcile picks up files
+- [x] `tests/adapters/test_openclaw.py` — fixture vault, verify reconcile picks up files
 
 ### Step 5: Claude Code adapter
 
