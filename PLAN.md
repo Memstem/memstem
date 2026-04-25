@@ -43,7 +43,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 
    - Implementation suggestion: new `src/memstem/integration.py` module with `register_mcp_server(settings_path)`, `apply_directive(claude_md_path, directive_block)`, `remove_flipclaw_hook(settings_path)`. Tests in `tests/test_integration.py` using `tmp_path` (don't touch real `~/`).
 
-2. [ ] **ADR 0008 — Summarization & importance ranking design**
+2. [x] **ADR 0008 — Summarization & importance ranking design**
    - Pure design doc at `docs/decisions/0008-tiered-memory.md`. NO CODE.
    - Lay out the v0.2 tiered-memory plan that Brad asked about: importance scoring, distillations ("dreaming"), hygiene worker. See "Phase 2 plan — Tiered memory (v0.2)" section below for the agreed-on shape.
    - Brad will review the ADR before we start coding any of it.
@@ -84,7 +84,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 - **Tests passing:** 220 (5 deselected — Ollama integration tests, all pass when run with `-m requires_ollama`)
 - **Coverage:** 88% overall; new modules typically 90%+
 - **CI:** green on every merged PR
-- **Decisions locked:** ADRs 0001–0007 in [`docs/decisions/`](./docs/decisions/). ADR 0008 (tiered memory) is the next one to write.
+- **Decisions locked:** ADRs 0001–0007 in [`docs/decisions/`](./docs/decisions/). ADR 0008 (tiered memory) is proposed and awaiting Brad's review.
 - **Live infra status:** Ollama 0.21.2 installed and running on `127.0.0.1:11434`, `nomic-embed-text` (768 dims) loaded.
 
 ### Merged PRs (full Phase 1 + extensions)
@@ -279,7 +279,7 @@ and Claude Code instructions) we extended scope before cutover.
 These came out of the discussion about "agents installing this for the user" and the multi-config question. Strictly nice-to-have for v0.1, but each of them removes manual labor from Step 9 cutover so they're worth landing first.
 
 - [x] **PR #19 — `memstem connect-clients`** (the headline; details under "Resume here" above)
-- [ ] **ADR 0008 — tiered memory design** (no code; sets the v0.2 direction)
+- [x] **ADR 0008 — tiered memory design** (no code; sets the v0.2 direction)
 - [ ] **PR #20 — cross-platform CI** (macOS + Windows job, `continue-on-error: true` for Windows)
 - [ ] **PR #21 — README + version bump to `0.1.0`** (no tag, no PyPI publish)
 
