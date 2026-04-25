@@ -13,7 +13,7 @@
 
 Pick them up in this order. They're all branch-from-main + PR + self-merge on green CI, the same pattern as PRs #4–#17.
 
-1. [ ] **PR #18 — `memstem connect-clients`** *(highest priority)*
+1. [ ] **PR #19 — `memstem connect-clients`** *(highest priority)*
    - New CLI command in `src/memstem/cli.py` that automates cutover wiring.
    - Edits `~/.claude/settings.json` to add `mcpServers.memstem` (merge, don't overwrite other servers).
    - Adds/updates `<!-- memstem:directive v1 -->` blocks in `~/.claude/CLAUDE.md` and per-agent CLAUDE.md files.
@@ -48,13 +48,13 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
    - Lay out the v0.2 tiered-memory plan that Brad asked about: importance scoring, distillations ("dreaming"), hygiene worker. See "Phase 2 plan — Tiered memory (v0.2)" section below for the agreed-on shape.
    - Brad will review the ADR before we start coding any of it.
 
-3. [ ] **PR #19 — cross-platform CI** *(small, separate as Brad asked)*
+3. [ ] **PR #20 — cross-platform CI** *(small, separate as Brad asked)*
    - Add `macos-latest` to the `test` matrix in `.github/workflows/ci.yml`.
    - Also add `windows-latest` with `continue-on-error: true` for visibility without blocking.
    - Update README to document Windows = WSL2 for v0.1.
    - No code changes; just CI config + docs.
 
-4. [ ] **PR #20 — README + v0.1 release prep** *(no actual release)*
+4. [ ] **PR #21 — README + v0.1 release prep** *(no actual release)*
    - Write an honest "Install in one line, run the daemon, here's how to query" section in `README.md`.
    - Bump version to `0.1.0` in `pyproject.toml` and `src/memstem/__init__.py`.
    - Move CHANGELOG entries from `[Unreleased]` to `[0.1.0] - 2026-04-XX` (placeholder date — Brad fills in at tag time).
@@ -62,7 +62,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 
 ### Brad-required (do NOT start)
 
-5. [ ] **Step 9 — cutover on the live box**: dry-run, audit a sample, `memstem migrate --apply`, `memstem connect-clients` (when PR #18 lands), `pm2 start memstem daemon`, soak. He explicitly gated this.
+5. [ ] **Step 9 — cutover on the live box**: dry-run, audit a sample, `memstem migrate --apply`, `memstem connect-clients` (when PR #19 lands), `pm2 start memstem daemon`, soak. He explicitly gated this.
 6. [ ] **Step 10 — actual `v0.1.0` tag + PyPI publish**. His call after the soak window.
 
 ### Working pattern reminder
@@ -123,7 +123,7 @@ End state checklist:
 - [ ] MCP `memstem_search` returns relevant hybrid-ranked results within 250ms p95 (haven't measured yet)
 - [x] Multi-agent OpenClaw ingestion (7 agents on Brad's box) and Claude Code session + extras adapter
 - [ ] One-shot migration `--apply` actually run on the live box
-- [ ] Both Claude Code and OpenClaw configs point at Memstem first (PR #18 automates this; not yet built)
+- [ ] Both Claude Code and OpenClaw configs point at Memstem first (PR #19 automates this; not yet built)
 - [ ] FlipClaw bridge + Ari capture sweep are disabled and unused for 7 days
 
 ## Phase 1 detailed to-do list
@@ -278,10 +278,10 @@ and Claude Code instructions) we extended scope before cutover.
 
 These came out of the discussion about "agents installing this for the user" and the multi-config question. Strictly nice-to-have for v0.1, but each of them removes manual labor from Step 9 cutover so they're worth landing first.
 
-- [ ] **PR #18 — `memstem connect-clients`** (the headline; details under "Resume here" above)
+- [ ] **PR #19 — `memstem connect-clients`** (the headline; details under "Resume here" above)
 - [ ] **ADR 0008 — tiered memory design** (no code; sets the v0.2 direction)
-- [ ] **PR #19 — cross-platform CI** (macOS + Windows job, `continue-on-error: true` for Windows)
-- [ ] **PR #20 — README + version bump to `0.1.0`** (no tag, no PyPI publish)
+- [ ] **PR #20 — cross-platform CI** (macOS + Windows job, `continue-on-error: true` for Windows)
+- [ ] **PR #21 — README + version bump to `0.1.0`** (no tag, no PyPI publish)
 
 ### Step 9: Integration and cutover (live box, requires Brad)
 
@@ -289,7 +289,7 @@ The nuanced directive (rather than the original "always search Memstem first") w
 
 - [ ] **`memstem migrate --apply`** — runs through ~940 records, populates `~/memstem-vault/` and the index. Pre-flight: re-run dry-run first, audit ~20 sample records by hand. Time estimate: 2–5 minutes (mostly embedding).
 - [ ] **`pm2 start memstem daemon --name memstem`** then `pm2 save`. Verify with `pm2 logs memstem` that reconcile completed and the watch loop is running.
-- [ ] **`memstem connect-clients`** (when PR #18 lands) — adds the MCP server registration to `~/.claude/settings.json` and the directive blocks to every CLAUDE.md. Backups everywhere; `--dry-run` first.
+- [ ] **`memstem connect-clients`** (when PR #19 lands) — adds the MCP server registration to `~/.claude/settings.json` and the directive blocks to every CLAUDE.md. Backups everywhere; `--dry-run` first.
 - [ ] **Soak for 24h** — query via `memstem search` periodically; verify retrieval quality. Fix any issues that surface.
 - [ ] **Disable FlipClaw bridge** — comment out the `SessionEnd` hook in `~/.claude/settings.json`. (Or `memstem connect-clients --remove-flipclaw` does it.)
 - [ ] **Disable Ari's `incremental-memory-capture.py` cron entry**.
@@ -297,7 +297,7 @@ The nuanced directive (rather than the original "always search Memstem first") w
 
 ### Step 10: v0.1 release (after soak, requires Brad)
 
-- [ ] Confirm CHANGELOG entries are correct and complete (PR #20 stages them)
+- [ ] Confirm CHANGELOG entries are correct and complete (PR #21 stages them)
 - [ ] `git tag v0.1.0 && git push --tags`
 - [ ] Reserve `memstem` on PyPI; publish with `pipx run hatch publish` (or equivalent)
 - [ ] Update `install.sh` to default to PyPI source (currently falls back to git)
@@ -395,8 +395,8 @@ Already on ROADMAP as Phase 2 work. Specifically:
 
 Current state:
 - **Linux**: fully tested and shipped. CI runs Python 3.11 + 3.12.
-- **macOS**: should work — `watchdog` uses FSEvents on Darwin, `install.sh` already accepts `Darwin*` in its uname check. Untested. PR #19 adds CI to confirm.
-- **Windows**: not supported in v0.1. WSL2 is the documented workaround. v0.2+ would need a parallel `install.ps1` PowerShell installer plus path-handling audit. PR #19 adds Windows to CI as `continue-on-error: true` so we get visibility on what breaks.
+- **macOS**: should work — `watchdog` uses FSEvents on Darwin, `install.sh` already accepts `Darwin*` in its uname check. Untested. PR #20 adds CI to confirm.
+- **Windows**: not supported in v0.1. WSL2 is the documented workaround. v0.2+ would need a parallel `install.ps1` PowerShell installer plus path-handling audit. PR #20 adds Windows to CI as `continue-on-error: true` so we get visibility on what breaks.
 
 ## Architectural decisions made in this session (2026-04-25)
 
@@ -407,8 +407,8 @@ For continuity. Most are already locked into ADRs or PRs; this is the consolidat
 - **Multi-agent OpenClaw via `OpenClawWorkspace(path, tag)` config.** Per-agent records carry `agent:<tag>` plus role tags (`core` for MEMORY.md, `instructions` for CLAUDE.md). Shared files use `shared` tag. Setup wizard auto-discovers candidates. (PRs #13, #16.)
 - **Claude Code extras**: `~/.claude/CLAUDE.md` and per-project CLAUDE.md ingest as `instructions`-tagged memory records. (PR #17.)
 - **Remote ingestion deferred to Phase 3+**. ADR 0007: sync-and-watch (rsync, syncthing, iCloud) is the recommended workaround for v0.1. HTTP push is Phase 3 (v0.3); full multi-device sync stays Phase 4 (v0.4).
-- **MCP vs. direct file access**: not redundant. MCP (and the `memstem search` CLI) is for ranked semantic search across the index; direct file reads stay valid for known files. The CLAUDE.md directive (PR #18) reflects this nuance — "Memstem for retrieval queries; read directly when you know the file."
-- **"Agent installs this" framing**: realized via `install.sh --yes --connect-clients` (PR #18 wires the second flag). Agent runs one curl-pipe-bash; user sees nothing.
+- **MCP vs. direct file access**: not redundant. MCP (and the `memstem search` CLI) is for ranked semantic search across the index; direct file reads stay valid for known files. The CLAUDE.md directive (PR #19) reflects this nuance — "Memstem for retrieval queries; read directly when you know the file."
+- **"Agent installs this" framing**: realized via `install.sh --yes --connect-clients` (PR #19 wires the second flag). Agent runs one curl-pipe-bash; user sees nothing.
 - **Credentials are not memories.** Brad agreed with the framing: shared `~/.openclaw/shared-auth-profiles.json` etc. stay in their dedicated stores. Memstem indexes the **knowledge about where credentials live** (the natural-language "OpenClaw agents use OAuth from X" facts in MEMORY.md / HARD-RULES.md), not the secrets themselves.
 - **Migration scope**: ~940 records ingestable on day one (515 ari + 53 sarah + small amounts from other agents + 1 shared HARD-RULES.md + 356 Claude Code sessions). Confirmed via dry-run.
 
