@@ -166,11 +166,14 @@ and Claude Code instructions) we extended scope before cutover.
   ADR 0007 documents the remote-ingestion design choice (sync-and-watch
   for v0.1; HTTP push as Phase 3 nice-to-have; full multi-device sync in
   Phase 4)
-- [ ] **PR #16:** setup wizard in `memstem init` — auto-discover OpenClaw
-  agent candidates (glob `~/*/openclaw.json`), prompt for selection,
-  populate `_meta/config.yaml`. `--non-interactive` flag for headless installs
-- [ ] **PR #17:** ClaudeCodeAdapter `extra_files` — also pull
-  `~/.claude/CLAUDE.md` and any project-level CLAUDE.md files
+- [x] **PR #16:** setup wizard in `memstem init` — `memstem.discovery`
+  finds OpenClaw candidates, HARD-RULES.md shared files, and Claude Code
+  paths. `init` defaults to interactive per-candidate prompts; `-y` /
+  `--non-interactive` auto-includes every candidate with content. `--home`
+  lets tests and headless runs scope the discovery
+- [ ] **PR #17:** ClaudeCodeAdapter `extra_files` — pull
+  `~/.claude/CLAUDE.md` and any project-level CLAUDE.md files via the
+  same path-watching machinery
 
 ### Step 9: Integration and cutover
 
