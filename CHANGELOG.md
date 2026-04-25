@@ -31,3 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Result` records (memory + score + per-source ranks) from the vault.
   Sanitizes FTS5-special characters from natural-language queries; falls
   back to BM25-only if the embedder errors so the daemon never goes mute
+- `memstem.adapters.openclaw`: `OpenClawAdapter` reads Ari/OpenClaw
+  markdown files (memory, daily logs, skills) into normalized
+  `MemoryRecord` objects. Reconcile walks paths once; watch streams
+  records via `watchdog` inotify. Classifies files by name (`SKILL.md`,
+  `YYYY-MM-DD.md`, else memory) and falls back to filename/H1 for titles
+  when frontmatter is absent
+
+### Changed
+
+- `Adapter.watch` and `Adapter.reconcile` are declared without `async`
+  in the ABC so subclass async generators type-check cleanly

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +37,11 @@ class Adapter(ABC):
     """Unique identifier, e.g. 'claude-code', 'openclaw'."""
 
     @abstractmethod
-    async def watch(self, paths: list[Path]) -> AsyncIterator[MemoryRecord]:
-        """Yield records as files change. Long-running."""
+    def watch(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
+        """Yield records as files change. Long-running async generator."""
         ...
 
     @abstractmethod
-    async def reconcile(self, paths: list[Path]) -> AsyncIterator[MemoryRecord]:
-        """Yield records by scanning paths from scratch. One-shot."""
+    def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
+        """Yield records by scanning paths from scratch. One-shot async generator."""
         ...
