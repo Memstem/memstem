@@ -47,19 +47,19 @@ Order is roughly dependency-respecting; you can work top-down without backtracki
 
 ### Step 1: Frontmatter + storage layer
 
-- [ ] `src/memstem/core/frontmatter.py` — parse/serialize YAML frontmatter (use `python-frontmatter`)
+- [x] `src/memstem/core/frontmatter.py` — parse/serialize YAML frontmatter (use `python-frontmatter`)
   - `parse(content: str) -> tuple[dict, str]`
   - `serialize(metadata: dict, body: str) -> str`
   - Validation against the schema in `docs/frontmatter-spec.md`
-- [ ] `src/memstem/core/storage.py` — vault read/write/walk
+- [x] `src/memstem/core/storage.py` — vault read/write/walk
   - `Vault` class wrapping a vault root path
   - `Vault.read(path) -> Memory`
   - `Vault.write(memory) -> None`
   - `Vault.walk(types: list[str] | None = None) -> Iterator[Memory]`
   - `Vault.delete(path) -> None`
   - `Memory` Pydantic model (frontmatter + body + path)
-- [ ] `tests/test_frontmatter.py` — round-trip tests, edge cases
-- [ ] `tests/test_storage.py` — vault CRUD + walk
+- [x] `tests/test_frontmatter.py` — round-trip tests, edge cases
+- [x] `tests/test_storage.py` — vault CRUD + walk
 
 ### Step 2: Index layer
 
