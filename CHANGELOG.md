@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (PR #27)
+
+- `GeminiEmbedder` default model is now `gemini-embedding-2-preview`
+  (current best-quality Gemini embedding: ~20% recall improvement on
+  heterogeneous corpora vs `gemini-embedding-001`, 8k context
+  window, multimodal-capable). Google retired `text-embedding-004`
+  (the previous default shipped in PR #26); the same API key works
+  for the new model. Users who want maximum stability over absolute
+  quality can pin `model: gemini-embedding-001` in
+  `_meta/config.yaml` — that's the production-stable predecessor.
+- `GeminiEmbedder` sends `outputDimensionality` for models that
+  support Matryoshka representation (`gemini-embedding-001`,
+  `gemini-embedding-2`, `gemini-embedding-2-preview`). This lets
+  users keep an existing 768-dim Ollama schema and switch to Gemini
+  without rebuilding the index — Gemini's native 3072d gets
+  truncated server-side to whatever `dimensions` is configured.
+- Gemini response width is validated against config; mismatches
+  raise a clear `EmbeddingError` rather than silently corrupting
+  the index.
+
 ### Added (PR #26)
 
 - **Pluggable embedder backends** via a formal `Embedder` ABC and an

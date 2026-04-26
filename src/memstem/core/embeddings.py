@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import httpx
 
@@ -235,17 +235,52 @@ class GeminiEmbedder(Embedder):
 
     Targets ``generativelanguage.googleapis.com`` with the
     ``:batchEmbedContents`` endpoint so a list of chunks costs one HTTP
-    round-trip. Default model is ``text-embedding-004`` (768 dim — same
-    as the local Ollama default, so switching backends doesn't change
-    the index schema).
+    round-trip.
+
+    Default model is ``gemini-embedding-2-preview`` — the current
+    best-quality Gemini embedding model (~20% recall improvement on
+    heterogeneous corpora over ``gemini-embedding-001``, 8k context
+    window vs 2k, multimodal-capable). Its native dimension is 3072,
+    but it supports Matryoshka representation: requesting a smaller
+    ``dimensions`` value (e.g. 768 or 1536) returns a truncated vector
+    that's still meaningful and well-aligned with the original. This
+    lets users keep a vault that was set up with a 768-dim Ollama
+    schema and switch to Gemini without rebuilding the index — the
+    embedder sends ``outputDimensionality`` automatically based on the
+    configured ``dimensions`` so vectors land at exactly the right
+    width.
+
+    The "preview" label means Google may change behavior or deprecate
+    the model. Users who want maximum stability can pin
+    ``model: gemini-embedding-001`` (the previous-generation
+    production-stable model) instead. Both are listed in
+    ``_MATRYOSHKA_MODELS`` so dimension truncation works for either.
+
+    Older legacy model names (``text-embedding-004``, ``embedding-001``)
+    are still accepted via config but Google has deprecated them on
+    most API keys; pick a current model.
     """
 
     DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
     DEFAULT_API_KEY_ENV = "GOOGLE_API_KEY"
+    DEFAULT_MODEL = "gemini-embedding-2-preview"
+
+    # Native widths (no Matryoshka). Used to decide whether to send
+    # `outputDimensionality` — only for models that support it.
+    _MATRYOSHKA_MODELS = frozenset(
+        {
+            "gemini-embedding-001",
+            "models/gemini-embedding-001",
+            "gemini-embedding-2",
+            "models/gemini-embedding-2",
+            "gemini-embedding-2-preview",
+            "models/gemini-embedding-2-preview",
+        }
+    )
 
     def __init__(
         self,
-        model: str = "text-embedding-004",
+        model: str = DEFAULT_MODEL,
         dimensions: int = 768,
         api_key_env: str = DEFAULT_API_KEY_ENV,
         base_url: str = DEFAULT_BASE_URL,
@@ -261,13 +296,24 @@ class GeminiEmbedder(Embedder):
             headers={"Content-Type": "application/json"},
         )
 
+    def _supports_matryoshka(self) -> bool:
+        return self.model in self._MATRYOSHKA_MODELS
+
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         # Gemini's model field uses the ``models/<name>`` form.
         full_model = self.model if self.model.startswith("models/") else f"models/{self.model}"
+        request_template: dict[str, Any] = {
+            "model": full_model,
+        }
+        if self._supports_matryoshka():
+            # Truncate the native 3072-dim vector to the configured width.
+            # Models without Matryoshka ignore this field; a few legacy
+            # models error on it, hence the gating above.
+            request_template["outputDimensionality"] = self.dimensions
         body = {
-            "requests": [{"model": full_model, "content": {"parts": [{"text": t}]}} for t in texts]
+            "requests": [{**request_template, "content": {"parts": [{"text": t}]}} for t in texts]
         }
         try:
             response = self._client.post(
@@ -283,7 +329,17 @@ class GeminiEmbedder(Embedder):
         embeddings = data.get("embeddings")
         if not isinstance(embeddings, list) or len(embeddings) != len(texts):
             raise EmbeddingError(f"unexpected Gemini response: {data}")
-        return [list(map(float, e["values"])) for e in embeddings]
+        vecs = [list(map(float, e["values"])) for e in embeddings]
+        # Sanity check: provider returned the dim we asked for.
+        for v in vecs:
+            if len(v) != self.dimensions:
+                raise EmbeddingError(
+                    f"Gemini returned {len(v)}-dim vector but config "
+                    f"requested {self.dimensions}. Set "
+                    f"`embedding.dimensions: {len(v)}` or pick a Matryoshka "
+                    f"model (gemini-embedding-001)."
+                )
+        return vecs
 
     def close(self) -> None:
         self._client.close()

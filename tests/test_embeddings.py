@@ -180,6 +180,8 @@ class TestGeminiEmbedder:
                 },
             )
 
+        # Legacy `text-embedding-004` model — no Matryoshka shortening,
+        # provider returns the native dim.
         emb = GeminiEmbedder(model="text-embedding-004", dimensions=4)
         emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
         try:
@@ -192,6 +194,59 @@ class TestGeminiEmbedder:
         assert "batchEmbedContents" in seen["url"]
         assert seen["body"]["requests"][0]["model"] == "models/text-embedding-004"
         assert seen["body"]["requests"][0]["content"]["parts"][0]["text"] == "a"
+        # No `outputDimensionality` for non-Matryoshka models.
+        assert "outputDimensionality" not in seen["body"]["requests"][0]
+
+    def test_default_model_is_gemini_embedding_2_preview(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default ships the best-quality model; users wanting stability
+        can pin `gemini-embedding-001` in config."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+        emb = GeminiEmbedder()
+        assert emb.model == "gemini-embedding-2-preview"
+        emb.close()
+
+    def test_matryoshka_model_sends_output_dimensionality(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gemini-embedding-001 supports truncation; we use it to keep the
+        existing 768-dim schema when switching from Ollama."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"embeddings": [{"values": [0.0] * 768}]},
+            )
+
+        emb = GeminiEmbedder(model="gemini-embedding-001", dimensions=768)
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        try:
+            vecs = emb.embed_batch(["x"])
+        finally:
+            emb.close()
+        assert len(vecs[0]) == 768
+        assert seen["body"]["requests"][0]["outputDimensionality"] == 768
+
+    def test_dimension_mismatch_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If Gemini returns the wrong width (e.g. config asked 768 but the
+        provider sent 3072 anyway), the embedder errors out instead of
+        silently passing through and breaking the index."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"embeddings": [{"values": [0.0] * 3072}]})
+
+        emb = GeminiEmbedder(model="gemini-embedding-001", dimensions=768)
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        try:
+            with pytest.raises(EmbeddingError, match="3072-dim vector"):
+                emb.embed_batch(["x"])
+        finally:
+            emb.close()
 
     def test_normalizes_models_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
