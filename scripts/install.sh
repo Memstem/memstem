@@ -10,13 +10,25 @@
 #
 #   curl -fsSL https://memstem.com/install.sh | bash -s -- --yes
 #
+# A complete cutover (install + import history + start daemon + wire
+# clients) is one invocation:
+#
+#   curl -fsSL https://memstem.com/install.sh \
+#     | bash -s -- --yes --connect-clients --migrate --start-daemon
+#
 # Steps, all idempotent:
 #   1) verify Python 3.11+ and pipx
 #   2) `pipx install memstem` (falls back to git source if PyPI install fails
 #      or if --from-git is set)
-#   3) install Ollama and pull `nomic-embed-text` (skip with --no-ollama)
-#   4) `memstem init <vault>` (skipped if vault already exists)
-#   5) `memstem doctor` to confirm everything is wired up
+#   3) install Ollama and pull `nomic-embed-text` (skip with --no-ollama),
+#      and confirm the daemon is reachable on :11434
+#   4) `memstem init <vault>` — passes -y when --yes is set so the wizard
+#      doesn't hang
+#   5) (with --migrate) run `memstem migrate --apply` to import history
+#   6) `memstem doctor` to confirm everything is wired up
+#   7) (with --connect-clients) `memstem connect-clients` to patch
+#      settings.json + CLAUDE.md (passes --remove-flipclaw if set)
+#   8) (with --start-daemon) start the daemon under PM2 and pm2 save
 #
 # Re-running is safe: each step detects an existing install and either
 # skips or upgrades.
@@ -28,6 +40,8 @@ INSTALL_OLLAMA=true
 PULL_MODEL=true
 CONNECT_CLIENTS=false
 REMOVE_FLIPCLAW=false
+RUN_MIGRATE=false
+START_DAEMON=false
 VAULT_PATH="${MEMSTEM_VAULT:-$HOME/memstem-vault}"
 SOURCE="${MEMSTEM_INSTALL_SOURCE:-pypi}"
 
@@ -40,6 +54,8 @@ while [[ $# -gt 0 ]]; do
     --from-git) SOURCE=git; shift ;;
     --connect-clients) CONNECT_CLIENTS=true; shift ;;
     --remove-flipclaw) REMOVE_FLIPCLAW=true; shift ;;
+    --migrate) RUN_MIGRATE=true; shift ;;
+    --start-daemon) START_DAEMON=true; shift ;;
     -h|--help)
       cat <<'EOF'
 Memstem installer.
@@ -47,16 +63,24 @@ Memstem installer.
 Usage: install.sh [options]
 
 Options:
-  --yes, -y           Run unattended (no prompts; use defaults).
+  --yes, -y           Run unattended (no prompts; use defaults). Propagated
+                      to `memstem init -y`.
   --no-ollama         Don't install Ollama.
   --no-model          Don't pull the embedding model (assume it's already there).
   --vault PATH        Vault location (default: ~/memstem-vault).
   --from-git          Install from the GitHub source instead of PyPI.
   --connect-clients   After install, run `memstem connect-clients` to wire
                       Claude Code (settings.json + CLAUDE.md) and every
-                      OpenClaw workspace's CLAUDE.md.
+                      OpenClaw workspace's CLAUDE.md. Prints a unified
+                      diff (dry-run) before applying, then applies.
   --remove-flipclaw   With --connect-clients, also strip the legacy
                       claude-code-bridge.py SessionEnd hook.
+  --migrate           After init, run `memstem migrate --apply` to import
+                      historical Ari/OpenClaw memory and recent Claude
+                      Code sessions into the new vault.
+  --start-daemon      After everything else, start `memstem daemon` under
+                      PM2 (`pm2 start ... --name memstem; pm2 save`). No-op
+                      with a warning if pm2 isn't installed.
   -h, --help          Show this help.
 
 Environment:
@@ -143,6 +167,31 @@ if $INSTALL_OLLAMA; then
     curl -fsSL https://ollama.com/install.sh | sh
   fi
   ok "Ollama: $(ollama --version 2>&1 | head -1)"
+
+  # Confirm the daemon is reachable. Linux installers set up a systemd
+  # service automatically; macOS via brew does not, so try to start it.
+  if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      if command -v brew >/dev/null 2>&1; then
+        say "Starting Ollama via brew services..."
+        brew services start ollama >/dev/null 2>&1 || true
+      else
+        say "Starting Ollama in background (no brew detected)..."
+        nohup ollama serve >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+      fi
+    fi
+    say "Waiting for Ollama on :11434..."
+    for i in $(seq 1 30); do
+      if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then break; fi
+      sleep 1
+    done
+  fi
+  if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+    ok "Ollama daemon responding on :11434"
+  else
+    warn "Ollama is not responding on :11434 after 30s. The model pull will likely fail."
+  fi
 fi
 
 # --- Embedding model --------------------------------------------------------
@@ -161,8 +210,19 @@ if [ -d "$VAULT_PATH/_meta" ] && [ -f "$VAULT_PATH/_meta/config.yaml" ]; then
   ok "Vault already initialized at $VAULT_PATH"
 else
   say "Initializing vault at $VAULT_PATH..."
-  memstem init "$VAULT_PATH"
+  INIT_ARGS=()
+  if $YES_FLAG; then INIT_ARGS+=(-y); fi
+  memstem init "${INIT_ARGS[@]}" "$VAULT_PATH"
   ok "Vault ready at $VAULT_PATH"
+fi
+
+# --- Migrate (optional) -----------------------------------------------------
+if $RUN_MIGRATE; then
+  say "Importing history (memstem migrate --apply)..."
+  # The migrate command prints counts + sample previews as it processes;
+  # let it stream to the operator's terminal.
+  memstem migrate --apply --vault "$VAULT_PATH" || warn "migrate reported issues — review above"
+  ok "history imported"
 fi
 
 # --- Doctor ------------------------------------------------------------------
@@ -171,16 +231,53 @@ memstem doctor --vault "$VAULT_PATH" || warn "doctor reported issues — review 
 
 # --- Connect clients --------------------------------------------------------
 if $CONNECT_CLIENTS; then
-  say "Running memstem connect-clients..."
-  CONNECT_ARGS=(connect-clients --vault "$VAULT_PATH")
+  say "Previewing connect-clients changes (dry-run)..."
+  CONNECT_BASE=(connect-clients --vault "$VAULT_PATH")
   if $REMOVE_FLIPCLAW; then
-    CONNECT_ARGS+=(--remove-flipclaw)
+    CONNECT_BASE+=(--remove-flipclaw)
   fi
-  memstem "${CONNECT_ARGS[@]}" || warn "connect-clients reported issues — review above"
+  memstem "${CONNECT_BASE[@]}" --dry-run || true
+
+  say "Applying connect-clients..."
+  memstem "${CONNECT_BASE[@]}" || warn "connect-clients reported issues — review above"
+fi
+
+# --- Start daemon (optional) ------------------------------------------------
+if $START_DAEMON; then
+  if command -v pm2 >/dev/null 2>&1; then
+    MEMSTEM_BIN="$(command -v memstem)"
+    say "Starting memstem daemon under PM2 (vault=$VAULT_PATH)..."
+    # pm2 won't accept duplicate names; restart in place if it already exists.
+    if pm2 describe memstem >/dev/null 2>&1; then
+      pm2 restart memstem >/dev/null 2>&1 || true
+    else
+      pm2 start "$MEMSTEM_BIN" \
+        --name memstem \
+        --interpreter none \
+        -- daemon --vault "$VAULT_PATH"
+    fi
+    pm2 save >/dev/null 2>&1 || true
+    ok "memstem daemon online (pm2 logs memstem)"
+  else
+    warn "pm2 not installed; skipping --start-daemon. Run \`memstem daemon\` manually, or install PM2: npm i -g pm2"
+  fi
 fi
 
 # --- Next steps --------------------------------------------------------------
-if $CONNECT_CLIENTS; then
+if $START_DAEMON && $CONNECT_CLIENTS; then
+  cat <<EOF
+
+\033[1mMemstem is installed, ingesting, and wired into Claude Code.\033[0m
+
+Verify it's working:
+
+  pm2 logs memstem --lines 20
+  memstem search "your query here"
+
+Vault:  $VAULT_PATH
+Config: $VAULT_PATH/_meta/config.yaml
+EOF
+elif $CONNECT_CLIENTS; then
   cat <<EOF
 
 \033[1mMemstem is installed and wired into Claude Code.\033[0m
@@ -189,6 +286,7 @@ Next steps:
 
   1) Start the daemon to ingest your memory:
        memstem daemon
+     (or re-run this installer with --start-daemon to put it under PM2)
 
   2) Try a one-shot search:
        memstem search "your query here"
@@ -205,6 +303,7 @@ Next steps:
 
   1) Start the daemon to ingest your memory:
        memstem daemon
+     (or re-run this installer with --start-daemon to put it under PM2)
 
   2) Wire Memstem into Claude Code (and any OpenClaw CLAUDE.md):
        memstem connect-clients

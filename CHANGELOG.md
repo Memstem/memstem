@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet — Phase 2 work begins after the v0.1 soak window._
+### Added
+
+- `memstem migrate` is now a top-level CLI command (was previously
+  only reachable via `scripts/migrate-from-flipclaw.py`). Same flags:
+  `--apply`, `--days`, `--vault`, `--openclaw`, `--claude-root`. The
+  script wrapper still works unchanged.
+- `install.sh --migrate` runs `memstem migrate --apply` after init so
+  a fresh box ends up with history imported.
+- `install.sh --start-daemon` starts `memstem daemon` under PM2 (no-op
+  with a warning if PM2 isn't installed). Combined with
+  `--connect-clients`, the installer is a single-shot cutover.
+- Ollama service health check in `install.sh`: after install, polls
+  `http://localhost:11434/api/tags` until the daemon responds (up to
+  30s). On macOS, attempts `brew services start ollama` first.
+- `install.sh --connect-clients` now prints a dry-run diff before
+  applying, so the operator sees what's about to change.
+- Smoke tests for `install.sh` (`tests/test_install_sh.py`): `bash -n`
+  syntax check, `--help` flag-coverage check, unknown-flag rejection.
+
+### Fixed
+
+- `install.sh --yes` now propagates `-y` to `memstem init`, so an
+  unattended install no longer hangs at the setup wizard's per-agent
+  prompts.
 
 ## [0.1.0] - 2026-04-XX
 
