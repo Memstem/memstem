@@ -7,40 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — skip re-embed when content unchanged (schema v3)
+### Fixed — connect-clients propagates the embedder API key into MCP env
 
-- **Pipeline no longer re-enqueues a record whose body and embedder
-  signature haven't changed.** Earlier versions enqueued every record
-  on every emit — so a `pm2 restart memstem` re-embedded all ~765
-  records via the reconcile pass, even when no body had changed.
-  Wasteful in time and (for API providers) in rate-limit quota.
-  Schema v3 adds an `embed_state` table tracking the body hash +
-  embedder signature each memory was last successfully embedded
-  with; the pipeline checks this via the new `Index.needs_reembed`
-  helper before enqueueing and skips when hash + signature both
-  match. The worker writes a fresh `embed_state` row after every
-  successful vector upsert. Net result: post-restart reconcile is a
-  no-op for unchanged records.
-- **Re-upserting a memory no longer cascade-deletes its child rows.**
-  `Index.upsert` was using `INSERT OR REPLACE INTO memories`, which
-  SQLite implements as DELETE-then-INSERT and so triggered
-  `ON DELETE CASCADE` on `embed_state` and `embed_queue`. The
-  practical effect was that the worker's hard-won "embedded" record
-  evaporated on the next reconcile. Switched to `INSERT ... ON
-  CONFLICT(id) DO UPDATE` so the row stays in place and child
-  references survive.
-- **Schema migration v3** is automatic on first connect; legacy
-  databases get an `embed_state` row backfilled for every memory
-  that already has vectors, with `embed_signature = NULL`. NULL is
-  treated as "compatible with any signature" by `needs_reembed` so
-  the upgrade doesn't trigger a global re-embed — the first time a
-  body actually changes (or a user runs `memstem reindex`), the
-  legacy NULL gets stamped with the real signature.
-- 23 new tests covering the embed-state helpers, the pipeline skip
-  path (unchanged body, changed body, signature change, no vectors
-  yet), the worker's stamp-on-success behavior, and the v3 backfill
-  (populates for vectorized memories, skips empty ones, doesn't
-  clobber existing rows). 340 tests passing, 88% coverage.
+- **The MCP entries written by `connect-clients` now include the
+  embedder's API key.** Earlier versions wrote `"env": {}` for Claude
+  Code and no `env` block at all for OpenClaw, so when those clients
+  spawned `memstem mcp` as a subprocess, the child got no API key —
+  the parent shell's env doesn't propagate to MCP children. The
+  result was a silent fallback to BM25-only search: vectors were in
+  the index, but every `memstem_search` result came back with
+  `vec_rank: null` because `_maybe_embedder()` caught the
+  `EmbeddingError` and built `Search(embedder=None)`.
+- New `mcp_env_from_embedding(api_key_env)` helper in
+  `integration.py` reads the configured `embedding.api_key_env` and
+  resolves it against the install-time shell, returning a dict
+  suitable for the MCP entry's `env` block. Empty for local
+  providers (Ollama) and for missing/blank env vars.
+- `register_mcp_server` and `register_openclaw_mcp_server` now accept
+  an `env: dict[str, str] | None` kwarg that merges into the written
+  entry's env block. Defensive-copy semantics — never mutates the
+  module-level `DEFAULT_*_ENTRY` constants.
+- `memstem connect-clients` resolves the API key once up front and
+  threads it into both registration paths. Prints a one-line warning
+  if the configured `api_key_env` is set in config but missing from
+  the install shell, telling the user to export it and re-run.
+- 13 new tests covering the helper (set/missing/blank/None/os.environ
+  fallback), the Claude Code register path (env merges, default
+  preserved when env=None, no mutation of constants, custom-entry
+  + env compose), and the OpenClaw register path (env adds an
+  otherwise-absent block, empty/None env preserves no-block default,
+  no mutation).
 
 ## [0.3.0] — 2026-04-26
 

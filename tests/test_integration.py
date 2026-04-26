@@ -16,6 +16,7 @@ from memstem.integration import (
     DIRECTIVE_END,
     apply_directive,
     claude_md_targets_for_openclaw,
+    mcp_env_from_embedding,
     openclaw_config_for_workspace,
     register_mcp_server,
     register_openclaw_mcp_server,
@@ -547,3 +548,119 @@ class TestRegisterOpenclawMcpServer:
         register_openclaw_mcp_server(cfg, entry=custom)
         data = json.loads(cfg.read_text())
         assert data["mcp"]["servers"]["memstem"] == custom
+
+
+class TestMcpEnvFromEmbedding:
+    """`mcp_env_from_embedding` resolves the embedder's API key into an
+    env dict that gets baked into the MCP registration. Without this,
+    a Claude Code or OpenClaw spawn of `memstem mcp` runs without the
+    key, the embedder fails to instantiate, and Search silently falls
+    back to BM25-only."""
+
+    def test_returns_key_value_when_set(self) -> None:
+        env = {"GEMINI_API_KEY": "test-key-abc"}
+        out = mcp_env_from_embedding("GEMINI_API_KEY", process_env=env)
+        assert out == {"GEMINI_API_KEY": "test-key-abc"}
+
+    def test_empty_when_var_missing(self) -> None:
+        out = mcp_env_from_embedding("GEMINI_API_KEY", process_env={})
+        assert out == {}
+
+    def test_empty_when_var_blank(self) -> None:
+        # Whitespace-only is treated as missing — easier than a 39-char
+        # key with whitespace getting through (which would fail at the
+        # embedder side anyway).
+        out = mcp_env_from_embedding("GEMINI_API_KEY", process_env={"GEMINI_API_KEY": "   "})
+        assert out == {}
+
+    def test_none_api_key_env_returns_empty(self) -> None:
+        # Local providers (Ollama) don't have an api_key_env.
+        out = mcp_env_from_embedding(None, process_env={"GEMINI_API_KEY": "x"})
+        assert out == {}
+
+    def test_uses_os_environ_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MEMSTEM_TEST_KEY", "from-shell")
+        out = mcp_env_from_embedding("MEMSTEM_TEST_KEY")
+        assert out == {"MEMSTEM_TEST_KEY": "from-shell"}
+
+
+class TestRegisterMcpServerWithEnv:
+    """`env` parameter merges into the entry's env block (Claude Code side)."""
+
+    def test_env_kwarg_populates_entry_env(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        register_mcp_server(settings, env={"GEMINI_API_KEY": "abc"})
+        data = json.loads(settings.read_text())
+        assert data["mcpServers"]["memstem"]["env"] == {"GEMINI_API_KEY": "abc"}
+
+    def test_env_kwarg_merges_with_existing_default(self, tmp_path: Path) -> None:
+        # The default entry has env={}; merging a key adds to it.
+        settings = tmp_path / "settings.json"
+        register_mcp_server(settings, env={"FOO": "bar"})
+        data = json.loads(settings.read_text())
+        assert data["mcpServers"]["memstem"] == {
+            **DEFAULT_MCP_SERVER_ENTRY,
+            "env": {"FOO": "bar"},
+        }
+
+    def test_env_none_preserves_default_empty_env(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        register_mcp_server(settings)
+        data = json.loads(settings.read_text())
+        assert data["mcpServers"]["memstem"]["env"] == {}
+
+    def test_env_kwarg_does_not_mutate_default_constant(self, tmp_path: Path) -> None:
+        # Catch a class of bugs where a function mutates a module-level
+        # default by aliasing instead of copying.
+        before = dict(DEFAULT_MCP_SERVER_ENTRY)
+        register_mcp_server(tmp_path / "s.json", env={"X": "y"})
+        assert DEFAULT_MCP_SERVER_ENTRY == before
+
+    def test_env_with_explicit_entry(self, tmp_path: Path) -> None:
+        # When `entry` is also passed, env merges into entry's env block.
+        settings = tmp_path / "settings.json"
+        custom_entry = {"command": "/opt/memstem", "args": ["mcp"], "env": {"PRESET": "1"}}
+        register_mcp_server(settings, entry=custom_entry, env={"GEMINI_API_KEY": "k"})
+        data = json.loads(settings.read_text())
+        assert data["mcpServers"]["memstem"]["env"] == {"PRESET": "1", "GEMINI_API_KEY": "k"}
+
+
+class TestRegisterOpenclawMcpServerWithEnv:
+    """`env` parameter on the OpenClaw side adds an `env` block to the
+    entry, which the default OpenClaw shape doesn't include otherwise."""
+
+    @staticmethod
+    def _seed_config(cfg: Path) -> None:
+        cfg.write_text(json.dumps({"mcp": {"servers": {}}}, indent=2))
+
+    def test_env_kwarg_adds_env_block(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        register_openclaw_mcp_server(cfg, env={"GEMINI_API_KEY": "k"})
+        data = json.loads(cfg.read_text())
+        assert data["mcp"]["servers"]["memstem"]["env"] == {"GEMINI_API_KEY": "k"}
+
+    def test_env_none_preserves_no_env_block(self, tmp_path: Path) -> None:
+        # Default OpenClaw entry has no `env`; without env=, we shouldn't
+        # introduce one. Important for local-Ollama installs.
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        register_openclaw_mcp_server(cfg)
+        data = json.loads(cfg.read_text())
+        assert "env" not in data["mcp"]["servers"]["memstem"]
+
+    def test_empty_env_dict_preserves_no_env_block(self, tmp_path: Path) -> None:
+        # An empty dict (e.g., from a local-Ollama config or unset key)
+        # should be treated like None — don't add an empty env block.
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        register_openclaw_mcp_server(cfg, env={})
+        data = json.loads(cfg.read_text())
+        assert "env" not in data["mcp"]["servers"]["memstem"]
+
+    def test_env_kwarg_does_not_mutate_default_constant(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        before = dict(DEFAULT_OPENCLAW_MCP_SERVER_ENTRY)
+        register_openclaw_mcp_server(cfg, env={"X": "y"})
+        assert DEFAULT_OPENCLAW_MCP_SERVER_ENTRY == before

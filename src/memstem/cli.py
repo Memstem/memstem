@@ -45,6 +45,7 @@ from memstem.integration import (
     Change,
     apply_directive,
     claude_md_targets_for_openclaw,
+    mcp_env_from_embedding,
     openclaw_config_for_workspace,
     register_mcp_server,
     register_openclaw_mcp_server,
@@ -791,9 +792,22 @@ def connect_clients(
 
     typer.echo(f"connect-clients ({'dry-run' if dry_run else 'apply'}):\n")
 
+    # Resolve the embedder's API key once, up front, so we propagate it
+    # into every MCP registration the command writes. Empty dict for
+    # local providers (Ollama) or when the env var isn't set.
+    api_key_env_name = cfg.embedding.api_key_env
+    mcp_env = mcp_env_from_embedding(api_key_env_name)
+    if api_key_env_name and not mcp_env:
+        typer.echo(
+            f"warning: ${api_key_env_name} is not set in the current shell. "
+            f"Memstem MCP entries will be written without an API key — "
+            f"export {api_key_env_name} and re-run, or edit the config(s) "
+            f"manually after this command finishes.\n"
+        )
+
     if claude_code:
         typer.echo(f"Claude Code user config: {settings_target}")
-        change = register_mcp_server(settings_target, dry_run=dry_run)
+        change = register_mcp_server(settings_target, env=mcp_env, dry_run=dry_run)
         _print_change(change, dry_run)
 
         typer.echo(f"\nLegacy settings cleanup: {legacy_target}")
@@ -819,7 +833,7 @@ def connect_clients(
         typer.echo("\nOpenClaw MCP registrations:")
         configs = _resolve_openclaw_configs(cfg, openclaw_overrides)
         for config_path in configs:
-            change = register_openclaw_mcp_server(config_path, dry_run=dry_run)
+            change = register_openclaw_mcp_server(config_path, env=mcp_env, dry_run=dry_run)
             _print_change(change, dry_run)
     elif openclaw:
         typer.echo("\nNo OpenClaw CLAUDE.md targets resolved from --openclaw arguments.")
