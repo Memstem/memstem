@@ -11,10 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `memstem migrate` is now a top-level CLI command (was previously
   only reachable via `scripts/migrate-from-flipclaw.py`). Same flags:
-  `--apply`, `--days`, `--vault`, `--openclaw`, `--claude-root`. The
-  script wrapper still works unchanged.
+  `--apply`, `--days`, `--vault`, `--openclaw`, `--claude-root`,
+  plus new `--no-embed` and `--progress-every`. The script wrapper
+  still works unchanged.
+- `memstem migrate --no-embed` skips vector embedding during the bulk
+  import. Records still land in vault + FTS5; run `memstem reindex`
+  later to backfill vectors. This is the practical answer for
+  CPU-only Ollama where bulk embedding queues up tens of seconds
+  per chunk and saturates the runner.
+- `memstem migrate --progress-every N` prints a heartbeat every N
+  records during `--apply` (default 25, 0 to silence).
 - `install.sh --migrate` runs `memstem migrate --apply` after init so
   a fresh box ends up with history imported.
+- `install.sh --migrate-days N` overrides the Claude Code session
+  lookback window (default 30). Smaller values cut the embed load on
+  fresh installs — older sessions can land via the daemon's watch
+  loop over time.
+- `install.sh --migrate-no-embed` passes `--no-embed` through to
+  `memstem migrate`. The recommended pattern for a fresh install on
+  CPU-only Ollama: `--migrate --migrate-no-embed --start-daemon`,
+  then run `memstem reindex` overnight to backfill vectors.
 - `install.sh --start-daemon` starts `memstem daemon` under PM2 (no-op
   with a warning if PM2 isn't installed). Combined with
   `--connect-clients`, the installer is a single-shot cutover.
@@ -25,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applying, so the operator sees what's about to change.
 - Smoke tests for `install.sh` (`tests/test_install_sh.py`): `bash -n`
   syntax check, `--help` flag-coverage check, unknown-flag rejection.
+
+### Changed
+
+- Default `OllamaEmbedder` timeout bumped from 30s → 120s. The 30s
+  default was too tight under bulk-ingest load: a fresh `migrate
+  --apply` queues many large chunks against a CPU-only runner, and
+  individual embed calls were timing out before they ever reached
+  the head of the queue. 120s is generous in steady state and
+  recoverable in bulk.
 
 ### Fixed
 

@@ -32,6 +32,8 @@ DOCUMENTED_FLAGS = (
     "--connect-clients",
     "--remove-flipclaw",
     "--migrate",
+    "--migrate-days",
+    "--migrate-no-embed",
     "--start-daemon",
     "--help",
 )

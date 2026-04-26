@@ -301,6 +301,63 @@ class TestMigrateCommand:
         assert "DRY-RUN" in result.output
         assert "Re-run with --apply" in result.output
 
+    def test_no_embed_flag_short_circuits_embedder(
+        self, tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With --no-embed, the migrate command should never call _maybe_embedder."""
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        vault = tmp_path / "vault"
+        runner.invoke(app, ["init", "-y", "--home", str(empty_home), str(vault)])
+
+        embedder_calls = []
+
+        def _trip(*args: object, **kwargs: object) -> None:
+            embedder_calls.append(args)
+            raise RuntimeError("_maybe_embedder must not be called when --no-embed is set")
+
+        monkeypatch.setattr("memstem.migrate._maybe_embedder", _trip)
+
+        result = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--apply",
+                "--no-embed",
+                "--vault",
+                str(vault),
+                "--openclaw",
+                str(empty_home / "nope"),
+                "--claude-root",
+                str(empty_home / "nope"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert embedder_calls == []
+        assert "no-embed" in result.output.lower() or "memstem reindex" in result.output
+
+    def test_apply_mode_label_in_output(self, tmp_path: Path, runner: CliRunner) -> None:
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        vault = tmp_path / "vault"
+        runner.invoke(app, ["init", "-y", "--home", str(empty_home), str(vault)])
+        result = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--apply",
+                "--no-embed",
+                "--vault",
+                str(vault),
+                "--openclaw",
+                str(empty_home / "nope"),
+                "--claude-root",
+                str(empty_home / "nope"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "APPLY" in result.output
+
 
 class TestCommands:
     def test_help_lists_all_commands(self, runner: CliRunner) -> None:
