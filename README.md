@@ -112,13 +112,16 @@ embedding:
 ```
 
 ```yaml
-# Google Gemini — same dim as Ollama (no reindex needed when switching), free tier
+# Google Gemini — Matryoshka shortening lets you keep any dim you want
+# (768 = same as Ollama, no reindex when switching from Ollama default).
 embedding:
   provider: gemini
-  model: text-embedding-004
+  model: gemini-embedding-2-preview     # default; ~20% recall over -001, 8k context
   api_key_env: GOOGLE_API_KEY
-  dimensions: 768
+  dimensions: 768            # 768 / 1536 / 3072 — Matryoshka truncates the native 3072d
 ```
+
+Pin `model: gemini-embedding-001` if you'd rather have the production-stable predecessor (the "preview" label means Google may change behavior; new-RAG quality vs API stability is your call).
 
 ```yaml
 # OpenAI — or any OpenAI-compatible endpoint (Together, Mistral, Groq, vLLM, LM Studio)
