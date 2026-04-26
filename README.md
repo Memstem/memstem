@@ -38,15 +38,18 @@ The full one-liner. Installs everything (memstem, Ollama, embedding model), scaf
 
 ```bash
 curl -fsSL https://memstem.com/install.sh | bash -s -- \
-  --yes --connect-clients --migrate --start-daemon
+  --yes --connect-clients --migrate --migrate-no-embed --start-daemon
 ```
 
-After it returns:
+The `--migrate-no-embed` flag is the practical default on a CPU-only Ollama box: it imports records to vault + FTS5 in minutes instead of hours. After it returns:
 
 ```bash
 memstem search "what did we decide about pricing"   # confirm it works
 pm2 logs memstem --lines 20                          # watch ingestion
+memstem reindex                                      # backfill vectors (run overnight)
 ```
+
+If you have a GPU-backed Ollama or are happy waiting, drop `--migrate-no-embed` to embed during migrate.
 
 Each flag is opt-in so you can dial back the scope:
 

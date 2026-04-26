@@ -41,6 +41,8 @@ PULL_MODEL=true
 CONNECT_CLIENTS=false
 REMOVE_FLIPCLAW=false
 RUN_MIGRATE=false
+MIGRATE_DAYS=30
+MIGRATE_NO_EMBED=false
 START_DAEMON=false
 VAULT_PATH="${MEMSTEM_VAULT:-$HOME/memstem-vault}"
 SOURCE="${MEMSTEM_INSTALL_SOURCE:-pypi}"
@@ -55,6 +57,8 @@ while [[ $# -gt 0 ]]; do
     --connect-clients) CONNECT_CLIENTS=true; shift ;;
     --remove-flipclaw) REMOVE_FLIPCLAW=true; shift ;;
     --migrate) RUN_MIGRATE=true; shift ;;
+    --migrate-days) MIGRATE_DAYS="$2"; shift 2 ;;
+    --migrate-no-embed) MIGRATE_NO_EMBED=true; shift ;;
     --start-daemon) START_DAEMON=true; shift ;;
     -h|--help)
       cat <<'EOF'
@@ -78,6 +82,13 @@ Options:
   --migrate           After init, run `memstem migrate --apply` to import
                       historical Ari/OpenClaw memory and recent Claude
                       Code sessions into the new vault.
+  --migrate-days N    Claude Code session lookback for --migrate (default 30).
+                      Smaller values reduce the embed load on a fresh
+                      install — recent sessions land via the daemon's
+                      watch loop instead.
+  --migrate-no-embed  With --migrate, skip vector embedding (records still
+                      land in vault + FTS5). Run `memstem reindex` later
+                      to backfill embeddings overnight.
   --start-daemon      After everything else, start `memstem daemon` under
                       PM2 (`pm2 start ... --name memstem; pm2 save`). No-op
                       with a warning if pm2 isn't installed.
@@ -218,10 +229,14 @@ fi
 
 # --- Migrate (optional) -----------------------------------------------------
 if $RUN_MIGRATE; then
-  say "Importing history (memstem migrate --apply)..."
+  say "Importing history (memstem migrate --apply, days=$MIGRATE_DAYS)..."
+  MIGRATE_ARGS=(migrate --apply --vault "$VAULT_PATH" --days "$MIGRATE_DAYS")
+  if $MIGRATE_NO_EMBED; then
+    MIGRATE_ARGS+=(--no-embed)
+  fi
   # The migrate command prints counts + sample previews as it processes;
   # let it stream to the operator's terminal.
-  memstem migrate --apply --vault "$VAULT_PATH" || warn "migrate reported issues — review above"
+  memstem "${MIGRATE_ARGS[@]}" || warn "migrate reported issues — review above"
   ok "history imported"
 fi
 

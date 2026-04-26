@@ -284,6 +284,23 @@ def migrate(
         str | None,
         typer.Option(help="Claude Code projects root (defaults to ~/.claude/projects)"),
     ] = None,
+    no_embed: Annotated[
+        bool,
+        typer.Option(
+            "--no-embed",
+            help=(
+                "Skip embedding during migration. Records are still written to the "
+                "vault and FTS5-indexed; run `memstem reindex` later to backfill "
+                "vectors. Useful for fast bulk imports on CPU-only Ollama."
+            ),
+        ),
+    ] = False,
+    progress_every: Annotated[
+        int,
+        typer.Option(
+            help="Print a progress line every N records during --apply (0 = quiet)",
+        ),
+    ] = 25,
 ) -> None:
     """One-shot import of FlipClaw / Ari memory into the Memstem vault.
 
@@ -301,6 +318,8 @@ def migrate(
         vault=vault,
         openclaw=openclaw,
         claude_root=claude_root,
+        no_embed=no_embed,
+        progress_every=progress_every,
     )
 
 

@@ -145,11 +145,28 @@ def main(
         str | None,
         typer.Option(help="Claude Code projects root (defaults to ~/.claude/projects)"),
     ] = None,
+    no_embed: Annotated[
+        bool,
+        typer.Option(
+            "--no-embed",
+            help=(
+                "Skip embedding during migration. Records are still written to the "
+                "vault and FTS5-indexed; run `memstem reindex` later to backfill "
+                "vectors. Useful for fast bulk imports on CPU-only Ollama."
+            ),
+        ),
+    ] = False,
+    progress_every: Annotated[
+        int,
+        typer.Option(
+            help="Print a progress line every N records during --apply (0 = quiet)",
+        ),
+    ] = 25,
 ) -> None:
     """Migrate FlipClaw memory into the Memstem vault."""
     cfg = _load_config(_resolve_vault_path(vault))
     typer.echo(f"vault:  {cfg.vault_path}")
-    typer.echo(f"mode:   {'APPLY' if apply else 'DRY-RUN'}")
+    typer.echo(f"mode:   {'APPLY' if apply else 'DRY-RUN'}{' (no-embed)' if no_embed else ''}")
     typer.echo(f"window: last {days} days for Claude Code sessions")
 
     use_workspaces = not openclaw and bool(
@@ -183,17 +200,25 @@ def main(
 
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
-    embedder = _maybe_embedder(cfg)
+    embedder = None if no_embed else _maybe_embedder(cfg)
     try:
         pipeline = Pipeline(vault_obj, index, embedder)
+        all_records = openclaw_records + claude_records
+        total = len(all_records)
         applied = 0
-        for r in openclaw_records + claude_records:
+        for i, r in enumerate(all_records, start=1):
             try:
                 pipeline.process(r)
                 applied += 1
             except Exception as exc:
                 logger.warning("failed %s/%s: %s", r.source, r.ref, exc)
-        typer.echo(f"\nApplied: {applied}/{len(openclaw_records) + len(claude_records)} records")
+            if progress_every and i % progress_every == 0:
+                typer.echo(f"  ... {i}/{total} records processed ({applied} applied)")
+        typer.echo(f"\nApplied: {applied}/{total} records")
+        if no_embed:
+            typer.echo(
+                "Note: --no-embed skipped vector storage. Run `memstem reindex` to backfill."
+            )
     finally:
         index.close()
 

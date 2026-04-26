@@ -15,7 +15,12 @@ import httpx
 DEFAULT_MODEL = "nomic-embed-text"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_DIMENSIONS = 768
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 120.0
+"""Per-request timeout. Set generously because nomic-embed-text on CPU
+can spend tens of seconds per chunk under bulk-ingest load (the daemon
+queues many requests during a `migrate --apply` of a fresh vault).
+Tighter timeouts during steady-state operation can be set via
+`EmbeddingConfig.timeout` once that knob is wired through (v0.2)."""
 DEFAULT_CHUNK_CHARS = 2048
 
 
