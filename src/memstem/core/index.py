@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import struct
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,12 +118,26 @@ def _serialize_vector(embedding: Iterable[float]) -> bytes:
 
 
 class Index:
-    """SQLite index with FTS5 + sqlite-vec virtual tables."""
+    """SQLite index with FTS5 + sqlite-vec virtual tables.
+
+    Thread-safety: the connection is opened with `check_same_thread=False`
+    so the embed worker can hand SQLite calls off via
+    :func:`asyncio.to_thread`, but Python's `sqlite3` module isn't
+    actually thread-safe on a single connection — concurrent commits
+    race, and the sqlite-vec extension keeps thread-local state that
+    breaks under cross-thread use. We resolve both by serializing every
+    write/read path through ``self._lock``. Acquisition is cheap (no
+    contention in single-worker setups; mild contention with multiple
+    workers) and far less complex than a per-thread connection pool.
+    The lock does NOT cover embed HTTP calls — those happen above this
+    class — so worker concurrency on the network side is preserved.
+    """
 
     def __init__(self, db_path: Path | str, dimensions: int = 768) -> None:
         self.db_path = Path(db_path)
         self.dimensions = dimensions
         self._db: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -213,7 +228,7 @@ class Index:
         path_str = str(memory.path)
         params = self._memory_params(fm, memory.body, path_str)
 
-        with self.db:
+        with self._lock, self.db:
             displaced = self.db.execute(
                 "SELECT id FROM memories WHERE path = ? AND id != ?",
                 (path_str, memory_id),
@@ -278,7 +293,7 @@ class Index:
             if len(vec) != self.dimensions:
                 raise ValueError(f"embedding dim {len(vec)} != index dim {self.dimensions}")
 
-        with self.db:
+        with self._lock, self.db:
             self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
             for i, (chunk, vec) in enumerate(zip(chunks, embeddings, strict=True)):
                 chunk_id = f"{memory_id}:{i}"
@@ -294,7 +309,7 @@ class Index:
                 _ = chunk
 
     def delete(self, memory_id: str) -> None:
-        with self.db:
+        with self._lock, self.db:
             self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
@@ -312,7 +327,7 @@ class Index:
         from datetime import UTC, datetime
 
         now = datetime.now(tz=UTC).isoformat()
-        with self.db:
+        with self._lock, self.db:
             self.db.execute(
                 """
                 INSERT INTO embed_queue(memory_id, enqueued_at, retry_count, last_error, failed)
@@ -328,7 +343,7 @@ class Index:
 
     def dequeue_embed(self, memory_id: str) -> None:
         """Remove `memory_id` from the queue (called after a successful embed)."""
-        with self.db:
+        with self._lock, self.db:
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
 
     def mark_embed_error(
@@ -344,7 +359,7 @@ class Index:
         record changes (which re-enqueues with reset state) or the user
         runs `memstem embed --retry-failed`.
         """
-        with self.db:
+        with self._lock, self.db:
             self.db.execute(
                 """
                 UPDATE embed_queue
@@ -358,28 +373,30 @@ class Index:
 
     def queue_pending(self, limit: int) -> list[str]:
         """Return up to `limit` memory_ids that are pending embedding (not failed)."""
-        rows = self.db.execute(
-            """
-            SELECT memory_id FROM embed_queue
-            WHERE failed = 0
-            ORDER BY enqueued_at ASC, retry_count ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT memory_id FROM embed_queue
+                WHERE failed = 0
+                ORDER BY enqueued_at ASC, retry_count ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         return [r["memory_id"] for r in rows]
 
     def queue_stats(self) -> dict[str, int]:
         """Return `{pending, failed, total}` for `memstem doctor`."""
-        row = self.db.execute(
-            """
-            SELECT
-                COALESCE(SUM(CASE WHEN failed = 0 THEN 1 ELSE 0 END), 0) AS pending,
-                COALESCE(SUM(CASE WHEN failed = 1 THEN 1 ELSE 0 END), 0) AS failed,
-                COUNT(*) AS total
-            FROM embed_queue
-            """
-        ).fetchone()
+        with self._lock:
+            row = self.db.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN failed = 0 THEN 1 ELSE 0 END), 0) AS pending,
+                    COALESCE(SUM(CASE WHEN failed = 1 THEN 1 ELSE 0 END), 0) AS failed,
+                    COUNT(*) AS total
+                FROM embed_queue
+                """
+            ).fetchone()
         return {
             "pending": int(row["pending"]),
             "failed": int(row["failed"]),
@@ -388,7 +405,7 @@ class Index:
 
     def reset_failed_queue(self) -> int:
         """Mark every `failed=1` row pending again. Returns rows reset."""
-        with self.db:
+        with self._lock, self.db:
             cur = self.db.execute(
                 "UPDATE embed_queue SET failed = 0, retry_count = 0, last_error = NULL "
                 "WHERE failed = 1"
@@ -415,7 +432,8 @@ class Index:
         sql += " ORDER BY score LIMIT ?"
         params.append(limit)
 
-        rows = self.db.execute(sql, params).fetchall()
+        with self._lock:
+            rows = self.db.execute(sql, params).fetchall()
         return [FtsHit(memory_id=r["memory_id"], score=float(r["score"])) for r in rows]
 
     def query_vec(
@@ -429,31 +447,32 @@ class Index:
         # Over-fetch from vec then filter by type, since vec0 doesn't support
         # arbitrary predicates inside the MATCH clause.
         fetch_k = limit * 5 if types else limit
-        rows = self.db.execute(
-            """
-            SELECT v.chunk_id, v.memory_id, v.chunk_index, v.distance
-            FROM memories_vec v
-            WHERE v.embedding MATCH ? AND k = ?
-            ORDER BY v.distance
-            """,
-            (_serialize_vector(embedding), fetch_k),
-        ).fetchall()
-
-        if types:
-            type_set = set(types)
-            id_rows = (
-                self.db.execute(
-                    f"""
-                SELECT id, type FROM memories
-                WHERE id IN ({",".join("?" for _ in {r["memory_id"] for r in rows})})
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT v.chunk_id, v.memory_id, v.chunk_index, v.distance
+                FROM memories_vec v
+                WHERE v.embedding MATCH ? AND k = ?
+                ORDER BY v.distance
                 """,
-                    [r["memory_id"] for r in rows],
-                ).fetchall()
-                if rows
-                else []
-            )
-            allowed = {r["id"] for r in id_rows if r["type"] in type_set}
-            rows = [r for r in rows if r["memory_id"] in allowed][:limit]
+                (_serialize_vector(embedding), fetch_k),
+            ).fetchall()
+
+            if types:
+                type_set = set(types)
+                id_rows = (
+                    self.db.execute(
+                        f"""
+                    SELECT id, type FROM memories
+                    WHERE id IN ({",".join("?" for _ in {r["memory_id"] for r in rows})})
+                    """,
+                        [r["memory_id"] for r in rows],
+                    ).fetchall()
+                    if rows
+                    else []
+                )
+                allowed = {r["id"] for r in id_rows if r["type"] in type_set}
+                rows = [r for r in rows if r["memory_id"] in allowed][:limit]
 
         return [
             VecHit(
