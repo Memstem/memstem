@@ -222,19 +222,24 @@ class TestProcess:
         assert memory.frontmatter.updated is not None
 
 
-class TestEmbedding:
-    class _StubEmbedder:
-        dimensions = 768
+class TestEmbedQueueing:
+    """Pipeline writes records synchronously and pushes them onto the
+    embed queue. The actual embedding is the worker's job (covered in
+    `test_embed_worker.py`); these tests just verify the handoff."""
 
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
+    def test_process_enqueues_record(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(_record(body="hello"))
+        rows = index.db.execute(
+            "SELECT memory_id, retry_count, failed FROM embed_queue WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["retry_count"] == 0
+        assert rows[0]["failed"] == 0
 
-        def embed_batch(self, texts: list[str]) -> list[list[float]]:
-            self.calls.append(list(texts))
-            return [[float(i)] * 768 for i in range(len(texts))]
-
-    def test_no_embedder_skips_vec_rows(self, vault: Vault, index: Index) -> None:
-        pipe = Pipeline(vault, index, embedder=None)
+    def test_no_vec_rows_written_synchronously(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
         memory = pipe.process(_record(body="some body"))
         rows = index.db.execute(
             "SELECT COUNT(*) AS c FROM memories_vec WHERE memory_id = ?",
@@ -242,33 +247,21 @@ class TestEmbedding:
         ).fetchone()
         assert rows["c"] == 0
 
-    def test_embedder_writes_vec_rows(self, vault: Vault, index: Index) -> None:
-        embedder = self._StubEmbedder()
-        pipe = Pipeline(vault, index, embedder=embedder)  # type: ignore[arg-type]
-        memory = pipe.process(_record(body="some body"))
-        rows = index.db.execute(
-            "SELECT COUNT(*) AS c FROM memories_vec WHERE memory_id = ?",
+    def test_re_emit_resets_queue_state(self, vault: Vault, index: Index) -> None:
+        """A failing record that the user edits should get another shot."""
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(_record(body="v1"))
+        index.mark_embed_error(str(memory.id), "boom", max_retries=1)
+        # After the simulated failure the record is `failed=1`.
+        row = index.db.execute(
+            "SELECT failed FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchone()
+        assert row["failed"] == 1
+        # Re-processing the same source+ref re-enqueues with cleared state.
+        pipe.process(_record(body="v2"))
+        row = index.db.execute(
+            "SELECT failed, retry_count FROM embed_queue WHERE memory_id = ?",
             (str(memory.id),),
         ).fetchone()
-        assert rows["c"] == 1
-        assert embedder.calls == [["some body"]]
-
-    def test_embedder_failure_logs_and_continues(
-        self, vault: Vault, index: Index, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        class _Boom:
-            dimensions = 768
-
-            def embed_batch(self, texts: list[str]) -> list[list[float]]:
-                raise RuntimeError("boom")
-
-        pipe = Pipeline(vault, index, embedder=_Boom())  # type: ignore[arg-type]
-        with caplog.at_level("WARNING"):
-            memory = pipe.process(_record())
-        # Memory still created; just no vec rows.
-        rows = index.db.execute(
-            "SELECT COUNT(*) AS c FROM memories_vec WHERE memory_id = ?",
-            (str(memory.id),),
-        ).fetchone()
-        assert rows["c"] == 0
-        assert any("embedding failed" in r.message for r in caplog.records)
+        assert row["failed"] == 0
+        assert row["retry_count"] == 0

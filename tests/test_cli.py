@@ -301,22 +301,31 @@ class TestMigrateCommand:
         assert "DRY-RUN" in result.output
         assert "Re-run with --apply" in result.output
 
-    def test_no_embed_flag_short_circuits_embedder(
-        self, tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """With --no-embed, the migrate command should never call _maybe_embedder."""
+    def test_apply_enqueues_records(self, tmp_path: Path, runner: CliRunner) -> None:
+        """Migrate writes records and pushes them onto the embed queue —
+        the actual embedding is the worker's job."""
+        empty_home = tmp_path / "home"
+        ari = empty_home / "ari"
+        ari.mkdir(parents=True)
+        (ari / "openclaw.json").write_text("{}")
+        (ari / "MEMORY.md").write_text("# core\n")
+        vault = tmp_path / "vault"
+        runner.invoke(app, ["init", "-y", "--home", str(empty_home), str(vault)])
+
+        result = runner.invoke(
+            app,
+            ["migrate", "--apply", "--vault", str(vault)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Embed queue" in result.output
+        assert "memstem embed" in result.output
+
+    def test_no_embed_flag_is_back_compat_alias(self, tmp_path: Path, runner: CliRunner) -> None:
+        """Pre-PR-26 install.sh passes `--no-embed`; we accept it as a no-op."""
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         vault = tmp_path / "vault"
         runner.invoke(app, ["init", "-y", "--home", str(empty_home), str(vault)])
-
-        embedder_calls = []
-
-        def _trip(*args: object, **kwargs: object) -> None:
-            embedder_calls.append(args)
-            raise RuntimeError("_maybe_embedder must not be called when --no-embed is set")
-
-        monkeypatch.setattr("memstem.migrate._maybe_embedder", _trip)
 
         result = runner.invoke(
             app,
@@ -333,8 +342,6 @@ class TestMigrateCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert embedder_calls == []
-        assert "no-embed" in result.output.lower() or "memstem reindex" in result.output
 
     def test_apply_mode_label_in_output(self, tmp_path: Path, runner: CliRunner) -> None:
         empty_home = tmp_path / "home"
@@ -394,22 +401,26 @@ class TestDoctor:
         runner: CliRunner,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Patch the Ollama embedder to a stub so the doctor doesn't talk to a
-        # real server.
+        # Patch the embedder factory so the doctor doesn't talk to a real
+        # server. `embed_for` is the function the doctor uses.
         class _StubEmbedder:
-            def __init__(self, **_: object) -> None: ...
+            dimensions = 768
 
             def embed(self, _: str) -> list[float]:
                 return [0.0] * 768
 
+            def embed_batch(self, texts: list[str]) -> list[list[float]]:
+                return [[0.0] * 768 for _ in texts]
+
             def close(self) -> None: ...
 
-        monkeypatch.setattr("memstem.cli.OllamaEmbedder", _StubEmbedder)
+        monkeypatch.setattr("memstem.cli.embed_for", lambda _cfg: _StubEmbedder())
         result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
         assert result.exit_code == 0, result.output
         assert "All checks passed" in result.output
         assert "Python 3" in result.output
         assert "Index opens cleanly" in result.output
+        assert "Embed queue" in result.output
 
     def test_reports_missing_vault(self, tmp_path: Path, runner: CliRunner) -> None:
         result = runner.invoke(app, ["doctor", "--vault", str(tmp_path / "no-such-vault")])
@@ -431,7 +442,8 @@ class TestDoctor:
         )
         result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
         assert result.exit_code == 1
-        assert "✗ Ollama" in result.output
+        # Doctor labels the embedder check by provider+model.
+        assert "✗ ollama" in result.output
 
     def test_reports_missing_workspace(self, initialized_vault: Path, runner: CliRunner) -> None:
         cfg_path = initialized_vault / "_meta" / "config.yaml"

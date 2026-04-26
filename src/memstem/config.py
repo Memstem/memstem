@@ -8,12 +8,43 @@ from pydantic import BaseModel, Field
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedding model configuration."""
+    """Embedding model configuration.
+
+    Memstem ships four backends; pick one via ``provider`` and supply
+    only that one's fields. API keys live in environment variables
+    named by ``api_key_env`` (never written to the vault):
+
+    - ``ollama`` (default) — local. Requires no API key. ``base_url``
+      defaults to ``http://localhost:11434``.
+    - ``openai`` — OpenAI or any OpenAI-compatible endpoint (Together,
+      Mistral, Groq, vLLM, LM Studio, ...). Set ``base_url`` to the
+      provider's URL when not using OpenAI directly.
+    - ``gemini`` — Google's Generative Language API.
+    - ``voyage`` — Voyage AI (Anthropic's embedding partner).
+    """
 
     provider: str = "ollama"
     model: str = "nomic-embed-text"
-    base_url: str = "http://localhost:11434"
+    base_url: str | None = None
+    """Override the provider's default base URL. Defaults to ``http://localhost:11434``
+    for ollama; provider-specific defaults for openai/gemini/voyage."""
+
     dimensions: int = 768
+
+    api_key_env: str | None = None
+    """Name of the environment variable holding the API key. Defaults
+    to ``OPENAI_API_KEY`` / ``GOOGLE_API_KEY`` / ``VOYAGE_API_KEY``
+    depending on provider; ignored for ollama."""
+
+    workers: int = 2
+    """Concurrent embedding workers draining the queue. CPU-bound Ollama
+    is happiest at 1; API providers tolerate higher values (4 is a
+    sensible cap to avoid hitting per-account rate limits)."""
+
+    batch_size: int = 8
+    """How many records the worker pulls from the queue per iteration.
+    Each record's chunks are batched in a single API call when the
+    backend supports it."""
 
 
 class SearchConfig(BaseModel):

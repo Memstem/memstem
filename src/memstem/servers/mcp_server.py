@@ -14,7 +14,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from memstem.core.embeddings import OllamaEmbedder
+from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index
 from memstem.core.search import Result, Search
@@ -73,7 +73,7 @@ def _auto_path(fm: Frontmatter) -> Path:
 def build_server(
     vault: Vault,
     index: Index,
-    embedder: OllamaEmbedder | None = None,
+    embedder: Embedder | None = None,
     *,
     name: str = "memstem",
 ) -> FastMCP:

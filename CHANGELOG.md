@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (PR #26)
+
+- **Pluggable embedder backends** via a formal `Embedder` ABC and an
+  `embed_for(EmbeddingConfig)` factory. Four implementations ship:
+  `OllamaEmbedder` (default, local), `OpenAIEmbedder` (with
+  `base_url` knob for OpenAI-compatible providers like Together,
+  Mistral, Groq, vLLM, LM Studio), `GeminiEmbedder`
+  (`text-embedding-004` — same 768d as Ollama, no reindex on switch),
+  and `VoyageEmbedder` (Anthropic's recommended partner). API keys
+  live in env vars named by `EmbeddingConfig.api_key_env`; nothing
+  secret lands in the vault.
+- **Always-on embed queue.** New `embed_queue` SQLite table (schema
+  v2). The pipeline writes records synchronously and enqueues each
+  one for embedding. `EmbedWorker` drains the queue with retry +
+  backoff; failed records land in `failed=1` after `max_retries`
+  (default 5) and surface in `memstem doctor`. The daemon runs the
+  worker continuously alongside reconcile + watch; one-shot drains
+  via `memstem embed`.
+- **`memstem embed` CLI command** for manual queue drains.
+  `--retry-failed` resets records that hit max retries.
+- `EmbeddingConfig.workers` (default 2) and `batch_size` (default 8)
+  tune queue throughput; CPU Ollama at 1, API providers at 4+.
+- ADR 0009 documents the rationale and the architecture.
+
+### Changed (PR #26)
+
+- `pipeline.process` no longer embeds inline; ingest latency is now
+  bounded by disk + SQLite, not by the embedder. The previous
+  inline-embed path is gone.
+- `memstem doctor` reports `Embed queue: N pending, M failed` so
+  operators can see whether the queue is keeping up.
+- `memstem doctor`'s embedder check now works for every provider
+  (was Ollama-only).
+- `memstem migrate --no-embed` and `install.sh --migrate-no-embed`
+  are kept as no-op aliases for back-compat with PR #23/#24
+  invocations — embedding is always deferred now.
+- Schema migration tracker no longer accumulates extra rows on each
+  migration; `schema_version` keeps exactly one row at the latest
+  applied version.
+- `Index.connect()` opens the SQLite connection with
+  `check_same_thread=False` so the embed worker can run sync SQLite
+  calls under `asyncio.to_thread`. Writes are still serialized by
+  SQLite's single-writer lock.
+
 ### Fixed (PR #25)
 
 - **Path collisions across agents.** Daily logs and skills with the

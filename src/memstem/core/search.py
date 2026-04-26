@@ -15,7 +15,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from memstem.core.embeddings import OllamaEmbedder
+from memstem.core.embeddings import Embedder
 from memstem.core.index import FtsHit, Index, VecHit
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
@@ -121,7 +121,7 @@ class Search:
         self,
         vault: Vault,
         index: Index,
-        embedder: OllamaEmbedder | None = None,
+        embedder: Embedder | None = None,
     ) -> None:
         self.vault = vault
         self.index = index

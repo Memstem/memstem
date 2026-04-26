@@ -21,7 +21,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from memstem.adapters.base import MemoryRecord
-from memstem.core.embeddings import OllamaEmbedder, chunk_text
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
@@ -95,15 +94,21 @@ class Pipeline:
         self,
         vault: Vault,
         index: Index,
-        embedder: OllamaEmbedder | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
-        self.embedder = embedder
         _ensure_record_map(self.index.db)
 
     def process(self, record: MemoryRecord) -> Memory:
-        """Persist one record as a canonical Memory; idempotent for re-emits."""
+        """Persist one record as a canonical Memory; idempotent for re-emits.
+
+        The pipeline is fast-path only: it writes the markdown file, the
+        memories/tags/links/FTS5 rows, and enqueues the record for
+        embedding. The actual vector embedding happens asynchronously
+        in :class:`memstem.core.embed_worker.EmbedWorker`. This keeps
+        ingestion latency bounded by disk I/O and SQLite — not by an
+        embedder that may be CPU-bound or rate-limited.
+        """
         memory_id = self._lookup_or_assign_id(record.source, record.ref)
         fm = self._build_frontmatter(record, memory_id)
         path = self._existing_path(memory_id) or _path_for_memory(fm, record)
@@ -112,7 +117,7 @@ class Pipeline:
         self.vault.write(memory)
         self.index.upsert(memory)
         self._record_mapping(record.source, record.ref, memory_id)
-        self._embed_and_index_chunks(memory_id, record.body)
+        self.index.enqueue_embed(str(memory_id))
         return memory
 
     def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
@@ -176,22 +181,6 @@ class Pipeline:
                 """,
                 (source, ref, str(memory_id)),
             )
-
-    def _embed_and_index_chunks(self, memory_id: UUID, body: str) -> None:
-        if self.embedder is None:
-            return
-        chunks = chunk_text(body)
-        if not chunks:
-            return
-        try:
-            embeddings = self.embedder.embed_batch(chunks)
-        except Exception as exc:
-            logger.warning("embedding failed for %s: %s", memory_id, exc)
-            return
-        try:
-            self.index.upsert_vectors(str(memory_id), chunks, embeddings)
-        except ValueError as exc:
-            logger.warning("vector upsert failed for %s: %s", memory_id, exc)
 
 
 __all__ = ["Pipeline"]

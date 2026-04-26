@@ -90,6 +90,19 @@ MIGRATIONS: dict[int, str] = {
             tokenize='porter unicode61'
         );
     """,
+    2: """
+        -- Records that need vector embedding. The pipeline writes here
+        -- synchronously after vault + FTS5 are persisted; the embedder
+        -- worker drains the queue at its own pace.
+        CREATE TABLE IF NOT EXISTS embed_queue (
+            memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+            enqueued_at TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            failed INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_embed_queue_failed ON embed_queue(failed);
+    """,
 }
 
 
@@ -121,7 +134,12 @@ class Index:
         if self._db is not None:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.db_path)
+        # `check_same_thread=False` lets the embed worker run sync SQLite
+        # calls inside `asyncio.to_thread`. sqlite3 is thread-safe at the
+        # library level (Python builds default to SQLITE_THREADSAFE=1);
+        # our queue serializes writes per memory_id so no two workers
+        # ever target the same row in the same instant.
+        db = sqlite3.connect(self.db_path, check_same_thread=False)
         db.row_factory = sqlite3.Row
         db.enable_load_extension(True)
         sqlite_vec.load(db)
@@ -144,7 +162,9 @@ class Index:
 
     def _migrate(self) -> None:
         try:
-            row = self.db.execute("SELECT version FROM schema_version").fetchone()
+            row = self.db.execute(
+                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+            ).fetchone()
             current = int(row["version"]) if row else 0
         except sqlite3.OperationalError:
             current = 0
@@ -153,10 +173,11 @@ class Index:
             if version <= current:
                 continue
             self.db.executescript(MIGRATIONS[version])
-            self.db.execute(
-                "INSERT OR REPLACE INTO schema_version(rowid, version) VALUES (1, ?)",
-                (version,),
-            )
+            # `version` is the PRIMARY KEY of schema_version, so we keep
+            # exactly one row by deleting first. Older code stored rowid=1
+            # which fought with the auto-aliasing of INTEGER PRIMARY KEY.
+            self.db.execute("DELETE FROM schema_version")
+            self.db.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
 
         self._ensure_vec_table()
         self.db.commit()
@@ -276,7 +297,103 @@ class Index:
         with self.db:
             self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
+            self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
+    # ---- Embed queue ------------------------------------------------------
+
+    def enqueue_embed(self, memory_id: str) -> None:
+        """Mark `memory_id` as needing vector embedding.
+
+        Idempotent: re-enqueueing an existing entry resets `retry_count`
+        and `failed=0` so a record that previously gave up gets another
+        try when its content changes.
+        """
+        from datetime import UTC, datetime
+
+        now = datetime.now(tz=UTC).isoformat()
+        with self.db:
+            self.db.execute(
+                """
+                INSERT INTO embed_queue(memory_id, enqueued_at, retry_count, last_error, failed)
+                VALUES (?, ?, 0, NULL, 0)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    enqueued_at = excluded.enqueued_at,
+                    retry_count = 0,
+                    last_error = NULL,
+                    failed = 0
+                """,
+                (memory_id, now),
+            )
+
+    def dequeue_embed(self, memory_id: str) -> None:
+        """Remove `memory_id` from the queue (called after a successful embed)."""
+        with self.db:
+            self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
+
+    def mark_embed_error(
+        self,
+        memory_id: str,
+        error: str,
+        max_retries: int = 5,
+    ) -> None:
+        """Record a transient embed failure.
+
+        Increments `retry_count`; once it exceeds `max_retries` the row
+        is flipped to `failed=1` and skipped by future drains until the
+        record changes (which re-enqueues with reset state) or the user
+        runs `memstem embed --retry-failed`.
+        """
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE embed_queue
+                SET retry_count = retry_count + 1,
+                    last_error = ?,
+                    failed = CASE WHEN retry_count + 1 >= ? THEN 1 ELSE 0 END
+                WHERE memory_id = ?
+                """,
+                (error[:500], max_retries, memory_id),
+            )
+
+    def queue_pending(self, limit: int) -> list[str]:
+        """Return up to `limit` memory_ids that are pending embedding (not failed)."""
+        rows = self.db.execute(
+            """
+            SELECT memory_id FROM embed_queue
+            WHERE failed = 0
+            ORDER BY enqueued_at ASC, retry_count ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [r["memory_id"] for r in rows]
+
+    def queue_stats(self) -> dict[str, int]:
+        """Return `{pending, failed, total}` for `memstem doctor`."""
+        row = self.db.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN failed = 0 THEN 1 ELSE 0 END), 0) AS pending,
+                COALESCE(SUM(CASE WHEN failed = 1 THEN 1 ELSE 0 END), 0) AS failed,
+                COUNT(*) AS total
+            FROM embed_queue
+            """
+        ).fetchone()
+        return {
+            "pending": int(row["pending"]),
+            "failed": int(row["failed"]),
+            "total": int(row["total"]),
+        }
+
+    def reset_failed_queue(self) -> int:
+        """Mark every `failed=1` row pending again. Returns rows reset."""
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE embed_queue SET failed = 0, retry_count = 0, last_error = NULL "
+                "WHERE failed = 1"
+            )
+        return int(cur.rowcount)
 
     def query_fts(
         self,

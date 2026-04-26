@@ -92,8 +92,11 @@ class TestSchema:
             assert required in names
 
     def test_schema_version_recorded(self, index: Index) -> None:
-        version = index.db.execute("SELECT version FROM schema_version").fetchone()["version"]
-        assert version == 1
+        version = index.db.execute(
+            "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+        ).fetchone()["version"]
+        # Bumped to 2 in PR #26 (embed_queue table).
+        assert version == 2
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -104,12 +107,13 @@ class TestSchema:
     def test_reopen_existing_db_does_not_re_migrate(self, tmp_path: Path) -> None:
         db_path = tmp_path / "index.db"
         Index(db_path).connect()
-        # Reopen and confirm schema_version still has exactly one row.
+        # Reopen and confirm schema_version still has exactly one row at
+        # the latest version (no duplicate inserts on every connect).
         idx = Index(db_path)
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [1]
+            assert [r["version"] for r in rows] == [2]
         finally:
             idx.close()
 
