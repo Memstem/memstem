@@ -181,6 +181,11 @@ class Index:
 
         Vector rows are managed separately via `upsert_vectors` so callers can
         chunk + embed at their own cadence.
+
+        If another row already occupies this `path` under a different id
+        (e.g. an MCP-driven upsert with a custom path that shadows an
+        existing record), its tags/links/FTS/vec rows are cleaned up so
+        nothing orphans in the index.
         """
         fm = memory.frontmatter
         memory_id = str(fm.id)
@@ -188,6 +193,18 @@ class Index:
         params = self._memory_params(fm, memory.body, path_str)
 
         with self.db:
+            displaced = self.db.execute(
+                "SELECT id FROM memories WHERE path = ? AND id != ?",
+                (path_str, memory_id),
+            ).fetchone()
+            if displaced is not None:
+                old_id = displaced["id"]
+                self.db.execute("DELETE FROM tags WHERE memory_id = ?", (old_id,))
+                self.db.execute("DELETE FROM links WHERE memory_id = ?", (old_id,))
+                self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (old_id,))
+                self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (old_id,))
+                self.db.execute("DELETE FROM memories WHERE id = ?", (old_id,))
+
             self.db.execute("DELETE FROM tags WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM links WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))

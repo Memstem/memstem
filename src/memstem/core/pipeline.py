@@ -52,16 +52,39 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
+def _agent_tag(record: MemoryRecord) -> str | None:
+    """Extract `agent:<tag>` from record tags, returning the tag or None.
+
+    Used to disambiguate paths for skills and daily logs, which would
+    otherwise collide across agents (every agent has a 2026-04-26 daily
+    log; many agents share skill names like "deploy" or "voice-sms").
+    """
+    for tag in record.tags:
+        if tag.startswith("agent:"):
+            stripped = tag[len("agent:") :].strip()
+            if stripped:
+                return stripped
+    return None
+
+
 def _path_for_memory(fm: Frontmatter, record: MemoryRecord) -> Path:
+    agent = _agent_tag(record)
     if fm.type is MemoryType.SKILL:
         slug_source = fm.title or str(fm.id)
         slug = slug_source.lower().replace(" ", "-")[:64]
+        if agent:
+            return Path(f"skills/{agent}/{slug}.md")
         return Path(f"skills/{slug}.md")
     if fm.type is MemoryType.SESSION:
         session_id = record.metadata.get("session_id") or str(fm.id)
         return Path(f"sessions/{session_id}.md")
     if fm.type is MemoryType.DAILY:
-        return Path(f"daily/{fm.created.date().isoformat()}.md")
+        date = fm.created.date().isoformat()
+        if agent:
+            return Path(f"daily/{agent}/{date}.md")
+        return Path(f"daily/{date}.md")
+    if agent:
+        return Path(f"memories/{record.source}/{agent}/{fm.id}.md")
     return Path(f"memories/{record.source}/{fm.id}.md")
 
 

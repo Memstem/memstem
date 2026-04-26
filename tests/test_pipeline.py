@@ -86,6 +86,82 @@ class TestPathForMemory:
         )
         assert memory.path == Path("sessions/sess-1234.md")
 
+    def test_agent_tag_disambiguates_skill_path(self, vault: Vault, index: Index) -> None:
+        """Two agents with the same skill title must not collide on disk."""
+        pipe = Pipeline(vault, index)
+        ari = pipe.process(
+            _record(
+                ref="/home/ubuntu/ari/skills/deploy/SKILL.md",
+                title="Deploy",
+                type_="skill",
+                tags=["agent:ari"],
+                extra_metadata={
+                    "raw_frontmatter": {"scope": "universal", "verification": "ok"},
+                },
+            )
+        )
+        sarah = pipe.process(
+            _record(
+                ref="/home/ubuntu/sarah/skills/deploy/SKILL.md",
+                title="Deploy",
+                type_="skill",
+                tags=["agent:sarah"],
+                extra_metadata={
+                    "raw_frontmatter": {"scope": "universal", "verification": "ok"},
+                },
+            )
+        )
+        assert ari.path == Path("skills/ari/deploy.md")
+        assert sarah.path == Path("skills/sarah/deploy.md")
+        assert ari.path != sarah.path
+
+    def test_agent_tag_disambiguates_daily_path(self, vault: Vault, index: Index) -> None:
+        """Daily logs from different agents on the same date must not collide."""
+        pipe = Pipeline(vault, index)
+        ari = pipe.process(
+            _record(
+                ref="/home/ubuntu/ari/memory/2026-04-26.md",
+                title="2026-04-26",
+                type_="daily",
+                tags=["agent:ari"],
+                extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
+            )
+        )
+        sarah = pipe.process(
+            _record(
+                ref="/home/ubuntu/sarah/memory/2026-04-26.md",
+                title="2026-04-26",
+                type_="daily",
+                tags=["agent:sarah"],
+                extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
+            )
+        )
+        assert ari.path == Path("daily/ari/2026-04-26.md")
+        assert sarah.path == Path("daily/sarah/2026-04-26.md")
+
+    def test_no_agent_tag_keeps_legacy_path(self, vault: Vault, index: Index) -> None:
+        """Records without an `agent:` tag use the pre-PR-25 paths (back-compat)."""
+        pipe = Pipeline(vault, index)
+        skill = pipe.process(
+            _record(
+                title="Deploy",
+                type_="skill",
+                extra_metadata={
+                    "raw_frontmatter": {"scope": "universal", "verification": "ok"},
+                },
+            )
+        )
+        daily = pipe.process(
+            _record(
+                ref="/tmp/2026-04-26.md",
+                title="2026-04-26",
+                type_="daily",
+                extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
+            )
+        )
+        assert skill.path == Path("skills/deploy.md")
+        assert daily.path == Path("daily/2026-04-26.md")
+
 
 class TestProcess:
     def test_creates_memory_in_vault(self, vault: Vault, index: Index) -> None:
