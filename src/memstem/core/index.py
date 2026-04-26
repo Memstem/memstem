@@ -9,12 +9,14 @@ append to the `MIGRATIONS` mapping; `connect()` advances the version on open.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import struct
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
@@ -25,6 +27,17 @@ from memstem.core.storage import Memory
 
 SCHEMA_VERSION = 1
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
+
+
+def body_hash(body: str) -> str:
+    """Stable hash of a body string used to detect content changes.
+
+    SHA-256 of the UTF-8-encoded body, hex-encoded. Used as the cheap
+    side of the "did the body change since we last embedded?" check —
+    if the hash matches what's recorded in `embed_state`, the existing
+    vectors are still valid and we can skip re-embedding.
+    """
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +116,25 @@ MIGRATIONS: dict[int, str] = {
             failed INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_embed_queue_failed ON embed_queue(failed);
+    """,
+    3: """
+        -- Records what each memory was last successfully embedded with.
+        -- The pipeline reads this to decide whether to re-enqueue a
+        -- record on re-emit; if the body hasn't changed and the embedder
+        -- signature still matches, the existing vectors are valid and
+        -- enqueueing would just burn rate-limit quota.
+        --
+        -- The worker writes here on every successful embed. On schema
+        -- v3 first-open we backfill rows for memories that already have
+        -- vectors, with `embed_signature = NULL` (legacy/grandfathered
+        -- — treated as compatible with any signature until the body
+        -- changes or the user runs `memstem reindex`).
+        CREATE TABLE IF NOT EXISTS embed_state (
+            memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+            body_hash TEXT NOT NULL,
+            embed_signature TEXT,
+            embedded_at TEXT NOT NULL
+        );
     """,
 }
 
@@ -195,7 +227,43 @@ class Index:
             self.db.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
 
         self._ensure_vec_table()
+        self._backfill_embed_state()
         self.db.commit()
+
+    def _backfill_embed_state(self) -> None:
+        """Populate `embed_state` for memories that already have vectors.
+
+        Runs every time the index opens; idempotent. The expected
+        workload is the v3 upgrade, where it stamps every previously-
+        embedded memory in one pass so the daemon's next reconcile
+        doesn't re-enqueue them. Subsequent boots are a no-op.
+
+        The signature is left NULL — we don't know what embedder
+        produced the existing vectors, so we shouldn't claim to. NULL
+        is treated as "compatible with any current signature" by
+        :meth:`needs_reembed`, so legacy records keep their vectors
+        until the body changes (which re-embeds and stamps the real
+        signature) or until the user runs ``memstem reindex``.
+        """
+        rows = self.db.execute(
+            """
+            SELECT m.id AS id, m.body AS body
+            FROM memories m
+            WHERE EXISTS (SELECT 1 FROM memories_vec v WHERE v.memory_id = m.id)
+              AND NOT EXISTS (SELECT 1 FROM embed_state s WHERE s.memory_id = m.id)
+            """
+        ).fetchall()
+        if not rows:
+            return
+        now = datetime.now(tz=UTC).isoformat()
+        payload = [(r["id"], body_hash(r["body"]), None, now) for r in rows]
+        self.db.executemany(
+            """
+            INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            payload,
+        )
 
     def _ensure_vec_table(self) -> None:
         # vec0 virtual tables can't be created in executescript() reliably across
@@ -244,9 +312,19 @@ class Index:
             self.db.execute("DELETE FROM tags WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM links WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
+            # `INSERT ... ON CONFLICT DO UPDATE` (not `INSERT OR REPLACE`)
+            # so that re-upserting a row doesn't trigger ON DELETE CASCADE
+            # on child tables. With REPLACE, SQLite implements the
+            # "replace" as DELETE-then-INSERT, which cascade-wipes
+            # `embed_state` and `embed_queue` rows referencing the same
+            # id — that would erase the worker's hard-won "this content
+            # is already embedded with signature X" record on every
+            # reconcile pass. ON CONFLICT DO UPDATE leaves the row in
+            # place and just rewrites its columns, so child references
+            # survive.
             self.db.execute(
                 """
-                INSERT OR REPLACE INTO memories (
+                INSERT INTO memories (
                     id, type, source, title, body, path,
                     created, updated, importance, confidence,
                     valid_from, valid_to, embedding_version, deprecated_by
@@ -255,6 +333,20 @@ class Index:
                     :created, :updated, :importance, :confidence,
                     :valid_from, :valid_to, :embedding_version, :deprecated_by
                 )
+                ON CONFLICT(id) DO UPDATE SET
+                    type = excluded.type,
+                    source = excluded.source,
+                    title = excluded.title,
+                    body = excluded.body,
+                    path = excluded.path,
+                    created = excluded.created,
+                    updated = excluded.updated,
+                    importance = excluded.importance,
+                    confidence = excluded.confidence,
+                    valid_from = excluded.valid_from,
+                    valid_to = excluded.valid_to,
+                    embedding_version = excluded.embedding_version,
+                    deprecated_by = excluded.deprecated_by
                 """,
                 params,
             )
@@ -313,7 +405,67 @@ class Index:
             self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
+            self.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
+    # ---- Embed state ------------------------------------------------------
+
+    def needs_reembed(self, memory_id: str, content_hash: str, embed_signature: str) -> bool:
+        """Return True if this memory needs (re-)embedding.
+
+        Checks three conditions in order:
+        - No rows in `memories_vec` for this id → never embedded.
+        - No `embed_state` row → first time we're being asked, embed.
+        - `body_hash` differs → content changed, vectors are stale.
+        - `embed_signature` differs and stored value is non-NULL →
+          embedder configuration changed.
+
+        A NULL stored signature is the legacy/grandfathered marker
+        (see :meth:`_backfill_embed_state`): treat it as compatible
+        with whatever the caller is asking about, so we don't pointlessly
+        re-embed every record on the first daemon start after upgrading
+        to schema v3.
+        """
+        with self._lock:
+            vec = self.db.execute(
+                "SELECT 1 FROM memories_vec WHERE memory_id = ? LIMIT 1",
+                (memory_id,),
+            ).fetchone()
+            if vec is None:
+                return True
+            state = self.db.execute(
+                "SELECT body_hash, embed_signature FROM embed_state WHERE memory_id = ?",
+                (memory_id,),
+            ).fetchone()
+        if state is None:
+            return True
+        if state["body_hash"] != content_hash:
+            return True
+        stored_sig = state["embed_signature"]
+        if stored_sig is not None and stored_sig != embed_signature:
+            return True
+        return False
+
+    def record_embed_state(self, memory_id: str, content_hash: str, embed_signature: str) -> None:
+        """Mark `memory_id` as freshly embedded with the given hash + signature.
+
+        Called by the embed worker after a successful vector upsert.
+        Idempotent: re-recording the same state is fine (the
+        ``embedded_at`` timestamp gets bumped).
+        """
+        now = datetime.now(tz=UTC).isoformat()
+        with self._lock, self.db:
+            self.db.execute(
+                """
+                INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    body_hash = excluded.body_hash,
+                    embed_signature = excluded.embed_signature,
+                    embedded_at = excluded.embedded_at
+                """,
+                (memory_id, content_hash, embed_signature, now),
+            )
 
     # ---- Embed queue ------------------------------------------------------
 
@@ -324,8 +476,6 @@ class Index:
         and `failed=0` so a record that previously gave up gets another
         try when its content changes.
         """
-        from datetime import UTC, datetime
-
         now = datetime.now(tz=UTC).isoformat()
         with self._lock, self.db:
             self.db.execute(
@@ -508,5 +658,6 @@ __all__ = [
     "FtsHit",
     "Index",
     "VecHit",
+    "body_hash",
     "extract_wikilinks",
 ]

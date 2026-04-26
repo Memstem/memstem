@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from memstem.adapters.base import MemoryRecord
-from memstem.core.index import Index
+from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
 
@@ -265,3 +265,98 @@ class TestEmbedQueueing:
         ).fetchone()
         assert row["failed"] == 0
         assert row["retry_count"] == 0
+
+
+class TestSkipEnqueueWhenUnchanged:
+    """Re-emits with unchanged content + matching signature should not
+    re-enqueue. This is the main behavior PR #30 introduced — it stops
+    `pm2 restart memstem` from re-embedding all ~765 records on every
+    daemon boot.
+
+    The pipeline's `embed_queue` row is the unit of test: present means
+    enqueued, absent means skipped. We pre-stamp `embed_state` and
+    seed `memories_vec` to simulate "this was already successfully
+    embedded" before re-processing.
+    """
+
+    SIG = "gemini:gemini-embedding-2-preview:768"
+    OTHER_SIG = "ollama:nomic-embed-text:768"
+
+    def _stamp_as_embedded(self, index: Index, memory_id: str, body: str, signature: str) -> None:
+        """Mark a memory as already-embedded: write a vec row + state."""
+        # A single dummy vector is enough — the helper checks for any row.
+        index.db.execute(
+            """
+            INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
+            VALUES (?, ?, ?, ?)
+            """,
+            (f"{memory_id}:0", memory_id, 0, b"\x00" * (768 * 4)),
+        )
+        index.db.commit()
+        index.record_embed_state(memory_id, body_hash(body), signature)
+
+    def test_unchanged_re_emit_does_not_re_enqueue(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index, embedding_signature=self.SIG)
+        memory = pipe.process(_record(body="hello"))
+        # Simulate the worker successfully embedding it.
+        self._stamp_as_embedded(index, str(memory.id), "hello", self.SIG)
+        # Drop the queue entry as the worker would have on success.
+        index.dequeue_embed(str(memory.id))
+
+        # Re-emit with identical body — pipeline must not enqueue.
+        pipe.process(_record(body="hello"))
+        rows = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchall()
+        assert rows == []
+
+    def test_changed_body_re_enqueues(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index, embedding_signature=self.SIG)
+        memory = pipe.process(_record(body="v1"))
+        self._stamp_as_embedded(index, str(memory.id), "v1", self.SIG)
+        index.dequeue_embed(str(memory.id))
+
+        pipe.process(_record(body="v2"))
+        rows = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_signature_change_re_enqueues(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index, embedding_signature=self.SIG)
+        memory = pipe.process(_record(body="hello"))
+        # Stamp with a different signature, as if the user just switched
+        # provider mid-soak.
+        self._stamp_as_embedded(index, str(memory.id), "hello", self.OTHER_SIG)
+        index.dequeue_embed(str(memory.id))
+
+        # Same body, but the signature mismatches → re-enqueue.
+        pipe.process(_record(body="hello"))
+        rows = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_no_vectors_yet_still_enqueues(self, vault: Vault, index: Index) -> None:
+        """A re-emit during the queue-still-draining window must enqueue
+        the record again (the worker hasn't gotten to it yet)."""
+        pipe = Pipeline(vault, index, embedding_signature=self.SIG)
+        memory = pipe.process(_record(body="hello"))
+        # First emit enqueued; clear the queue to simulate "worker hasn't
+        # picked this up yet" — but no vec rows or state row exist.
+        index.dequeue_embed(str(memory.id))
+
+        pipe.process(_record(body="hello"))
+        rows = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_first_emit_always_enqueues(self, vault: Vault, index: Index) -> None:
+        """No state, no vectors → always enqueue, regardless of signature."""
+        pipe = Pipeline(vault, index, embedding_signature=self.SIG)
+        memory = pipe.process(_record(body="hello"))
+        rows = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchall()
+        assert len(rows) == 1

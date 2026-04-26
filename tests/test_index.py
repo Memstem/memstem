@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 
 from memstem.core.frontmatter import Frontmatter, validate
-from memstem.core.index import Index, extract_wikilinks
+from memstem.core.index import Index, body_hash, extract_wikilinks
 from memstem.core.storage import Memory
 
 
@@ -97,8 +97,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 2 in PR #26 (embed_queue table).
-        assert version == 2
+        # Bumped to 3 in PR #30 (embed_state table).
+        assert version == 3
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -115,7 +115,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [2]
+            assert [r["version"] for r in rows] == [3]
         finally:
             idx.close()
 
@@ -270,6 +270,197 @@ class TestVectorStorage:
             (str(memory.id),),
         ).fetchone()["c"]
         assert count == 1
+
+
+class TestBodyHash:
+    """`body_hash` is the cheap "did the content change?" check."""
+
+    def test_stable_for_same_input(self) -> None:
+        assert body_hash("hello") == body_hash("hello")
+
+    def test_different_for_different_input(self) -> None:
+        assert body_hash("hello") != body_hash("world")
+
+    def test_handles_unicode(self) -> None:
+        # Should not raise; output is hex regardless of input charset.
+        h = body_hash("héllo 🌍")
+        assert isinstance(h, str)
+        assert len(h) == 64  # sha256 hex
+
+
+class TestEmbedState:
+    """`embed_state` records the last successful embedding's body+signature.
+
+    Together with `memories_vec`, it lets `needs_reembed` answer
+    "should we re-enqueue this record?" without redoing the embed work.
+    """
+
+    SIG_GEMINI = "gemini:gemini-embedding-2-preview:768"
+    SIG_OLLAMA = "ollama:nomic-embed-text:768"
+
+    def _seed_with_vectors(self, index: Index, body: str = "hello") -> Memory:
+        memory = _make_memory(body=body)
+        index.upsert(memory)
+        index.upsert_vectors(str(memory.id), [body], [_fake_embedding(1)])
+        return memory
+
+    def test_needs_reembed_when_no_vectors(self, index: Index) -> None:
+        memory = _make_memory(body="hello")
+        index.upsert(memory)
+        # No vec rows yet → must embed.
+        assert index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+
+    def test_needs_reembed_when_no_state_row(self, index: Index) -> None:
+        # Vectors exist but no embed_state → must embed (shouldn't happen
+        # in practice, but the helper has to handle it).
+        memory = self._seed_with_vectors(index)
+        index.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (str(memory.id),))
+        index.db.commit()
+        assert index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+
+    def test_needs_reembed_when_body_hash_differs(self, index: Index) -> None:
+        memory = self._seed_with_vectors(index, body="v1")
+        index.record_embed_state(str(memory.id), body_hash("v1"), self.SIG_GEMINI)
+        # Body changed: hash no longer matches stored.
+        assert index.needs_reembed(str(memory.id), body_hash("v2"), self.SIG_GEMINI)
+
+    def test_needs_reembed_when_signature_differs(self, index: Index) -> None:
+        memory = self._seed_with_vectors(index)
+        index.record_embed_state(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+        # Provider switched: signature mismatch forces re-embed.
+        assert index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_OLLAMA)
+
+    def test_no_reembed_when_unchanged(self, index: Index) -> None:
+        memory = self._seed_with_vectors(index)
+        index.record_embed_state(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+        assert not index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+
+    def test_null_signature_treated_as_compatible(self, index: Index) -> None:
+        """Legacy backfilled rows have NULL signature; don't re-embed them
+        for signature mismatch alone."""
+        memory = self._seed_with_vectors(index)
+        # Manual NULL signature, simulating a backfilled row.
+        index.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (str(memory.id),))
+        index.db.execute(
+            """
+            INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
+            VALUES (?, ?, NULL, '2026-04-26T00:00:00+00:00')
+            """,
+            (str(memory.id), body_hash("hello")),
+        )
+        index.db.commit()
+        # Body matches; signature mismatch is shrugged off (legacy).
+        assert not index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+        # But body change still forces re-embed.
+        assert index.needs_reembed(str(memory.id), body_hash("different"), self.SIG_GEMINI)
+
+    def test_record_embed_state_upserts(self, index: Index) -> None:
+        memory = self._seed_with_vectors(index)
+        index.record_embed_state(str(memory.id), body_hash("a"), self.SIG_GEMINI)
+        index.record_embed_state(str(memory.id), body_hash("b"), self.SIG_OLLAMA)
+        rows = index.db.execute(
+            "SELECT body_hash, embed_signature FROM embed_state WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["body_hash"] == body_hash("b")
+        assert rows[0]["embed_signature"] == self.SIG_OLLAMA
+
+    def test_delete_cascades_embed_state(self, index: Index) -> None:
+        memory = self._seed_with_vectors(index)
+        index.record_embed_state(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+        index.delete(str(memory.id))
+        row = index.db.execute(
+            "SELECT 1 FROM embed_state WHERE memory_id = ?", (str(memory.id),)
+        ).fetchone()
+        assert row is None
+
+
+class TestBackfillEmbedState:
+    """On schema v3 upgrade, memories that already have vectors should
+    get `embed_state` rows written so the daemon doesn't re-enqueue
+    everything on first start."""
+
+    def test_backfill_populates_state_for_vectorized_memories(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="legacy body")
+            idx.upsert(memory)
+            idx.upsert_vectors(str(memory.id), ["legacy body"], [[0.1] * 8])
+            # Wipe embed_state to simulate the pre-v3 state where this
+            # table doesn't exist yet.
+            idx.db.execute("DELETE FROM embed_state")
+            idx.db.commit()
+        finally:
+            idx.close()
+
+        # Reopen — backfill runs in `_migrate`.
+        idx2 = Index(db_path, dimensions=8)
+        idx2.connect()
+        try:
+            row = idx2.db.execute(
+                "SELECT body_hash, embed_signature FROM embed_state WHERE memory_id = ?",
+                (str(memory.id),),
+            ).fetchone()
+            assert row is not None
+            assert row["body_hash"] == body_hash("legacy body")
+            # Backfill leaves signature NULL — we don't know what
+            # produced the vectors, so we shouldn't claim to.
+            assert row["embed_signature"] is None
+        finally:
+            idx2.close()
+
+    def test_backfill_skips_memories_without_vectors(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="never embedded")
+            idx.upsert(memory)
+            # No vectors written. Wipe embed_state and reconnect.
+            idx.db.execute("DELETE FROM embed_state")
+            idx.db.commit()
+        finally:
+            idx.close()
+
+        idx2 = Index(db_path, dimensions=8)
+        idx2.connect()
+        try:
+            row = idx2.db.execute(
+                "SELECT 1 FROM embed_state WHERE memory_id = ?", (str(memory.id),)
+            ).fetchone()
+            # No backfill — this memory was never embedded.
+            assert row is None
+        finally:
+            idx2.close()
+
+    def test_backfill_is_idempotent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="x")
+            idx.upsert(memory)
+            idx.upsert_vectors(str(memory.id), ["x"], [[0.1] * 8])
+            # Manually record a real signature so we can verify backfill
+            # doesn't clobber it on reopen.
+            idx.record_embed_state(str(memory.id), body_hash("x"), "real:sig:8")
+        finally:
+            idx.close()
+
+        idx2 = Index(db_path, dimensions=8)
+        idx2.connect()
+        try:
+            row = idx2.db.execute(
+                "SELECT embed_signature FROM embed_state WHERE memory_id = ?",
+                (str(memory.id),),
+            ).fetchone()
+            # Real signature preserved, NOT overwritten with NULL.
+            assert row["embed_signature"] == "real:sig:8"
+        finally:
+            idx2.close()
 
 
 class TestQueryFts:

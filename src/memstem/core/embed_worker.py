@@ -24,7 +24,7 @@ from memstem.core.embeddings import (
     EmbeddingError,
     chunk_text,
 )
-from memstem.core.index import Index
+from memstem.core.index import Index, body_hash
 from memstem.core.storage import MemoryNotFoundError, Vault
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,7 @@ class EmbedWorker:
         idle_sleep: float = 5.0,
         backoff_base: float = 2.0,
         worker_id: int = 0,
+        embedding_signature: str = "",
     ) -> None:
         self.vault = vault
         self.index = index
@@ -66,6 +67,7 @@ class EmbedWorker:
         self.idle_sleep = idle_sleep
         self.backoff_base = backoff_base
         self.worker_id = worker_id
+        self.embedding_signature = embedding_signature
 
     async def run(self) -> None:
         """Run forever (until cancelled). Logs progress and errors."""
@@ -104,13 +106,16 @@ class EmbedWorker:
         """Embed one record. Sync — runs under :func:`asyncio.to_thread`
         so HTTP and SQLite I/O don't block the event loop."""
         try:
-            chunks = self._chunks_for(memory_id)
+            body, chunks = self._read_for_embed(memory_id)
         except _RecordMissingError:
             # Vault file gone — drop the queue entry; nothing to embed.
             self.index.dequeue_embed(memory_id)
             return False
 
         if not chunks:
+            # Empty body still counts as a successful "embed" — record
+            # the state so the pipeline doesn't keep re-enqueueing it.
+            self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
             self.index.dequeue_embed(memory_id)
             return True
 
@@ -142,10 +147,16 @@ class EmbedWorker:
             self.index.mark_embed_error(memory_id, str(exc), max_retries=self.max_retries)
             return False
 
+        self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
         self.index.dequeue_embed(memory_id)
         return True
 
-    def _chunks_for(self, memory_id: str) -> list[str]:
+    def _read_for_embed(self, memory_id: str) -> tuple[str, list[str]]:
+        """Read the memory's body from the vault and split it into chunks.
+
+        Returns ``(body, chunks)`` so the caller can hash the body for
+        ``embed_state`` while still using ``chunks`` for embedding.
+        """
         row = self.index.db.execute(
             "SELECT path FROM memories WHERE id = ?", (memory_id,)
         ).fetchone()
@@ -155,7 +166,7 @@ class EmbedWorker:
             memory = self.vault.read(row["path"])
         except MemoryNotFoundError as exc:
             raise _RecordMissingError(memory_id) from exc
-        return chunk_text(memory.body)
+        return memory.body, chunk_text(memory.body)
 
 
 class _RecordMissingError(Exception):
@@ -171,6 +182,7 @@ async def run_workers(
     batch_size: int = 8,
     max_retries: int = 5,
     idle_sleep: float = 5.0,
+    embedding_signature: str = "",
 ) -> None:
     """Spawn `n` workers and gather them. Cancellation propagates."""
     if n < 1:
@@ -184,6 +196,7 @@ async def run_workers(
             max_retries=max_retries,
             idle_sleep=idle_sleep,
             worker_id=i,
+            embedding_signature=embedding_signature,
         )
         for i in range(n)
     ]
@@ -206,6 +219,7 @@ async def drain_once(
     max_retries: int = 5,
     progress_every: int = 25,
     on_progress: Any = None,
+    embedding_signature: str = "",
 ) -> dict[str, int]:
     """One-shot drain: run a single worker until the queue is empty.
 
@@ -219,6 +233,7 @@ async def drain_once(
         batch_size=batch_size,
         max_retries=max_retries,
         idle_sleep=0.0,
+        embedding_signature=embedding_signature,
     )
     total = 0
     while True:

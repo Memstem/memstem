@@ -7,9 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — skip re-embed when content unchanged (schema v3)
+
+- **Pipeline no longer re-enqueues a record whose body and embedder
+  signature haven't changed.** Earlier versions enqueued every record
+  on every emit — so a `pm2 restart memstem` re-embedded all ~765
+  records via the reconcile pass, even when no body had changed.
+  Wasteful in time and (for API providers) in rate-limit quota.
+  Schema v3 adds an `embed_state` table tracking the body hash +
+  embedder signature each memory was last successfully embedded
+  with; the pipeline checks this via the new `Index.needs_reembed`
+  helper before enqueueing and skips when hash + signature both
+  match. The worker writes a fresh `embed_state` row after every
+  successful vector upsert. Net result: post-restart reconcile is a
+  no-op for unchanged records.
+- **Re-upserting a memory no longer cascade-deletes its child rows.**
+  `Index.upsert` was using `INSERT OR REPLACE INTO memories`, which
+  SQLite implements as DELETE-then-INSERT and so triggered
+  `ON DELETE CASCADE` on `embed_state` and `embed_queue`. The
+  practical effect was that the worker's hard-won "embedded" record
+  evaporated on the next reconcile. Switched to `INSERT ... ON
+  CONFLICT(id) DO UPDATE` so the row stays in place and child
+  references survive.
+- **Schema migration v3** is automatic on first connect; legacy
+  databases get an `embed_state` row backfilled for every memory
+  that already has vectors, with `embed_signature = NULL`. NULL is
+  treated as "compatible with any signature" by `needs_reembed` so
+  the upgrade doesn't trigger a global re-embed — the first time a
+  body actually changes (or a user runs `memstem reindex`), the
+  legacy NULL gets stamped with the real signature.
+- 23 new tests covering the embed-state helpers, the pipeline skip
+  path (unchanged body, changed body, signature change, no vectors
+  yet), the worker's stamp-on-success behavior, and the v3 backfill
+  (populates for vectorized memories, skips empty ones, doesn't
+  clobber existing rows). 340 tests passing, 88% coverage.
+
 ## [0.3.0] — 2026-04-26
 
-### Added (PR #31)
+### Added
 
 - **`connect-clients` now registers Memstem MCP in each OpenClaw
   agent's `openclaw.json`.** Earlier versions only patched the
@@ -17,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   if the agent's openclaw.json didn't have a `mcp.servers.memstem`
   entry, the directive was unhonorable: the agent looked for the
   MCP, didn't find it, and fell back to grep or CLI. Same shape of
-  bug as PR #30 (Claude Code side), now closed for OpenClaw too.
+  bug as the v0.2.0 Claude Code MCP-location fix, now closed for
+  OpenClaw too.
 - New `register_openclaw_mcp_server` helper in `integration.py` —
   reads/writes the agent's `mcp.servers.<name>` block while
   preserving every other key in the (large) `openclaw.json`. Same
@@ -39,15 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] — 2026-04-26
 
-Cumulative release covering PRs #23–#30. Shipped features: complete
-installer toolkit (`install.sh` + `memstem doctor`), four pluggable
-embedder backends (Ollama / OpenAI / Gemini / Voyage) with an always-on
-embed queue, Gemini default `gemini-embedding-2-preview` with Matryoshka
-dimensions, thread-safe SQLite Index, batch-size-aware Gemini calls, and
-the cutover `connect-clients` registration moved to the location current
-Claude Code releases actually read.
+Cumulative release covering PRs #23–#29 plus the MCP location fix.
+Shipped features: complete installer toolkit (`install.sh` +
+`memstem doctor`), four pluggable embedder backends (Ollama / OpenAI /
+Gemini / Voyage) with an always-on embed queue, Gemini default
+`gemini-embedding-2-preview` with Matryoshka dimensions, thread-safe
+SQLite Index, batch-size-aware Gemini calls, and the cutover
+`connect-clients` registration moved to the location current Claude
+Code releases actually read.
 
-### Fixed (PR #30)
+### Fixed — connect-clients MCP location
 
 - **`connect-clients` was registering Memstem in a config file Claude
   Code no longer reads.** Earlier versions wrote the
