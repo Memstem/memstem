@@ -184,6 +184,36 @@ class TestUpsert:
         ]
         assert tags == ["replaced"]
 
+    def test_upsert_evicts_displaced_path_holder(self, index: Index) -> None:
+        """When a new memory takes a path that was held by a different id,
+        the old row's tags/links/FTS/vec rows are cleaned up so the index
+        doesn't accumulate orphans (as it did pre-PR-25 during migrate)."""
+        old = _make_memory(title="old", tags=["a"], path="daily/2026-04-26.md")
+        index.upsert(old)
+        index.upsert_vectors(str(old.id), ["chunk"], [_fake_embedding(1)])
+
+        # New record claims the same path under a different id (e.g. an
+        # MCP upsert that overwrites a daily file).
+        new = _make_memory(title="new", tags=["b"], path="daily/2026-04-26.md")
+        assert str(new.id) != str(old.id)
+        index.upsert(new)
+
+        # Old row gone.
+        assert (
+            index.db.execute("SELECT id FROM memories WHERE id = ?", (str(old.id),)).fetchone()
+            is None
+        )
+        # New row present.
+        row = index.db.execute("SELECT title FROM memories WHERE id = ?", (str(new.id),)).fetchone()
+        assert row["title"] == "new"
+        # No orphans in tags / FTS / vec for the displaced id.
+        for table in ("tags", "links", "memories_fts", "memories_vec"):
+            count = index.db.execute(
+                f"SELECT COUNT(*) AS c FROM {table} WHERE memory_id = ?",
+                (str(old.id),),
+            ).fetchone()["c"]
+            assert count == 0, f"{table} still has orphan rows for displaced id"
+
     def test_delete_cascades(self, index: Index) -> None:
         memory = _make_memory(tags=["a", "b"], body="see [[X]]", links=["Y"])
         index.upsert(memory)

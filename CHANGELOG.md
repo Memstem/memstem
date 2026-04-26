@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (PR #25)
+
+- **Path collisions across agents.** Daily logs and skills with the
+  same title/date from different agents collapsed into one record on
+  disk. On Brad's box, 326 daily files reduced to 80, and ~130
+  OpenClaw records were silently lost during the first cutover.
+  Pipeline now extracts `agent:<tag>` from record tags and produces
+  agent-scoped paths: `daily/<agent>/<date>.md`, `skills/<agent>/<slug>.md`,
+  `memories/<source>/<agent>/<id>.md`. Records without an agent tag
+  keep the legacy paths, so MCP-driven upserts and the FlipClaw
+  migration's tag-less ingest path are unchanged.
+- **Orphan rows in the index when paths rotate.** `Index.upsert` now
+  detects when another row already holds the target `path` under a
+  different id and cleans up that row's tags/links/FTS/vec entries
+  before inserting the new one. Previously these orphans accumulated
+  in the FTS5 table and surfaced as "hit X missing from memories
+  table" warnings during search.
+
 ### Added
 
 - `memstem migrate` is now a top-level CLI command (was previously
