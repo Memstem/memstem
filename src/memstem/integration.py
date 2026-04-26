@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,39 @@ DEFAULT_OPENCLAW_MCP_SERVER_ENTRY: dict[str, Any] = {
 }
 
 FLIPCLAW_BRIDGE_MARKER = "claude-code-bridge.py"
+
+
+def mcp_env_from_embedding(
+    api_key_env: str | None,
+    *,
+    process_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the `env` dict to write into a memstem MCP server registration.
+
+    Returns ``{api_key_env: value}`` if the named variable is currently
+    set in ``process_env`` (defaulting to ``os.environ``), otherwise an
+    empty dict. Local providers without an API key
+    (``EmbeddingConfig.api_key_env=None``, e.g. Ollama) get ``{}``.
+
+    The motivating case: when Claude Code or an OpenClaw agent spawns
+    ``memstem mcp`` as a subprocess, only the env values declared in
+    the MCP server config block reach the child. The parent shell's
+    env doesn't propagate. So we resolve the API key at install time
+    and embed it in the written entry.
+
+    The value isn't a secret per se — it's the same key the user
+    already has elsewhere on the box (e.g., in `~/ari/openclaw.json`
+    `env.vars`) — but it's worth noting that it lands on disk in the
+    MCP config file. Treat that file's permissions accordingly.
+    """
+    if not api_key_env:
+        return {}
+    env = process_env if process_env is not None else os.environ
+    value = env.get(api_key_env, "").strip()
+    if not value:
+        return {}
+    return {api_key_env: value}
+
 
 _DIRECTIVE_PATTERN = re.compile(
     re.escape(DIRECTIVE_BEGIN) + r".*?" + re.escape(DIRECTIVE_END),
@@ -125,6 +160,7 @@ def register_mcp_server(
     *,
     server_name: str = DEFAULT_MCP_SERVER_NAME,
     entry: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> Change:
     """Add `mcpServers.<server_name>` to a Claude Code `settings.json`.
@@ -132,8 +168,22 @@ def register_mcp_server(
     Other servers and unrelated keys are preserved. If the entry already
     matches the desired value, this is a no-op. The file is created if
     missing, with just the `mcpServers` key.
+
+    The optional ``env`` arg merges into the entry's ``env`` block. The
+    motivating case: API embedders (Gemini, OpenAI, Voyage) need their
+    API key in the spawned MCP server's env. Claude Code spawns the MCP
+    child with only the env values declared here — anything in the
+    parent shell's env doesn't propagate. Without this merge, an
+    API-keyed embedder silently fails inside the MCP child and the
+    Search class falls back to BM25-only.
     """
     desired_entry = dict(entry) if entry is not None else dict(DEFAULT_MCP_SERVER_ENTRY)
+    if env is not None:
+        # Defensive copy so we don't mutate the caller's dict or the
+        # DEFAULT_MCP_SERVER_ENTRY constant.
+        existing_env = dict(desired_entry.get("env") or {})
+        existing_env.update(env)
+        desired_entry["env"] = existing_env
 
     if settings_path.exists():
         before = settings_path.read_text(encoding="utf-8")
@@ -369,6 +419,7 @@ def register_openclaw_mcp_server(
     *,
     server_name: str = DEFAULT_MCP_SERVER_NAME,
     entry: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> Change:
     """Add `mcp.servers.<server_name>` to an OpenClaw agent's `openclaw.json`.
@@ -382,8 +433,21 @@ def register_openclaw_mcp_server(
     means there's no agent there to register against, which is a config
     issue for the caller to surface, not for this function to paper
     over.
+
+    The optional ``env`` arg merges into the entry's ``env`` block. The
+    OpenClaw default entry has no ``env`` block; supplying ``env`` adds
+    one. Same motivation as on the Claude Code side: API-keyed
+    embedders need their key in the spawned MCP child's env.
     """
     desired_entry = dict(entry) if entry is not None else dict(DEFAULT_OPENCLAW_MCP_SERVER_ENTRY)
+    if env:
+        # Only add an `env` block when env is non-empty — the OpenClaw
+        # default has no env block and we don't want to introduce one
+        # gratuitously (e.g., when called from a local-Ollama install
+        # path where there's no API key to propagate).
+        existing_env = dict(desired_entry.get("env") or {})
+        existing_env.update(env)
+        desired_entry["env"] = existing_env
 
     if not openclaw_config_path.exists():
         return Change(
@@ -552,6 +616,7 @@ __all__ = [
     "Change",
     "apply_directive",
     "claude_md_targets_for_openclaw",
+    "mcp_env_from_embedding",
     "openclaw_config_for_workspace",
     "register_mcp_server",
     "register_openclaw_mcp_server",
