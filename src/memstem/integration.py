@@ -1,19 +1,22 @@
 """Wire Memstem into Claude Code and OpenClaw client config files.
 
-Four idempotent edits:
+Five idempotent edits:
 
 1. `register_mcp_server` adds a `mcpServers.<name>` block to a Claude
    Code user config (`~/.claude.json` by default), preserving other
    servers and unrelated keys.
-2. `remove_legacy_mcp_server` strips a stale `mcpServers.<name>` entry
+2. `register_openclaw_mcp_server` adds a `mcp.servers.<name>` block to
+   an OpenClaw agent's `openclaw.json`. Each agent has its own config,
+   so this is called once per workspace.
+3. `remove_legacy_mcp_server` strips a stale `mcpServers.<name>` entry
    from `~/.claude/settings.json`. Earlier Memstem versions wrote the
    registration there; current Claude Code releases read MCP server
    definitions from `~/.claude.json` instead, so the legacy entry is
    inert and worth cleaning up.
-3. `apply_directive` keeps a versioned `<!-- memstem:directive v1 -->`
+4. `apply_directive` keeps a versioned `<!-- memstem:directive v1 -->`
    block in a CLAUDE.md file, replacing the existing block in place if
    one is present and appending it otherwise.
-4. `remove_flipclaw_hook` strips the `claude-code-bridge.py` SessionEnd
+5. `remove_flipclaw_hook` strips the `claude-code-bridge.py` SessionEnd
    entry from `settings.json` so the legacy capture pipeline stops
    firing once Memstem is live.
 
@@ -61,6 +64,13 @@ DEFAULT_MCP_SERVER_ENTRY: dict[str, Any] = {
     "command": "memstem",
     "args": ["mcp"],
     "env": {},
+}
+
+# OpenClaw's `mcp.servers.<name>` block uses the simpler {command, args}
+# shape (no `type` discriminator, no `env` unless one is provided).
+DEFAULT_OPENCLAW_MCP_SERVER_ENTRY: dict[str, Any] = {
+    "command": "memstem",
+    "args": ["mcp"],
 }
 
 FLIPCLAW_BRIDGE_MARKER = "claude-code-bridge.py"
@@ -354,6 +364,81 @@ def remove_flipclaw_hook(
     )
 
 
+def register_openclaw_mcp_server(
+    openclaw_config_path: Path,
+    *,
+    server_name: str = DEFAULT_MCP_SERVER_NAME,
+    entry: dict[str, Any] | None = None,
+    dry_run: bool = False,
+) -> Change:
+    """Add `mcp.servers.<server_name>` to an OpenClaw agent's `openclaw.json`.
+
+    OpenClaw stores MCP server definitions under a nested `mcp.servers`
+    key (distinct from Claude Code's flat top-level `mcpServers`). This
+    function preserves every other key in the config and only modifies
+    the targeted entry. No-op if the entry already matches.
+
+    The file is *not* created if missing — an absent `openclaw.json`
+    means there's no agent there to register against, which is a config
+    issue for the caller to surface, not for this function to paper
+    over.
+    """
+    desired_entry = dict(entry) if entry is not None else dict(DEFAULT_OPENCLAW_MCP_SERVER_ENTRY)
+
+    if not openclaw_config_path.exists():
+        return Change(
+            path=openclaw_config_path,
+            action="noop",
+            message="openclaw.json does not exist",
+        )
+
+    before = openclaw_config_path.read_text(encoding="utf-8")
+    if not before.strip():
+        raise ValueError(f"{openclaw_config_path} is empty")
+    try:
+        data = json.loads(before)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{openclaw_config_path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{openclaw_config_path} must contain a JSON object at the top level")
+
+    mcp_block = data.setdefault("mcp", {})
+    if not isinstance(mcp_block, dict):
+        raise ValueError(f"{openclaw_config_path}: 'mcp' is present but not an object")
+    servers = mcp_block.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        raise ValueError(f"{openclaw_config_path}: 'mcp.servers' is present but not an object")
+
+    if servers.get(server_name) == desired_entry:
+        return Change(
+            path=openclaw_config_path,
+            action="noop",
+            message=f"{server_name} already registered",
+        )
+
+    servers[server_name] = desired_entry
+    after = json.dumps(data, indent=2) + "\n"
+    diff = _diff(str(openclaw_config_path), before, after)
+
+    if dry_run:
+        return Change(
+            path=openclaw_config_path,
+            action="updated",
+            message=f"would register {server_name} in mcp.servers",
+            diff=diff,
+        )
+
+    backup_path = _backup(openclaw_config_path)
+    openclaw_config_path.write_text(after, encoding="utf-8")
+    return Change(
+        path=openclaw_config_path,
+        action="updated",
+        message=f"registered {server_name} in mcp.servers",
+        diff=diff,
+        backup_path=backup_path,
+    )
+
+
 def remove_legacy_mcp_server(
     legacy_settings_path: Path,
     *,
@@ -435,9 +520,31 @@ def claude_md_targets_for_openclaw(workspace_or_file: Path) -> list[Path]:
     return []
 
 
+def openclaw_config_for_workspace(workspace_or_file: Path) -> Path | None:
+    """Resolve a `--openclaw` argument to the agent's `openclaw.json` path.
+
+    Mirror of `claude_md_targets_for_openclaw` for the OpenClaw config
+    file. Looks for `openclaw.json` in the workspace dir (or alongside a
+    passed CLAUDE.md). Returns the path if found, else `None`. Caller
+    decides whether absence is a skip-with-warning or an error.
+    """
+    p = workspace_or_file.expanduser()
+    if p.is_file():
+        if p.name == "openclaw.json":
+            return p
+        sibling = p.parent / "openclaw.json"
+        return sibling if sibling.is_file() else None
+    if p.is_dir():
+        candidate = p / "openclaw.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 __all__ = [
     "DEFAULT_MCP_SERVER_ENTRY",
     "DEFAULT_MCP_SERVER_NAME",
+    "DEFAULT_OPENCLAW_MCP_SERVER_ENTRY",
     "DIRECTIVE_BEGIN",
     "DIRECTIVE_BLOCK",
     "DIRECTIVE_END",
@@ -445,7 +552,9 @@ __all__ = [
     "Change",
     "apply_directive",
     "claude_md_targets_for_openclaw",
+    "openclaw_config_for_workspace",
     "register_mcp_server",
+    "register_openclaw_mcp_server",
     "remove_flipclaw_hook",
     "remove_legacy_mcp_server",
 ]

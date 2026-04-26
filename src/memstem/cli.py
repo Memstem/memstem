@@ -45,7 +45,9 @@ from memstem.integration import (
     Change,
     apply_directive,
     claude_md_targets_for_openclaw,
+    openclaw_config_for_workspace,
     register_mcp_server,
+    register_openclaw_mcp_server,
     remove_flipclaw_hook,
     remove_legacy_mcp_server,
 )
@@ -655,12 +657,16 @@ def _print_change(change: Change, dry_run: bool) -> None:
             typer.echo(f"    {line}")
 
 
+def _resolve_openclaw_sources(cfg: Config, overrides: list[str] | None) -> list[Path]:
+    """The raw `--openclaw` overrides, or every configured workspace path."""
+    if overrides:
+        return [Path(p).expanduser() for p in overrides]
+    return [Path(ws.path).expanduser() for ws in cfg.adapters.openclaw.agent_workspaces]
+
+
 def _resolve_openclaw_targets(cfg: Config, overrides: list[str] | None) -> list[Path]:
     """Resolve `--openclaw` overrides (or vault config workspaces) to CLAUDE.md paths."""
-    if overrides:
-        sources = [Path(p).expanduser() for p in overrides]
-    else:
-        sources = [Path(ws.path).expanduser() for ws in cfg.adapters.openclaw.agent_workspaces]
+    sources = _resolve_openclaw_sources(cfg, overrides)
     targets: list[Path] = []
     for src in sources:
         resolved = claude_md_targets_for_openclaw(src)
@@ -669,6 +675,19 @@ def _resolve_openclaw_targets(cfg: Config, overrides: list[str] | None) -> list[
         else:
             typer.echo(f"  · {src}: no CLAUDE.md found, skipping")
     return targets
+
+
+def _resolve_openclaw_configs(cfg: Config, overrides: list[str] | None) -> list[Path]:
+    """Resolve `--openclaw` overrides (or vault config workspaces) to openclaw.json paths."""
+    sources = _resolve_openclaw_sources(cfg, overrides)
+    configs: list[Path] = []
+    for src in sources:
+        resolved = openclaw_config_for_workspace(src)
+        if resolved is not None:
+            configs.append(resolved)
+        else:
+            typer.echo(f"  · {src}: no openclaw.json found, skipping MCP registration")
+    return configs
 
 
 @app.command("connect-clients")
@@ -737,9 +756,11 @@ def connect_clients(
 
     Adds the MCP server registration to ~/.claude.json (the location
     current Claude Code releases read for MCP discovery), removes any
-    stale entry from the legacy ~/.claude/settings.json, ensures the
-    Memstem directive block is present in each CLAUDE.md, and (with
-    --remove-flipclaw) disables the legacy FlipClaw bridge hook.
+    stale entry from the legacy ~/.claude/settings.json, registers
+    `mcp.servers.memstem` in each OpenClaw agent's openclaw.json so
+    Memstem MCP tools are available to the agent at runtime, ensures
+    the Memstem directive block is present in each CLAUDE.md, and
+    (with --remove-flipclaw) disables the legacy FlipClaw bridge hook.
 
     Each edit writes a `.bak` next to the file before changing it.
     Re-running is safe: every step is idempotent.
@@ -772,11 +793,18 @@ def connect_clients(
     else:
         typer.echo("Skipping Claude Code (--no-claude-code).")
 
-    targets = _resolve_openclaw_targets(cfg, list(openclaw) if openclaw else None)
+    openclaw_overrides = list(openclaw) if openclaw else None
+    targets = _resolve_openclaw_targets(cfg, openclaw_overrides)
     if targets:
         typer.echo("\nOpenClaw CLAUDE.md targets:")
         for target in targets:
             change = apply_directive(target, dry_run=dry_run)
+            _print_change(change, dry_run)
+
+        typer.echo("\nOpenClaw MCP registrations:")
+        configs = _resolve_openclaw_configs(cfg, openclaw_overrides)
+        for config_path in configs:
+            change = register_openclaw_mcp_server(config_path, dry_run=dry_run)
             _print_change(change, dry_run)
     elif openclaw:
         typer.echo("\nNo OpenClaw CLAUDE.md targets resolved from --openclaw arguments.")

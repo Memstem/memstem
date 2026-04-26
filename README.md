@@ -32,7 +32,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.2.0 — feature-complete and live.** Shipping: multi-agent OpenClaw + Claude Code adapters, hybrid search (FTS5 + sqlite-vec, RRF-merged), an MCP server with five tools, four pluggable embedder backends (Ollama / OpenAI / Gemini / Voyage), an always-on embed queue with retry/backoff, a one-line installer, `memstem doctor` for health checks, and an idempotent client-wiring command (`memstem connect-clients`) that targets `~/.claude.json` and cleans up legacy `~/.claude/settings.json` entries. Cross-platform CI covers Linux, macOS, and Windows. The repo stays private during the live soak; flips public when the v0.x line stabilizes.
+**v0.3.0 — feature-complete and live.** Shipping: multi-agent OpenClaw + Claude Code adapters, hybrid search (FTS5 + sqlite-vec, RRF-merged), an MCP server with five tools, four pluggable embedder backends (Ollama / OpenAI / Gemini / Voyage), an always-on embed queue with retry/backoff, a one-line installer, `memstem doctor` for health checks, and an idempotent client-wiring command (`memstem connect-clients`) that registers Memstem MCP in `~/.claude.json` *and* in each configured OpenClaw agent's `openclaw.json`, cleans up legacy `~/.claude/settings.json` entries, and patches every relevant CLAUDE.md with the directive block. Cross-platform CI covers Linux, macOS, and Windows. The repo stays private during the live soak; flips public when the v0.x line stabilizes.
 
 ## Quickstart
 
@@ -81,7 +81,7 @@ memstem daemon                               # ingest + watch
 
 `memstem init` runs an interactive setup wizard that finds OpenClaw agent workspaces (any directory under `$HOME` with an `openclaw.json`), shared rules files (`HARD-RULES.md`), and Claude Code's session root, then writes `~/memstem-vault/_meta/config.yaml`. Pass `-y` to auto-include every candidate with content.
 
-`memstem connect-clients` is the cutover wiring step — it adds an `mcpServers.memstem` entry to `~/.claude.json` (the user-config file current Claude Code releases read for MCP discovery), strips any stale entry from the legacy `~/.claude/settings.json`, and inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
+`memstem connect-clients` is the cutover wiring step. It (a) adds an `mcpServers.memstem` entry to `~/.claude.json` so Claude Code sees Memstem MCP, (b) registers `mcp.servers.memstem` in each configured OpenClaw agent's `openclaw.json` so OpenClaw agents see it too, (c) strips any stale entry from the legacy `~/.claude/settings.json`, and (d) inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
 
 ## Querying from an agent
 

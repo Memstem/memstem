@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-26
+
+### Added (PR #31)
+
+- **`connect-clients` now registers Memstem MCP in each OpenClaw
+  agent's `openclaw.json`.** Earlier versions only patched the
+  agent's CLAUDE.md with the "use Memstem MCP first" directive — but
+  if the agent's openclaw.json didn't have a `mcp.servers.memstem`
+  entry, the directive was unhonorable: the agent looked for the
+  MCP, didn't find it, and fell back to grep or CLI. Same shape of
+  bug as PR #30 (Claude Code side), now closed for OpenClaw too.
+- New `register_openclaw_mcp_server` helper in `integration.py` —
+  reads/writes the agent's `mcp.servers.<name>` block while
+  preserving every other key in the (large) `openclaw.json`. Same
+  Change return type, same `.bak`, same dry-run semantics as
+  `register_mcp_server`. Direct JSON edit (rather than shelling out
+  to `openclaw mcp set`) keeps `integration.py` filesystem-only.
+- New `openclaw_config_for_workspace` resolver — mirror of
+  `claude_md_targets_for_openclaw` for the agent's OpenClaw config.
+  Accepts a workspace dir, a CLAUDE.md path, or the openclaw.json
+  itself.
+- New `DEFAULT_OPENCLAW_MCP_SERVER_ENTRY` constant (`{command, args}`
+  shape — OpenClaw's `mcp.servers` doesn't use Claude Code's `type`
+  discriminator).
+- 16 new tests covering the registration helper (entry shapes,
+  preservation of other servers, idempotency, .bak, dry-run, missing
+  files, malformed JSON, custom-entry override) and the workspace
+  resolver (workspace dir / direct file / sibling lookup / missing
+  cases).
+
 ## [0.2.0] — 2026-04-26
 
 Cumulative release covering PRs #23–#30. Shipped features: complete

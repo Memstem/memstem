@@ -10,12 +10,15 @@ import pytest
 
 from memstem.integration import (
     DEFAULT_MCP_SERVER_ENTRY,
+    DEFAULT_OPENCLAW_MCP_SERVER_ENTRY,
     DIRECTIVE_BEGIN,
     DIRECTIVE_BLOCK,
     DIRECTIVE_END,
     apply_directive,
     claude_md_targets_for_openclaw,
+    openclaw_config_for_workspace,
     register_mcp_server,
+    register_openclaw_mcp_server,
     remove_flipclaw_hook,
     remove_legacy_mcp_server,
 )
@@ -401,3 +404,146 @@ class TestClaudeMdTargetsForOpenclaw:
 
     def test_returns_empty_for_nonexistent_path(self, tmp_path: Path) -> None:
         assert claude_md_targets_for_openclaw(tmp_path / "nope") == []
+
+
+class TestOpenclawConfigForWorkspace:
+    def test_resolves_workspace_dir(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        ws.mkdir()
+        cfg = ws / "openclaw.json"
+        cfg.write_text(json.dumps({"meta": {"name": "ari"}}))
+        assert openclaw_config_for_workspace(ws) == cfg
+
+    def test_resolves_direct_openclaw_json(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        cfg.write_text(json.dumps({"meta": {"name": "ari"}}))
+        assert openclaw_config_for_workspace(cfg) == cfg
+
+    def test_finds_sibling_when_passed_claude_md(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        ws.mkdir()
+        cfg = ws / "openclaw.json"
+        cfg.write_text(json.dumps({}))
+        md = ws / "CLAUDE.md"
+        md.write_text("# x")
+        assert openclaw_config_for_workspace(md) == cfg
+
+    def test_returns_none_for_workspace_without_openclaw_json(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        ws.mkdir()
+        assert openclaw_config_for_workspace(ws) is None
+
+    def test_returns_none_for_claude_md_without_sibling(self, tmp_path: Path) -> None:
+        md = tmp_path / "CLAUDE.md"
+        md.write_text("# x")
+        assert openclaw_config_for_workspace(md) is None
+
+    def test_returns_none_for_nonexistent_path(self, tmp_path: Path) -> None:
+        assert openclaw_config_for_workspace(tmp_path / "nope") is None
+
+
+class TestRegisterOpenclawMcpServer:
+    def _seed_config(self, path: Path, *, mcp: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Write an openclaw.json with realistic top-level structure plus optional mcp block."""
+        data: dict[str, Any] = {
+            "meta": {"name": "ari", "version": 1},
+            "agents": {"main": {"model": "opus[1m]"}},
+            "tools": {"web": {"enabled": True}},
+        }
+        if mcp is not None:
+            data["mcp"] = mcp
+        path.write_text(json.dumps(data, indent=2))
+        return data
+
+    def test_registers_when_mcp_block_missing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        change = register_openclaw_mcp_server(cfg)
+        assert change.action == "updated"
+        data = json.loads(cfg.read_text())
+        assert data["mcp"]["servers"]["memstem"] == DEFAULT_OPENCLAW_MCP_SERVER_ENTRY
+        # Other top-level keys are preserved.
+        assert data["meta"]["name"] == "ari"
+        assert data["agents"]["main"]["model"] == "opus[1m]"
+        assert data["tools"]["web"]["enabled"] is True
+
+    def test_preserves_other_servers(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(
+            cfg,
+            mcp={"servers": {"context7": {"command": "uvx", "args": ["context7-mcp"]}}},
+        )
+        register_openclaw_mcp_server(cfg)
+        data = json.loads(cfg.read_text())
+        assert data["mcp"]["servers"]["context7"] == {
+            "command": "uvx",
+            "args": ["context7-mcp"],
+        }
+        assert data["mcp"]["servers"]["memstem"] == DEFAULT_OPENCLAW_MCP_SERVER_ENTRY
+
+    def test_idempotent_when_already_registered(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        register_openclaw_mcp_server(cfg)
+        before = cfg.read_text()
+        bak = cfg.with_suffix(".json.bak")
+        bak_existed_before = bak.exists()
+        change = register_openclaw_mcp_server(cfg)
+        assert change.action == "noop"
+        assert cfg.read_text() == before
+        # No-op should not re-write the .bak.
+        assert bak.exists() == bak_existed_before
+
+    def test_writes_backup_before_editing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        original = cfg.read_text()
+        change = register_openclaw_mcp_server(cfg)
+        assert change.backup_path is not None and change.backup_path.exists()
+        assert change.backup_path.read_text() == original
+
+    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        original = cfg.read_text()
+        change = register_openclaw_mcp_server(cfg, dry_run=True)
+        assert change.action == "updated"
+        assert change.diff
+        assert cfg.read_text() == original
+        assert not cfg.with_suffix(".json.bak").exists()
+
+    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        change = register_openclaw_mcp_server(cfg)
+        assert change.action == "noop"
+        assert not cfg.exists()
+
+    def test_invalid_json_raises(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        cfg.write_text("{ not json")
+        with pytest.raises(ValueError):
+            register_openclaw_mcp_server(cfg)
+
+    def test_top_level_array_raises(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        cfg.write_text(json.dumps([1, 2, 3]))
+        with pytest.raises(ValueError):
+            register_openclaw_mcp_server(cfg)
+
+    def test_non_dict_mcp_block_raises(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        # Manually write a non-dict mcp block to provoke the guard.
+        data = json.loads(cfg.read_text())
+        data["mcp"] = ["not a dict"]
+        cfg.write_text(json.dumps(data))
+        with pytest.raises(ValueError):
+            register_openclaw_mcp_server(cfg)
+
+    def test_custom_entry_overrides_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "openclaw.json"
+        self._seed_config(cfg)
+        custom = {"command": "/opt/memstem/bin/memstem", "args": ["mcp", "--vault", "/v"]}
+        register_openclaw_mcp_server(cfg, entry=custom)
+        data = json.loads(cfg.read_text())
+        assert data["mcp"]["servers"]["memstem"] == custom
