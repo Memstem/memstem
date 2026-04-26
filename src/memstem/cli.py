@@ -113,6 +113,18 @@ def _maybe_embedder(config: Config) -> Embedder | None:
         return None
 
 
+def _embedding_signature(config: Config) -> str:
+    """Stable string identifying the embedder configuration.
+
+    Used by the pipeline + worker to detect provider/model switches and
+    decide whether existing vectors are still valid. Format is
+    ``"<provider>:<model>:<dimensions>"`` — three things that, when
+    combined, uniquely determine the vector space we're embedding into.
+    """
+    e = config.embedding
+    return f"{e.provider}:{e.model}:{e.dimensions}"
+
+
 def _run_init_wizard(home: Path) -> AdaptersConfig:
     """Interactive wizard: ask which OpenClaw agents and Claude Code paths to ingest."""
     candidates = discover_openclaw_candidates(home)
@@ -334,6 +346,7 @@ def embed(
                 embedder=embedder,
                 batch_size=bs,
                 on_progress=_progress,
+                embedding_signature=_embedding_signature(cfg),
             )
         )
         stats_after = index.queue_stats()
@@ -606,8 +619,9 @@ async def _run_daemon(
     openclaw_paths: list[Path],
     claude_adapter: ClaudeCodeAdapter,
     claude_paths: list[Path],
+    embedding_signature: str = "",
 ) -> None:
-    pipeline = Pipeline(vault_obj, index)
+    pipeline = Pipeline(vault_obj, index, embedding_signature=embedding_signature)
 
     await _reconcile_into_pipeline(
         pipeline,
@@ -633,6 +647,7 @@ async def _run_daemon(
                     index=index,
                     embedder=embedder,
                     batch_size=batch_size,
+                    embedding_signature=embedding_signature,
                 )
             )
         )
@@ -865,6 +880,7 @@ def daemon(
                 openclaw_paths=openclaw_paths,
                 claude_adapter=claude_adapter,
                 claude_paths=claude_paths,
+                embedding_signature=_embedding_signature(cfg),
             )
         )
     except KeyboardInterrupt:

@@ -17,7 +17,7 @@ import pytest
 from memstem.adapters.base import MemoryRecord
 from memstem.core.embed_worker import EmbedWorker, drain_once
 from memstem.core.embeddings import Embedder, EmbeddingError
-from memstem.core.index import Index
+from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
 
@@ -263,3 +263,99 @@ class TestQueueOps:
         n = index.reset_failed_queue()
         assert n == 1
         assert index.queue_stats() == {"pending": 1, "failed": 0, "total": 1}
+
+
+class TestEmbedStateOnSuccess:
+    """The worker stamps `embed_state` with body_hash + signature after
+    a successful embed so the next pipeline pass can skip the record
+    if neither has changed (PR #30)."""
+
+    SIG = "stub:test:8"
+
+    def test_records_state_with_signature(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(_record(body="hello world"))
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=_StubEmbedder(),
+            batch_size=10,
+            idle_sleep=0,
+            embedding_signature=self.SIG,
+        )
+        asyncio.run(worker.tick())
+
+        row = index.db.execute(
+            "SELECT body_hash, embed_signature FROM embed_state WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchone()
+        assert row is not None
+        assert row["body_hash"] == body_hash("hello world")
+        assert row["embed_signature"] == self.SIG
+
+    def test_state_not_recorded_on_failure(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(_record())
+        embedder = _StubEmbedder()
+        embedder.fail_always = True
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=embedder,
+            batch_size=1,
+            max_retries=2,
+            idle_sleep=0,
+            embedding_signature=self.SIG,
+        )
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT 1 FROM embed_state WHERE memory_id = ?", (str(memory.id),)
+        ).fetchone()
+        assert row is None
+
+    def test_after_embed_pipeline_skips_unchanged_re_emit(self, vault: Vault, index: Index) -> None:
+        """End-to-end: the next reconcile pass shouldn't re-enqueue
+        a record whose body and signature haven't changed."""
+        pipe = Pipeline(vault, index, embedding_signature=self.SIG)
+        ref = "/tmp/stable.md"
+        memory = pipe.process(_record(body="stable content", ref=ref))
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=_StubEmbedder(),
+            batch_size=10,
+            idle_sleep=0,
+            embedding_signature=self.SIG,
+        )
+        asyncio.run(worker.tick())
+        # Queue empty after worker drain.
+        assert index.queue_stats()["pending"] == 0
+
+        # Reconcile re-emit with the same body — must NOT re-enqueue.
+        pipe.process(_record(body="stable content", ref=ref))
+        rows = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
+        ).fetchall()
+        assert rows == []
+
+    def test_empty_body_records_state(self, vault: Vault, index: Index) -> None:
+        """Records with empty bodies still get stamped so the pipeline
+        doesn't keep re-enqueueing them (chunk_text returns [])."""
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(_record(body=""))
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=_StubEmbedder(),
+            batch_size=1,
+            idle_sleep=0,
+            embedding_signature=self.SIG,
+        )
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT body_hash, embed_signature FROM embed_state WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchone()
+        assert row is not None
+        assert row["body_hash"] == body_hash("")
+        assert row["embed_signature"] == self.SIG

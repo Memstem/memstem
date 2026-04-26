@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 
 from memstem.adapters.base import MemoryRecord
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
-from memstem.core.index import Index
+from memstem.core.index import Index, body_hash
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
 logger = logging.getLogger(__name__)
@@ -94,20 +94,27 @@ class Pipeline:
         self,
         vault: Vault,
         index: Index,
+        embedding_signature: str = "",
     ) -> None:
         self.vault = vault
         self.index = index
+        self.embedding_signature = embedding_signature
         _ensure_record_map(self.index.db)
 
     def process(self, record: MemoryRecord) -> Memory:
         """Persist one record as a canonical Memory; idempotent for re-emits.
 
         The pipeline is fast-path only: it writes the markdown file, the
-        memories/tags/links/FTS5 rows, and enqueues the record for
-        embedding. The actual vector embedding happens asynchronously
-        in :class:`memstem.core.embed_worker.EmbedWorker`. This keeps
-        ingestion latency bounded by disk I/O and SQLite — not by an
-        embedder that may be CPU-bound or rate-limited.
+        memories/tags/links/FTS5 rows, and (if needed) enqueues the
+        record for embedding. The actual vector embedding happens
+        asynchronously in :class:`memstem.core.embed_worker.EmbedWorker`.
+        This keeps ingestion latency bounded by disk I/O and SQLite —
+        not by an embedder that may be CPU-bound or rate-limited.
+
+        Re-emits with unchanged body and matching embedder signature
+        skip the enqueue: the existing vectors are still valid and
+        re-embedding would just burn rate-limit quota. Body or signature
+        changes (or the absence of vectors) still enqueue.
         """
         memory_id = self._lookup_or_assign_id(record.source, record.ref)
         fm = self._build_frontmatter(record, memory_id)
@@ -117,7 +124,10 @@ class Pipeline:
         self.vault.write(memory)
         self.index.upsert(memory)
         self._record_mapping(record.source, record.ref, memory_id)
-        self.index.enqueue_embed(str(memory_id))
+        if self.index.needs_reembed(
+            str(memory_id), body_hash(record.body), self.embedding_signature
+        ):
+            self.index.enqueue_embed(str(memory_id))
         return memory
 
     def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
