@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (PR #28)
+
+- **Concurrent SQLite access from the embed worker.** `Index.connect()`
+  opens with `check_same_thread=False` so the worker can run sync
+  SQLite calls under `asyncio.to_thread`, but Python's `sqlite3`
+  module isn't actually thread-safe on a single connection
+  (concurrent commits race; the sqlite-vec extension keeps thread-
+  local state). Added a `threading.RLock` around every Index read
+  and write path. Workers can still run concurrently — the lock is
+  cheap and only held during the SQLite call, not the embedder
+  HTTP call.
+- Two new pounding tests in `TestThreadSafety` confirm 16-way
+  concurrent upserts + queue ops complete without `cannot commit -
+  no transaction is active` or `bad parameter or other API misuse`
+  errors. Without the lock, those errors hit within ~10 ops.
+
 ### Changed (PR #27)
 
 - `GeminiEmbedder` default model is now `gemini-embedding-2-preview`

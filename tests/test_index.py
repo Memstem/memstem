@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import random
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from uuid import uuid4
 
@@ -350,3 +352,67 @@ class TestConnectRequired:
         idx = Index(tmp_path / "index.db")
         with pytest.raises(RuntimeError, match="not connected"):
             _ = idx.db
+
+
+class TestThreadSafety:
+    """The embed worker calls Index methods from `asyncio.to_thread`,
+    which means SQLite ops happen on threads other than the one that
+    opened the connection. PR #28 added an `RLock` around every read
+    and write path so concurrent workers can't corrupt the connection's
+    transaction state. These tests pound the index with 16 concurrent
+    threads doing realistic mixes of upserts, vec writes, and queries
+    — without the lock they hit `cannot commit - no transaction is
+    active` and `bad parameter or other API misuse` within ~10 ops."""
+
+    def test_concurrent_upserts_no_errors(self, index: Index) -> None:
+        n = 50
+        memories = [_make_memory(title=f"m{i}", body=f"body {i}") for i in range(n)]
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def worker(m: Memory) -> None:
+            try:
+                index.upsert(m)
+                index.upsert_vectors(
+                    str(m.id), ["c"], [_fake_embedding(int(str(m.id)[:8], 16) % 1000)]
+                )
+            except BaseException as exc:
+                with lock:
+                    errors.append(exc)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futs = [pool.submit(worker, m) for m in memories]
+            for f in as_completed(futs):
+                f.result()
+        assert errors == [], f"thread errors: {errors[:3]}"
+
+        rows = index.db.execute("SELECT COUNT(*) AS c FROM memories").fetchone()
+        assert rows["c"] == n
+
+    def test_concurrent_queue_ops_no_errors(self, index: Index) -> None:
+        """Mixed enqueue / queue_pending / mark_embed_error from many threads."""
+        n = 30
+        memories = [_make_memory(title=f"q{i}") for i in range(n)]
+        for m in memories:
+            index.upsert(m)
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def hammer(m: Memory) -> None:
+            try:
+                index.enqueue_embed(str(m.id))
+                _ = index.queue_pending(limit=5)
+                _ = index.queue_stats()
+                index.mark_embed_error(str(m.id), "transient", max_retries=10)
+                index.dequeue_embed(str(m.id))
+            except BaseException as exc:
+                with lock:
+                    errors.append(exc)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futs = [pool.submit(hammer, m) for m in memories]
+            for f in as_completed(futs):
+                f.result()
+        assert errors == [], f"thread errors: {errors[:3]}"
+        # Every record was enqueued + dequeued, so the queue ends empty.
+        assert index.queue_stats() == {"pending": 0, "failed": 0, "total": 0}
