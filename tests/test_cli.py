@@ -270,11 +270,52 @@ class TestReindex:
         assert "reindexed 2 memories" in result.output
 
 
+class TestMigrateCommand:
+    """Verify the top-level `memstem migrate` command exists and proxies to memstem.migrate."""
+
+    def test_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["migrate", "--help"])
+        assert result.exit_code == 0
+        assert "flipclaw" in result.output.lower()
+
+    def test_dry_run_default(self, tmp_path: Path, runner: CliRunner) -> None:
+        # An empty vault + empty source paths → migrate dry-run should
+        # finish cleanly and report 0 records.
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        vault = tmp_path / "vault"
+        runner.invoke(app, ["init", "-y", "--home", str(empty_home), str(vault)])
+        result = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--vault",
+                str(vault),
+                "--openclaw",
+                str(empty_home / "no-such-dir"),
+                "--claude-root",
+                str(empty_home / "no-such-claude"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "DRY-RUN" in result.output
+        assert "Re-run with --apply" in result.output
+
+
 class TestCommands:
     def test_help_lists_all_commands(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("init", "search", "reindex", "mcp", "daemon", "doctor", "connect-clients"):
+        for cmd in (
+            "init",
+            "search",
+            "reindex",
+            "mcp",
+            "daemon",
+            "doctor",
+            "connect-clients",
+            "migrate",
+        ):
             assert cmd in result.output
 
     def test_mcp_help(self, runner: CliRunner) -> None:

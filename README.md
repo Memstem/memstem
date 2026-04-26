@@ -34,19 +34,33 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Quickstart
 
+The full one-liner. Installs everything (memstem, Ollama, embedding model), scaffolds the vault, imports your existing Claude Code + OpenClaw memory, wires Memstem into Claude Code, and starts the daemon under PM2:
+
 ```bash
-# 1. One-line install (Linux or macOS). Adds memstem via pipx, installs
-#    Ollama if missing, pulls the embedding model, scaffolds a vault,
-#    runs `memstem doctor`, and (with --connect-clients) wires up
-#    Claude Code's settings.json + CLAUDE.md.
-curl -fsSL https://memstem.com/install.sh | bash -s -- --yes --connect-clients
-
-# 2. Start the daemon (runs adapter reconcile + watch loop).
-memstem daemon
-
-# 3. Search.
-memstem search "what did we decide about pricing"
+curl -fsSL https://memstem.com/install.sh | bash -s -- \
+  --yes --connect-clients --migrate --start-daemon
 ```
+
+After it returns:
+
+```bash
+memstem search "what did we decide about pricing"   # confirm it works
+pm2 logs memstem --lines 20                          # watch ingestion
+```
+
+Each flag is opt-in so you can dial back the scope:
+
+| Flag | What it does |
+|---|---|
+| `--yes` | Unattended; passes `-y` to `memstem init` so the wizard doesn't prompt. |
+| `--no-ollama` | Skip the Ollama install (already have it). |
+| `--no-model` | Skip the `nomic-embed-text` pull. |
+| `--vault PATH` | Vault location (default `~/memstem-vault`). |
+| `--from-git` | Install from `github.com/Memstem/memstem` instead of PyPI. |
+| `--connect-clients` | Run `memstem connect-clients` (settings.json + CLAUDE.md edits). Prints a dry-run diff before applying. |
+| `--remove-flipclaw` | With `--connect-clients`, also strip the legacy `claude-code-bridge.py` SessionEnd hook. |
+| `--migrate` | Run `memstem migrate --apply` to import historical memory. |
+| `--start-daemon` | `pm2 start memstem` so ingestion survives reboots. |
 
 Manual install if you'd rather not pipe a script:
 
@@ -54,6 +68,7 @@ Manual install if you'd rather not pipe a script:
 pipx install memstem                         # or: pip install memstem
 ollama pull nomic-embed-text                 # 768-dim local embedder
 memstem init ~/memstem-vault                 # interactive wizard
+memstem migrate --apply                      # one-shot history import
 memstem connect-clients                      # patch settings + CLAUDE.md
 memstem doctor                               # verify
 memstem daemon                               # ingest + watch

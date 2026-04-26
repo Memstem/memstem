@@ -265,6 +265,46 @@ def reindex(
 
 
 @app.command()
+def migrate(
+    apply: Annotated[
+        bool, typer.Option("--apply/--dry-run", help="Actually write to the vault")
+    ] = False,
+    days: Annotated[int, typer.Option(help="Claude Code session lookback window in days")] = 30,
+    vault: Annotated[
+        str | None,
+        typer.Option(help="Vault path override (else MEMSTEM_VAULT or ~/memstem-vault)"),
+    ] = None,
+    openclaw: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="OpenClaw paths (overrides config; defaults to ~/ari/memory + ~/ari/skills)"
+        ),
+    ] = None,
+    claude_root: Annotated[
+        str | None,
+        typer.Option(help="Claude Code projects root (defaults to ~/.claude/projects)"),
+    ] = None,
+) -> None:
+    """One-shot import of FlipClaw / Ari memory into the Memstem vault.
+
+    Default mode is dry-run (counts + sample preview, no writes). Pass
+    `--apply` to actually persist. Re-runs are safe — the pipeline
+    upserts by `(source, ref)`.
+    """
+    # Lazy import to break a cli<->migrate cycle: migrate.py reuses cli
+    # helpers, so import only when this command actually runs.
+    from memstem.migrate import main as _migrate_main
+
+    _migrate_main(
+        apply=apply,
+        days=days,
+        vault=vault,
+        openclaw=openclaw,
+        claude_root=claude_root,
+    )
+
+
+@app.command()
 def mcp(
     vault: str | None = typer.Option(None, help="Vault path override"),
 ) -> None:
