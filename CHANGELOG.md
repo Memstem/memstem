@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — OpenClaw discovery is now opt-in
+
+- **`memstem init` no longer auto-includes every OpenClaw workspace it
+  finds.** On a multi-agent host (Ari + Blake + Charlie + …) the
+  installer used to silently index all of them, mixing every agent's
+  memory into one vault. The wizard now defaults each discovered agent
+  to "no" — the user opts in explicitly, agent by agent. Shared files
+  (`HARD-RULES.md`) follow the same opt-in model since they belong to a
+  workspace.
+- **`memstem init -y` (non-interactive) writes a Claude-Code-only config.**
+  Previously `-y` meant "auto-include every discovered agent with
+  content" — convenient but wrong on multi-agent installs. Now `-y`
+  produces a conservative config; OpenClaw workspaces must be added by
+  re-running `memstem init` interactively or by hand-editing
+  `_meta/config.yaml`.
+- **Existing installs are unaffected on disk** but should review their
+  `agent_workspaces` list. To prune the index after removing entries
+  from `config.yaml`, delete the corresponding directories under
+  `<vault>/memories/openclaw/<tag>/` and `<vault>/daily/<tag>/` and
+  re-run `memstem reindex`.
+
 ### Added — per-workspace layout overrides for OpenClaw
 
 - **`OpenClawWorkspace` now accepts a `layout` field** specifying which

@@ -127,17 +127,23 @@ def _embedding_signature(config: Config) -> str:
 
 
 def _run_init_wizard(home: Path) -> AdaptersConfig:
-    """Interactive wizard: ask which OpenClaw agents and Claude Code paths to ingest."""
+    """Interactive wizard: ask which OpenClaw agents and Claude Code paths to ingest.
+
+    OpenClaw workspaces and their shared files default to **not** included —
+    on a multi-agent host you usually want to scope the vault to one or two
+    agents, not every workspace discovery turns up. Claude Code paths default
+    to included since they're per-user and unambiguous.
+    """
     candidates = discover_openclaw_candidates(home)
 
     workspaces: list[OpenClawWorkspace] = []
     if candidates:
-        typer.echo(f"\nFound {len(candidates)} OpenClaw agent candidates:")
+        typer.echo(f"\nFound {len(candidates)} OpenClaw agent candidate(s):")
         for cand in candidates:
             typer.echo(f"  {cand.tag:<10} — {cand.describe()}")
         typer.echo("")
         for cand in candidates:
-            include = typer.confirm(f"Include {cand.tag}?", default=cand.has_content)
+            include = typer.confirm(f"Include {cand.tag}?", default=False)
             if include:
                 workspaces.append(OpenClawWorkspace(path=cand.workspace, tag=cand.tag))
     else:
@@ -146,7 +152,7 @@ def _run_init_wizard(home: Path) -> AdaptersConfig:
     shared_candidates = discover_shared_files(home)
     chosen_shared: list[Path] = []
     for shared in shared_candidates:
-        if typer.confirm(f"Include shared file {shared}?", default=True):
+        if typer.confirm(f"Include shared file {shared}?", default=False):
             chosen_shared.append(shared)
 
     claude_root = discover_claude_code_root(home)
@@ -183,7 +189,11 @@ def init(
         typer.Option(
             "--non-interactive",
             "-y",
-            help="Skip prompts; auto-include every discovered agent with content",
+            help=(
+                "Skip prompts; write a Claude-Code-only config. "
+                "OpenClaw workspaces are not auto-included — "
+                "edit config.yaml or re-run `memstem init` interactively to add them."
+            ),
         ),
     ] = False,
     home: Annotated[
