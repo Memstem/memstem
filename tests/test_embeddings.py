@@ -257,6 +257,55 @@ class TestGeminiEmbedder:
         emb1.close()
         emb2.close()
 
+    def test_batch_size_over_100_splits_into_multiple_requests(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gemini caps batchEmbedContents at 100 per call. Records with
+        long bodies (e.g. 250KB daily logs) chunk into 100+ pieces, so
+        the embedder must split into sub-batches and concatenate. Without
+        this, the live cutover hits 400 Bad Request."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+        request_sizes: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            n = len(body["requests"])
+            request_sizes.append(n)
+            return httpx.Response(
+                200,
+                json={"embeddings": [{"values": [0.0] * 768} for _ in range(n)]},
+            )
+
+        emb = GeminiEmbedder(model="gemini-embedding-2-preview", dimensions=768)
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        try:
+            vecs = emb.embed_batch(["x"] * 250)  # 250 chunks → 3 batches
+        finally:
+            emb.close()
+        # All 250 chunks come back, ordered.
+        assert len(vecs) == 250
+        # Three batches: 100 + 100 + 50.
+        assert request_sizes == [100, 100, 50]
+
+    def test_400_error_includes_response_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Gemini's 400s carry useful detail in the response body
+        (oversize input, etc.) — surface it rather than swallowing."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "input is too large for the model"}},
+            )
+
+        emb = GeminiEmbedder(model="gemini-embedding-2-preview", dimensions=768)
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        try:
+            with pytest.raises(EmbeddingError, match="input is too large"):
+                emb.embed_batch(["x"])
+        finally:
+            emb.close()
+
 
 class TestVoyageEmbedder:
     def test_missing_api_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:

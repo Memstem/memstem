@@ -265,6 +265,12 @@ class GeminiEmbedder(Embedder):
     DEFAULT_API_KEY_ENV = "GOOGLE_API_KEY"
     DEFAULT_MODEL = "gemini-embedding-2-preview"
 
+    # Gemini's `batchEmbedContents` caps requests at 100 items per call
+    # (per Google's API docs). Records with bigger bodies (long daily
+    # logs, multi-turn session transcripts) chunk into more pieces, so
+    # we split into batches and concatenate.
+    MAX_BATCH_SIZE = 100
+
     # Native widths (no Matryoshka). Used to decide whether to send
     # `outputDimensionality` — only for models that support it.
     _MATRYOSHKA_MODELS = frozenset(
@@ -302,6 +308,17 @@ class GeminiEmbedder(Embedder):
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        # Gemini's `batchEmbedContents` caps at 100 items per call.
+        # Records with very long bodies (daily logs, session
+        # transcripts) chunk into more pieces, so we issue multiple
+        # requests and concatenate.
+        results: list[list[float]] = []
+        for start in range(0, len(texts), self.MAX_BATCH_SIZE):
+            sub = texts[start : start + self.MAX_BATCH_SIZE]
+            results.extend(self._embed_one_batch(sub))
+        return results
+
+    def _embed_one_batch(self, texts: list[str]) -> list[list[float]]:
         # Gemini's model field uses the ``models/<name>`` form.
         full_model = self.model if self.model.startswith("models/") else f"models/{self.model}"
         request_template: dict[str, Any] = {
@@ -322,6 +339,12 @@ class GeminiEmbedder(Embedder):
                 json=body,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Bubble the response body up — Gemini's 400s carry useful
+            # detail (oversize input, invalid token, etc.) that the
+            # bare HTTP status line hides.
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise EmbeddingError(f"Gemini request failed: {exc} — body: {detail}") from exc
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"Gemini request failed: {exc}") from exc
 
