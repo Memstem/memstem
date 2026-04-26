@@ -27,7 +27,7 @@ import typer
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
-from memstem.cli import _load_config, _maybe_embedder, _open_index, _resolve_vault_path
+from memstem.cli import _load_config, _open_index, _resolve_vault_path
 from memstem.config import Config
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
@@ -150,10 +150,12 @@ def main(
         typer.Option(
             "--no-embed",
             help=(
-                "Skip embedding during migration. Records are still written to the "
-                "vault and FTS5-indexed; run `memstem reindex` later to backfill "
-                "vectors. Useful for fast bulk imports on CPU-only Ollama."
+                "Deprecated no-op (kept for back-compat with old install.sh). "
+                "Migrate has always-deferred embedding now — records are "
+                "written to the vault + FTS5 immediately and pushed onto the "
+                "embed queue, which the daemon (or `memstem embed`) drains."
             ),
+            hidden=True,
         ),
     ] = False,
     progress_every: Annotated[
@@ -163,10 +165,18 @@ def main(
         ),
     ] = 25,
 ) -> None:
-    """Migrate FlipClaw memory into the Memstem vault."""
+    """Migrate FlipClaw memory into the Memstem vault.
+
+    Migrate writes records synchronously and enqueues each one for
+    embedding. The actual embedding happens via the queue worker;
+    run `memstem daemon` (continuous) or `memstem embed` (one-shot)
+    to drain the queue. ``--no-embed`` is a deprecated alias and a
+    no-op — embedding is always deferred now.
+    """
     cfg = _load_config(_resolve_vault_path(vault))
+    _ = no_embed  # accepted for back-compat; embedding is always deferred
     typer.echo(f"vault:  {cfg.vault_path}")
-    typer.echo(f"mode:   {'APPLY' if apply else 'DRY-RUN'}{' (no-embed)' if no_embed else ''}")
+    typer.echo(f"mode:   {'APPLY' if apply else 'DRY-RUN'}")
     typer.echo(f"window: last {days} days for Claude Code sessions")
 
     use_workspaces = not openclaw and bool(
@@ -200,9 +210,8 @@ def main(
 
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
-    embedder = None if no_embed else _maybe_embedder(cfg)
     try:
-        pipeline = Pipeline(vault_obj, index, embedder)
+        pipeline = Pipeline(vault_obj, index)
         all_records = openclaw_records + claude_records
         total = len(all_records)
         applied = 0
@@ -215,10 +224,11 @@ def main(
             if progress_every and i % progress_every == 0:
                 typer.echo(f"  ... {i}/{total} records processed ({applied} applied)")
         typer.echo(f"\nApplied: {applied}/{total} records")
-        if no_embed:
-            typer.echo(
-                "Note: --no-embed skipped vector storage. Run `memstem reindex` to backfill."
-            )
+        stats = index.queue_stats()
+        typer.echo(
+            f"Embed queue: {stats['pending']} pending. "
+            f"Run `memstem embed` to drain or `memstem daemon` (continuous)."
+        )
     finally:
         index.close()
 

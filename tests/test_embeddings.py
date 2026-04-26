@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
+from typing import Any
+
+import httpx
 import pytest
 
+from memstem.config import EmbeddingConfig
 from memstem.core.embeddings import (
     DEFAULT_DIMENSIONS,
     DEFAULT_MODEL,
+    EmbeddingError,
+    GeminiEmbedder,
     OllamaEmbedder,
+    OpenAIEmbedder,
+    VoyageEmbedder,
     chunk_text,
+    embed_for,
 )
 
 
@@ -76,6 +87,215 @@ class TestOllamaEmbedderUnit:
     def test_context_manager_closes(self) -> None:
         with OllamaEmbedder() as emb:
             assert emb.model == DEFAULT_MODEL
+
+
+def _mock_transport(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> httpx.MockTransport:
+    """Build an httpx MockTransport from a request → response handler."""
+    return httpx.MockTransport(handler)
+
+
+class TestOpenAIEmbedder:
+    def test_missing_api_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(EmbeddingError, match="OPENAI_API_KEY"):
+            OpenAIEmbedder(model="text-embedding-3-small", dimensions=1536)
+
+    def test_embed_batch_round_trip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("authorization")
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [
+                        {"object": "embedding", "embedding": [0.1] * 4, "index": 0},
+                        {"object": "embedding", "embedding": [0.2] * 4, "index": 1},
+                    ],
+                    "model": "text-embedding-3-small",
+                },
+            )
+
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)
+        emb._client = httpx.Client(
+            base_url=emb.base_url,
+            transport=_mock_transport(handler),
+            headers={
+                "Authorization": "Bearer sk-test",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            vecs = emb.embed_batch(["a", "b"])
+        finally:
+            emb.close()
+        assert len(vecs) == 2
+        assert vecs[0] == [0.1] * 4
+        assert vecs[1] == [0.2] * 4
+        assert seen["url"].endswith("/embeddings")
+        assert seen["auth"] == "Bearer sk-test"
+        assert seen["body"]["model"] == "text-embedding-3-small"
+        assert seen["body"]["input"] == ["a", "b"]
+
+    def test_http_error_raises_embedding_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)
+        emb._client = httpx.Client(
+            base_url=emb.base_url,
+            transport=_mock_transport(lambda r: httpx.Response(500, text="boom")),
+        )
+        try:
+            with pytest.raises(EmbeddingError, match="OpenAI request failed"):
+                emb.embed_batch(["x"])
+        finally:
+            emb.close()
+
+
+class TestGeminiEmbedder:
+    def test_missing_api_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        with pytest.raises(EmbeddingError, match="GOOGLE_API_KEY"):
+            GeminiEmbedder()
+
+    def test_embed_batch_round_trip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "embeddings": [
+                        {"values": [0.5] * 4},
+                        {"values": [0.6] * 4},
+                    ]
+                },
+            )
+
+        emb = GeminiEmbedder(model="text-embedding-004", dimensions=4)
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        try:
+            vecs = emb.embed_batch(["a", "b"])
+        finally:
+            emb.close()
+        assert len(vecs) == 2
+        assert vecs[0] == [0.5] * 4
+        assert "key=AIza-test" in seen["url"]
+        assert "batchEmbedContents" in seen["url"]
+        assert seen["body"]["requests"][0]["model"] == "models/text-embedding-004"
+        assert seen["body"]["requests"][0]["content"]["parts"][0]["text"] == "a"
+
+    def test_normalizes_models_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-test")
+        emb1 = GeminiEmbedder(model="text-embedding-004")
+        emb2 = GeminiEmbedder(model="models/text-embedding-004")
+        assert emb1.model == "text-embedding-004"
+        assert emb2.model == "models/text-embedding-004"
+        emb1.close()
+        emb2.close()
+
+
+class TestVoyageEmbedder:
+    def test_missing_api_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+        with pytest.raises(EmbeddingError, match="VOYAGE_API_KEY"):
+            VoyageEmbedder()
+
+    def test_embed_batch_sends_input_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"embedding": [0.0] * 4, "index": 0},
+                    ]
+                },
+            )
+
+        emb = VoyageEmbedder(model="voyage-3", dimensions=4)
+        emb._client = httpx.Client(
+            base_url=emb.base_url,
+            transport=_mock_transport(handler),
+            headers={
+                "Authorization": "Bearer pa-test",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            emb.embed_batch(["doc"])
+        finally:
+            emb.close()
+        assert seen["body"]["input_type"] == "document"
+        assert seen["body"]["model"] == "voyage-3"
+
+
+class TestEmbedForFactory:
+    def test_ollama_default(self) -> None:
+        cfg = EmbeddingConfig(provider="ollama")
+        emb = embed_for(cfg)
+        assert isinstance(emb, OllamaEmbedder)
+        emb.close()
+
+    def test_openai_uses_default_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+        cfg = EmbeddingConfig(provider="openai", model="text-embedding-3-small", dimensions=1536)
+        emb = embed_for(cfg)
+        assert isinstance(emb, OpenAIEmbedder)
+        emb.close()
+
+    def test_openai_custom_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OpenAI-compatible providers (Together, etc.) override base_url."""
+        monkeypatch.setenv("TOGETHER_API_KEY", "ta-x")
+        cfg = EmbeddingConfig(
+            provider="openai",
+            model="BAAI/bge-large-en-v1.5",
+            dimensions=1024,
+            base_url="https://api.together.xyz/v1",
+            api_key_env="TOGETHER_API_KEY",
+        )
+        emb = embed_for(cfg)
+        # `embed_for` returns the abstract Embedder; narrow with isinstance
+        # so mypy can see the concrete attribute on OpenAIEmbedder.
+        assert isinstance(emb, OpenAIEmbedder)
+        assert emb.base_url == "https://api.together.xyz/v1"
+        emb.close()
+
+    def test_gemini(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIza-x")
+        cfg = EmbeddingConfig(provider="gemini", model="text-embedding-004", dimensions=768)
+        emb = embed_for(cfg)
+        assert isinstance(emb, GeminiEmbedder)
+        emb.close()
+
+    def test_voyage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-x")
+        cfg = EmbeddingConfig(provider="voyage", model="voyage-3", dimensions=1024)
+        emb = embed_for(cfg)
+        assert isinstance(emb, VoyageEmbedder)
+        emb.close()
+
+    def test_unknown_provider_raises(self) -> None:
+        cfg = EmbeddingConfig(provider="nope")
+        with pytest.raises(EmbeddingError, match="unknown embedding provider"):
+            embed_for(cfg)
+
+    def test_provider_case_insensitive(self) -> None:
+        cfg = EmbeddingConfig(provider="OLLAMA")
+        emb = embed_for(cfg)
+        assert isinstance(emb, OllamaEmbedder)
+        emb.close()
 
 
 @pytest.mark.requires_ollama

@@ -228,16 +228,18 @@ else
 fi
 
 # --- Migrate (optional) -----------------------------------------------------
+# Embedding is always deferred to the queue worker (see ADR 0009), so
+# `--migrate-no-embed` is a no-op alias kept for back-compat with older
+# install.sh invocations.
 if $RUN_MIGRATE; then
   say "Importing history (memstem migrate --apply, days=$MIGRATE_DAYS)..."
   MIGRATE_ARGS=(migrate --apply --vault "$VAULT_PATH" --days "$MIGRATE_DAYS")
+  # `--no-embed` is hidden but still accepted; pass it through silently.
   if $MIGRATE_NO_EMBED; then
     MIGRATE_ARGS+=(--no-embed)
   fi
-  # The migrate command prints counts + sample previews as it processes;
-  # let it stream to the operator's terminal.
   memstem "${MIGRATE_ARGS[@]}" || warn "migrate reported issues — review above"
-  ok "history imported"
+  ok "history imported (records pushed onto embed queue)"
 fi
 
 # --- Doctor ------------------------------------------------------------------

@@ -8,7 +8,7 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 import yaml
@@ -24,7 +24,12 @@ from memstem.config import (
     OpenClawAdapterConfig,
     OpenClawWorkspace,
 )
-from memstem.core.embeddings import OllamaEmbedder, chunk_text
+from memstem.core.embed_worker import drain_once, run_workers
+from memstem.core.embeddings import (
+    Embedder,
+    EmbeddingError,
+    embed_for,
+)
 from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.search import Search
@@ -92,16 +97,14 @@ def _open_index(config: Config) -> Index:
     return idx
 
 
-def _maybe_embedder(config: Config) -> OllamaEmbedder | None:
-    if config.embedding.provider != "ollama":
-        return None
+def _maybe_embedder(config: Config) -> Embedder | None:
+    """Build the configured embedder; return None on failure (logged)."""
     try:
-        return OllamaEmbedder(
-            model=config.embedding.model,
-            base_url=config.embedding.base_url,
-            dimensions=config.embedding.dimensions,
-        )
-    except Exception as exc:
+        return embed_for(config.embedding)
+    except EmbeddingError as exc:
+        logger.warning("embedder unavailable: %s", exc)
+        return None
+    except Exception as exc:  # connection refused, DNS, ...
         logger.warning("embedder unavailable: %s", exc)
         return None
 
@@ -239,28 +242,103 @@ def search(
 @app.command()
 def reindex(
     vault: str | None = typer.Option(None, help="Vault path override"),
-    embed: bool = typer.Option(True, help="Re-embed chunks via the configured embedder"),
+    embed: bool = typer.Option(
+        True, help="Enqueue every record for re-embedding (run `memstem embed` to drain)"
+    ),
 ) -> None:
-    """Rebuild the index from the canonical vault."""
+    """Rebuild the index from the canonical vault.
+
+    Re-walks every markdown file, replaces its memories/tags/links/FTS5
+    rows, and (with ``--embed``) enqueues each record for re-embedding.
+    The actual embedding happens via the queue worker — run `memstem
+    embed` for a one-shot drain or `memstem daemon` to drain
+    continuously. Use this after switching embedding providers.
+    """
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
-    embedder = _maybe_embedder(cfg) if embed else None
     try:
         count = 0
         for memory in vault_obj.walk():
             index.upsert(memory)
-            if embedder is not None:
-                chunks = chunk_text(memory.body)
-                if chunks:
-                    try:
-                        vecs = embedder.embed_batch(chunks)
-                        index.upsert_vectors(str(memory.id), chunks, vecs)
-                    except Exception as exc:
-                        logger.warning("embed failed for %s: %s", memory.id, exc)
+            if embed:
+                index.enqueue_embed(str(memory.id))
             count += 1
         typer.echo(f"reindexed {count} memories")
+        if embed:
+            stats = index.queue_stats()
+            typer.echo(
+                f"queue: {stats['pending']} pending — run `memstem embed` to drain "
+                f"or `memstem daemon` to drain continuously."
+            )
     finally:
+        index.close()
+
+
+@app.command()
+def embed(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    retry_failed: Annotated[
+        bool,
+        typer.Option(
+            "--retry-failed",
+            help="Reset records previously marked failed (max retries exceeded) before draining",
+        ),
+    ] = False,
+    batch_size: Annotated[
+        int,
+        typer.Option(help="Records pulled per worker iteration"),
+    ] = 0,
+) -> None:
+    """Drain the embedding queue once (then exit).
+
+    Useful after a fresh `memstem migrate` or `memstem reindex`, or to
+    backfill embeddings overnight without running the full daemon.
+    For continuous draining, use `memstem daemon` instead.
+    """
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+    embedder = _maybe_embedder(cfg)
+    if embedder is None:
+        typer.echo("no embedder configured (or unavailable). Aborting.")
+        index.close()
+        raise typer.Exit(1)
+
+    if retry_failed:
+        n = index.reset_failed_queue()
+        typer.echo(f"reset {n} failed record(s) to pending")
+
+    stats_before = index.queue_stats()
+    typer.echo(f"queue: {stats_before['pending']} pending, {stats_before['failed']} failed")
+    if stats_before["pending"] == 0:
+        typer.echo("nothing to embed.")
+        embedder.close()
+        index.close()
+        return
+
+    bs = batch_size or cfg.embedding.batch_size
+
+    def _progress(n: int) -> None:
+        typer.echo(f"  ... {n} records embedded")
+
+    try:
+        result = asyncio.run(
+            drain_once(
+                vault=vault_obj,
+                index=index,
+                embedder=embedder,
+                batch_size=bs,
+                on_progress=_progress,
+            )
+        )
+        stats_after = index.queue_stats()
+        typer.echo(
+            f"\nDone. Processed {result['processed']}; remaining: "
+            f"{stats_after['pending']} pending, {stats_after['failed']} failed."
+        )
+    finally:
+        embedder.close()
         index.close()
 
 
@@ -372,33 +450,30 @@ def _doctor_run(cfg: Config) -> int:
     if vault_ok:
         try:
             idx = _open_index(cfg)
-            idx.close()
-            _doctor_check("Index opens cleanly", True)
+            try:
+                _doctor_check("Index opens cleanly", True)
+                stats = idx.queue_stats()
+                detail = f"{stats['pending']} pending, {stats['failed']} failed"
+                _doctor_check("Embed queue", True, detail)
+            finally:
+                idx.close()
         except Exception as exc:
             _doctor_check("Index opens cleanly", False, str(exc))
             failures += 1
 
-    if cfg.embedding.provider == "ollama":
-        try:
-            embedder = OllamaEmbedder(
-                model=cfg.embedding.model,
-                base_url=cfg.embedding.base_url,
-                dimensions=cfg.embedding.dimensions,
-            )
-            vec = embedder.embed("doctor probe")
-            embedder.close()
-            _doctor_check(
-                f"Ollama at {cfg.embedding.base_url} ({cfg.embedding.model})",
-                True,
-                f"{len(vec)} dims",
-            )
-        except Exception as exc:
-            _doctor_check(
-                f"Ollama at {cfg.embedding.base_url} ({cfg.embedding.model})",
-                False,
-                str(exc),
-            )
-            failures += 1
+    provider = cfg.embedding.provider
+    label = f"{provider} ({cfg.embedding.model})"
+    try:
+        embedder = embed_for(cfg.embedding)
+        vec = embedder.embed("doctor probe")
+        embedder.close()
+        _doctor_check(label, True, f"{len(vec)} dims")
+    except EmbeddingError as exc:
+        _doctor_check(label, False, str(exc))
+        failures += 1
+    except Exception as exc:
+        _doctor_check(label, False, str(exc))
+        failures += 1
 
     oc = cfg.adapters.openclaw
     if oc.agent_workspaces:
@@ -520,13 +595,15 @@ def _build_claude_adapter(cfg: Config) -> tuple[ClaudeCodeAdapter, list[Path]]:
 async def _run_daemon(
     vault_obj: Vault,
     index: Index,
-    embedder: OllamaEmbedder | None,
+    embedder: Embedder | None,
+    workers: int,
+    batch_size: int,
     openclaw_adapter: OpenClawAdapter,
     openclaw_paths: list[Path],
     claude_adapter: ClaudeCodeAdapter,
     claude_paths: list[Path],
 ) -> None:
-    pipeline = Pipeline(vault_obj, index, embedder)
+    pipeline = Pipeline(vault_obj, index)
 
     await _reconcile_into_pipeline(
         pipeline,
@@ -539,10 +616,24 @@ async def _run_daemon(
         label="claude-code",
     )
 
-    tasks = [
+    tasks: list[asyncio.Task[Any]] = [
         asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
         asyncio.create_task(_drain_into_pipeline(pipeline, claude_adapter.watch(claude_paths))),
     ]
+    if embedder is not None:
+        tasks.append(
+            asyncio.create_task(
+                run_workers(
+                    workers,
+                    vault=vault_obj,
+                    index=index,
+                    embedder=embedder,
+                    batch_size=batch_size,
+                )
+            )
+        )
+    else:
+        logger.warning("no embedder configured — queue will fill but never drain")
     try:
         await asyncio.gather(*tasks)
     finally:
@@ -701,6 +792,13 @@ def daemon(
     typer.echo(f"  claude-code roots: {', '.join(str(p) for p in claude_paths)}")
     if claude_adapter.extra_files:
         typer.echo(f"  claude-code extras: {', '.join(str(p) for p in claude_adapter.extra_files)}")
+    if embedder is not None:
+        typer.echo(
+            f"  embedder: {cfg.embedding.provider} / {cfg.embedding.model} "
+            f"({cfg.embedding.workers} worker(s), batch={cfg.embedding.batch_size})"
+        )
+    else:
+        typer.echo("  embedder: (none — queue will fill but not drain)")
 
     try:
         asyncio.run(
@@ -708,6 +806,8 @@ def daemon(
                 vault_obj=vault_obj,
                 index=index,
                 embedder=embedder,
+                workers=cfg.embedding.workers,
+                batch_size=cfg.embedding.batch_size,
                 openclaw_adapter=openclaw_adapter,
                 openclaw_paths=openclaw_paths,
                 claude_adapter=claude_adapter,

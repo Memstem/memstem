@@ -44,12 +44,12 @@ curl -fsSL https://memstem.com/install.sh | bash -s -- \
 The `--migrate-no-embed` flag is the practical default on a CPU-only Ollama box: it imports records to vault + FTS5 in minutes instead of hours. After it returns:
 
 ```bash
-memstem search "what did we decide about pricing"   # confirm it works
-pm2 logs memstem --lines 20                          # watch ingestion
-memstem reindex                                      # backfill vectors (run overnight)
+memstem search "what did we decide about pricing"   # FTS5 hits work immediately
+pm2 logs memstem --lines 20                          # watch ingestion + embed worker
+memstem doctor                                       # `Embed queue: N pending` shows backfill progress
 ```
 
-If you have a GPU-backed Ollama or are happy waiting, drop `--migrate-no-embed` to embed during migrate.
+Embedding is **always queued** rather than inline (see ADR 0009): the migrate finishes in seconds and the daemon's embed worker drains the queue at its own pace. On CPU-only Ollama that means semantic search becomes "good" over an hour or two; on the API providers below it's done in seconds.
 
 Each flag is opt-in so you can dial back the scope:
 
@@ -98,6 +98,50 @@ See [docs/mcp-api.md](./docs/mcp-api.md) for the full schema.
 ## Configuration
 
 `~/memstem-vault/_meta/config.yaml` controls embedding, search, and adapters. The wizard writes a sensible default; common edits:
+
+### Embedding provider — pick one
+
+Memstem ships four providers. Default is local Ollama; switch by editing the `embedding:` block (then `memstem reindex` so existing vectors get redone against the new provider).
+
+```yaml
+# Default — local, no API key
+embedding:
+  provider: ollama
+  model: nomic-embed-text
+  dimensions: 768
+```
+
+```yaml
+# Google Gemini — same dim as Ollama (no reindex needed when switching), free tier
+embedding:
+  provider: gemini
+  model: text-embedding-004
+  api_key_env: GOOGLE_API_KEY
+  dimensions: 768
+```
+
+```yaml
+# OpenAI — or any OpenAI-compatible endpoint (Together, Mistral, Groq, vLLM, LM Studio)
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+  api_key_env: OPENAI_API_KEY
+  dimensions: 1536
+  # base_url: https://api.together.xyz/v1   # for OpenAI-compatible providers
+```
+
+```yaml
+# Voyage — Anthropic's recommended embedding partner; tops retrieval benchmarks
+embedding:
+  provider: voyage
+  model: voyage-3
+  api_key_env: VOYAGE_API_KEY
+  dimensions: 1024
+```
+
+API keys are read from environment variables named in `api_key_env` — they never land in the vault. `embedding.workers` (default 2) and `embedding.batch_size` (default 8) tune the queue throughput; CPU Ollama is happiest at 1 worker, API providers tolerate 4+.
+
+### Adapters
 
 ```yaml
 embedding:
