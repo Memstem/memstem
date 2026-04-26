@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (PR #29)
+
+- **Gemini batch size limit.** `batchEmbedContents` caps requests at
+  100 items per call; records with long bodies (~250KB daily logs)
+  chunk into 100+ pieces and were hitting `400 Bad Request` on the
+  live cutover. `GeminiEmbedder.embed_batch` now splits oversize
+  inputs into sub-batches of `MAX_BATCH_SIZE` (=100) and
+  concatenates results — same outward contract, multiple HTTP calls
+  under the hood.
+- **400 errors include the response body.** Gemini's error
+  messages live in the JSON body and explain *why* (input too large,
+  bad model, etc.). The bare HTTP status line was hiding them.
+  `EmbeddingError` now surfaces the first 500 chars of the body.
+- Two new tests covering the batch split (250 chunks → 3 calls of
+  100/100/50) and the surfaced-error format.
+
 ### Fixed (PR #28)
 
 - **Concurrent SQLite access from the embed worker.** `Index.connect()`
