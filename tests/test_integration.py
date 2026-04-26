@@ -17,6 +17,7 @@ from memstem.integration import (
     claude_md_targets_for_openclaw,
     register_mcp_server,
     remove_flipclaw_hook,
+    remove_legacy_mcp_server,
 )
 
 
@@ -124,6 +125,78 @@ class TestRegisterMcpServer:
         register_mcp_server(settings, entry=custom)
         data = json.loads(settings.read_text())
         assert data["mcpServers"]["memstem"] == custom
+
+
+class TestRemoveLegacyMcpServer:
+    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        change = remove_legacy_mcp_server(settings)
+        assert change.action == "noop"
+        assert not settings.exists()
+
+    def test_noop_when_entry_absent(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text(
+            json.dumps({"mcpServers": {"playwright": {"command": "npx", "args": []}}})
+        )
+        before = settings.read_text()
+        change = remove_legacy_mcp_server(settings)
+        assert change.action == "noop"
+        assert settings.read_text() == before
+
+    def test_strips_entry_and_preserves_others(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "model": "opus[1m]",
+                    "mcpServers": {
+                        "memstem": {"command": "memstem", "args": ["mcp"]},
+                        "playwright": {"command": "npx", "args": ["-y", "@playwright/mcp"]},
+                    },
+                }
+            )
+        )
+        change = remove_legacy_mcp_server(settings)
+        assert change.action == "updated"
+        assert change.backup_path is not None and change.backup_path.exists()
+        data = json.loads(settings.read_text())
+        assert data["model"] == "opus[1m]"
+        assert "memstem" not in data["mcpServers"]
+        assert data["mcpServers"]["playwright"] == {
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp"],
+        }
+
+    def test_removes_empty_mcpServers_key(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "model": "opus[1m]",
+                    "mcpServers": {"memstem": {"command": "memstem", "args": ["mcp"]}},
+                }
+            )
+        )
+        remove_legacy_mcp_server(settings)
+        data = json.loads(settings.read_text())
+        assert "mcpServers" not in data
+        assert data["model"] == "opus[1m]"
+
+    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        original = json.dumps({"mcpServers": {"memstem": {"command": "memstem", "args": ["mcp"]}}})
+        settings.write_text(original)
+        change = remove_legacy_mcp_server(settings, dry_run=True)
+        assert change.action == "updated"
+        assert settings.read_text() == original
+        assert not settings.with_suffix(".json.bak").exists()
+
+    def test_invalid_json_raises(self, tmp_path: Path) -> None:
+        settings = tmp_path / "settings.json"
+        settings.write_text("{ this is not json")
+        with pytest.raises(ValueError):
+            remove_legacy_mcp_server(settings)
 
 
 class TestApplyDirective:

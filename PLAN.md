@@ -15,7 +15,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 
 1. [x] **PR #19 — `memstem connect-clients`** *(highest priority)*
    - New CLI command in `src/memstem/cli.py` that automates cutover wiring.
-   - Edits `~/.claude/settings.json` to add `mcpServers.memstem` (merge, don't overwrite other servers).
+   - Edits `~/.claude.json` to add `mcpServers.memstem` (merge, don't overwrite other servers). Earlier drafts targeted `~/.claude/settings.json`, but current Claude Code releases ignore that block — see PR #30.
    - Adds/updates `<!-- memstem:directive v1 -->` blocks in `~/.claude/CLAUDE.md` and per-agent CLAUDE.md files.
    - `--dry-run` previews changes (diff style). Default mode writes `.bak` before edit. Idempotent.
    - Flags: `--claude-code` (default true), `--openclaw <path>` (repeatable), `--remove-flipclaw` (default false; comments out the FlipClaw `SessionEnd` hook).
@@ -291,9 +291,9 @@ The nuanced directive (rather than the original "always search Memstem first") w
 
 - [ ] **`memstem migrate --apply`** — runs through ~940 records, populates `~/memstem-vault/` and the index. Pre-flight: re-run dry-run first, audit ~20 sample records by hand. Time estimate: 2–5 minutes (mostly embedding).
 - [ ] **`pm2 start memstem daemon --name memstem`** then `pm2 save`. Verify with `pm2 logs memstem` that reconcile completed and the watch loop is running.
-- [ ] **`memstem connect-clients`** (when PR #19 lands) — adds the MCP server registration to `~/.claude/settings.json` and the directive blocks to every CLAUDE.md. Backups everywhere; `--dry-run` first.
+- [x] **`memstem connect-clients`** — adds the MCP server registration to `~/.claude.json` (PR #30 moved it from `~/.claude/settings.json`, which Claude Code no longer reads for MCP) and the directive blocks to every CLAUDE.md. Backups everywhere; `--dry-run` first. Auto-cleans the stale `mcpServers.memstem` entry from the legacy `~/.claude/settings.json` on each run.
 - [ ] **Soak for 24h** — query via `memstem search` periodically; verify retrieval quality. Fix any issues that surface.
-- [ ] **Disable FlipClaw bridge** — comment out the `SessionEnd` hook in `~/.claude/settings.json`. (Or `memstem connect-clients --remove-flipclaw` does it.)
+- [ ] **Disable FlipClaw bridge** — comment out the `SessionEnd` hook in `~/.claude/settings.json` (hooks still live there; only MCP server config moved). `memstem connect-clients --remove-flipclaw` does it.
 - [ ] **Disable Ari's `incremental-memory-capture.py` cron entry**.
 - [ ] **7-day soak with FlipClaw disabled** — verify Memstem alone keeps memory fresh.
 
@@ -389,9 +389,51 @@ Already on ROADMAP as Phase 2 work. Specifically:
 
 - **Anthropic memory tool adapter** (ADR 0006): implement `BetaAbstractMemoryTool` so Claude Code's official memory tool routes natively into Memstem.
 - **HTTP API** alongside MCP for non-MCP clients.
-- **Obsidian-vault-compatibility audit**: wikilinks parser, OFM dialect support, etc.
+- **Obsidian integration** — see dedicated section below.
 - **Backup**: nightly `git push` of the vault to a private remote.
 - **Documentation site** at `memstem.com` (we own the domain).
+
+## Obsidian integration
+
+The Memstem vault is **already a valid Obsidian vault** the moment v0.1 ships — Obsidian opens any folder of markdown files. This section turns that "happens to work" property into a first-class, documented, polished feature in stages.
+
+The big architectural insight: by choosing markdown as canonical (ADR 0002), Obsidian compatibility is a property of the storage format, not a separate feature. Phase 1 alone delivers ~80% of the value with no code.
+
+### Phase 1 add-on (cheap, ~30 min, do alongside v0.1 cutover)
+
+- [ ] Verify the `inotify` watcher tolerates Obsidian's atomic save pattern (write `.tmp` then rename). Smoke test: open the vault in Obsidian, edit a file, confirm Memstem re-indexes the change.
+- [ ] Add `.obsidian/` to the ingest ignore list. Obsidian creates this config folder the moment the vault is opened; it's not memory data.
+- [ ] README "Obsidian quick start" — one short section: "Open `~/memstem-vault/` as an Obsidian vault. You get backlinks, graph view, mobile access for free."
+
+### Phase 2 audit (expansion of the previously parked one-liner)
+
+- [ ] **Frontmatter coexistence audit** — confirm Memstem's required keys (`id`, `agent`, `kind`, etc.) don't collide with Obsidian's reserved keys (`tags`, `aliases`, `cssclass`, `publish`). Document the merged schema in `docs/frontmatter-spec.md`.
+- [ ] **Wikilinks parser** — Obsidian users write `[[Note Title]]` and `[[note-title|alias]]`. Markdown storage keeps these literal; the index should extract them as link metadata so queries like "notes that link to X" work alongside semantic search.
+- [ ] **OFM (Obsidian Flavored Markdown) dialect** — callouts (`> [!note]`), embeds (`![[file.png]]`), block IDs (`^block-id`). Most pass through fine; a few should be index-aware.
+- [ ] **Optional convention layer** — per-agent MOC (Map of Content) files, daily-notes plugin compatibility, tag-folder mapping. Make it opt-in; don't impose Obsidian conventions on non-Obsidian users.
+
+### Phase 3+ — Memstem Obsidian plugin (real engineering, post-1.0)
+
+Where Memstem actually beats raw Obsidian is **hybrid keyword + semantic search across every agent's memory**. Obsidian's built-in search is keyword-only and per-vault. A custom plugin would expose Memstem's strengths inside the Obsidian UI:
+
+- Command palette entry: "Memstem: search" — calls Memstem's MCP API or CLI, shows ranked results in a side pane
+- "Find related memories" command on the current note (semantic similarity via the existing embeddings)
+- "Promote note → skill / decision / memory" actions that write the right frontmatter and move the file into the canonical location
+- Optionally: surface backlinks computed by Memstem (cross-agent) alongside Obsidian's native backlinks (within-vault)
+
+Estimated 1–2 days of TypeScript work against Obsidian's plugin API. Build it only if we have users actively asking for native Obsidian integration vs. CLI/MCP.
+
+### Sync (independent of Memstem)
+
+Multi-device usage is a sync question, not a Memstem question. Document the options in the README:
+
+- **Obsidian Sync** — paid (~$10/mo), end-to-end encrypted, just works on iOS/iPadOS/Android/desktop.
+- **Syncthing** — free, peer-to-peer, no cloud middleman.
+- **iCloud Drive / Dropbox / OneDrive** — works but historically flaky with markdown edits across devices; mention with caveats.
+
+### Why a Memstem user might care about Obsidian at all
+
+The integration matters because it lets a user **see and edit their AI's memory the same way they see and edit their own notes** — same app, same shortcuts, same mobile experience. The vault stops being "the AI's database" and becomes "shared notes that the AI also reads from and writes to." That changes how people relate to memory: less black-box, more collaborative.
 
 ## Cross-platform support
 

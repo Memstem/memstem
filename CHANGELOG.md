@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-04-26
+
+Cumulative release covering PRs #23–#30. Shipped features: complete
+installer toolkit (`install.sh` + `memstem doctor`), four pluggable
+embedder backends (Ollama / OpenAI / Gemini / Voyage) with an always-on
+embed queue, Gemini default `gemini-embedding-2-preview` with Matryoshka
+dimensions, thread-safe SQLite Index, batch-size-aware Gemini calls, and
+the cutover `connect-clients` registration moved to the location current
+Claude Code releases actually read.
+
+### Fixed (PR #30)
+
+- **`connect-clients` was registering Memstem in a config file Claude
+  Code no longer reads.** Earlier versions wrote the
+  `mcpServers.memstem` entry to `~/.claude/settings.json`, but current
+  Claude Code releases discover MCP servers from `~/.claude.json`
+  (the file `claude mcp add` manages). The settings.json block was
+  silently inert, so no Claude session — interactive or
+  relay-spawned — actually picked up the Memstem MCP server. Sessions
+  fell back to the `memstem` CLI via `Bash`, which works but skips
+  the direct MCP path.
+- `register_mcp_server` now writes the new entry shape (`type`,
+  `command`, `args`, `env`) and `connect-clients` defaults to
+  `~/.claude.json`. A new `remove_legacy_mcp_server` step cleans up
+  the stale entry from `~/.claude/settings.json` automatically (with
+  a `.bak`); `--legacy-settings PATH` overrides the location for
+  testing.
+- Six new tests covering the cleanup helper (file missing, entry
+  absent, entry present alongside others, lone entry that empties
+  the `mcpServers` key, dry-run, invalid JSON).
+
 ### Fixed (PR #29)
 
 - **Gemini batch size limit.** `batchEmbedContents` caps requests at

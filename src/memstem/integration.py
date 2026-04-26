@@ -1,13 +1,19 @@
 """Wire Memstem into Claude Code and OpenClaw client config files.
 
-Three idempotent edits:
+Four idempotent edits:
 
-1. `register_mcp_server` adds a `mcpServers.memstem` block to a Claude
-   Code `settings.json` (preserving any other servers).
-2. `apply_directive` keeps a versioned `<!-- memstem:directive v1 -->`
+1. `register_mcp_server` adds a `mcpServers.<name>` block to a Claude
+   Code user config (`~/.claude.json` by default), preserving other
+   servers and unrelated keys.
+2. `remove_legacy_mcp_server` strips a stale `mcpServers.<name>` entry
+   from `~/.claude/settings.json`. Earlier Memstem versions wrote the
+   registration there; current Claude Code releases read MCP server
+   definitions from `~/.claude.json` instead, so the legacy entry is
+   inert and worth cleaning up.
+3. `apply_directive` keeps a versioned `<!-- memstem:directive v1 -->`
    block in a CLAUDE.md file, replacing the existing block in place if
    one is present and appending it otherwise.
-3. `remove_flipclaw_hook` strips the `claude-code-bridge.py` SessionEnd
+4. `remove_flipclaw_hook` strips the `claude-code-bridge.py` SessionEnd
    entry from `settings.json` so the legacy capture pipeline stops
    firing once Memstem is live.
 
@@ -51,8 +57,10 @@ memstem_get_skill, memstem_upsert.
 
 DEFAULT_MCP_SERVER_NAME = "memstem"
 DEFAULT_MCP_SERVER_ENTRY: dict[str, Any] = {
+    "type": "stdio",
     "command": "memstem",
     "args": ["mcp"],
+    "env": {},
 }
 
 FLIPCLAW_BRIDGE_MARKER = "claude-code-bridge.py"
@@ -346,6 +354,70 @@ def remove_flipclaw_hook(
     )
 
 
+def remove_legacy_mcp_server(
+    legacy_settings_path: Path,
+    *,
+    server_name: str = DEFAULT_MCP_SERVER_NAME,
+    dry_run: bool = False,
+) -> Change:
+    """Remove a stale `mcpServers.<server_name>` entry from a legacy settings file.
+
+    Earlier Memstem versions wrote the MCP server registration to
+    `~/.claude/settings.json`. Current Claude Code releases read MCP
+    server definitions from `~/.claude.json` instead, so the legacy
+    entry is inert and misleading. This strips it (and removes the
+    `mcpServers` key entirely if it becomes empty as a result). No-op
+    if the file or entry is absent.
+    """
+    if not legacy_settings_path.exists():
+        return Change(
+            path=legacy_settings_path,
+            action="noop",
+            message="legacy settings file does not exist",
+        )
+
+    before = legacy_settings_path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(before) if before.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{legacy_settings_path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{legacy_settings_path} must contain a JSON object at the top level")
+
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict) or server_name not in servers:
+        return Change(
+            path=legacy_settings_path,
+            action="noop",
+            message=f"no legacy '{server_name}' entry to remove",
+        )
+
+    del servers[server_name]
+    if not servers:
+        del data["mcpServers"]
+
+    after = json.dumps(data, indent=2) + "\n"
+    diff = _diff(str(legacy_settings_path), before, after)
+
+    if dry_run:
+        return Change(
+            path=legacy_settings_path,
+            action="updated",
+            message=f"would remove legacy '{server_name}' entry",
+            diff=diff,
+        )
+
+    backup_path = _backup(legacy_settings_path)
+    legacy_settings_path.write_text(after, encoding="utf-8")
+    return Change(
+        path=legacy_settings_path,
+        action="updated",
+        message=f"removed legacy '{server_name}' entry",
+        diff=diff,
+        backup_path=backup_path,
+    )
+
+
 def claude_md_targets_for_openclaw(workspace_or_file: Path) -> list[Path]:
     """Resolve a `--openclaw` argument to one or more CLAUDE.md paths.
 
@@ -375,4 +447,5 @@ __all__ = [
     "claude_md_targets_for_openclaw",
     "register_mcp_server",
     "remove_flipclaw_hook",
+    "remove_legacy_mcp_server",
 ]

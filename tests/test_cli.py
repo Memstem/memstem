@@ -15,6 +15,7 @@ from memstem.cli import app
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
+from memstem.integration import DEFAULT_MCP_SERVER_ENTRY
 
 
 def _write_memory(
@@ -509,7 +510,7 @@ class TestConnectClients:
         )
         assert result.exit_code == 0, result.output
         data = json.loads(settings.read_text())
-        assert data["mcpServers"]["memstem"] == {"command": "memstem", "args": ["mcp"]}
+        assert data["mcpServers"]["memstem"] == DEFAULT_MCP_SERVER_ENTRY
         text = user_md.read_text()
         assert "<!-- memstem:directive v1 -->" in text
         assert "<!-- /memstem:directive -->" in text

@@ -97,7 +97,7 @@ A 5-minute reconciliation pass runs alongside `inotify` to catch anything missed
 
 Every query goes through three stages:
 
-1. **Embed the query** using the configured embedding model (default: nomic-embed-text via Ollama).
+1. **Embed the query** using the configured embedding backend. Memstem ships four pluggable implementations: `OllamaEmbedder` (default, local, `nomic-embed-text` 768d), `OpenAIEmbedder` (with `base_url` knob for OpenAI-compatible providers), `GeminiEmbedder` (`gemini-embedding-2-preview` default with Matryoshka support, so 768d Ollama indexes can switch over without reindexing), and `VoyageEmbedder` (Anthropic's recommended partner). Backend and dimensions are configured in `_meta/config.yaml`; see ADR 0009.
 2. **Run two retrievals in parallel**:
    - FTS5 BM25 over the markdown body + frontmatter tags
    - sqlite-vec cosine similarity over chunk embeddings

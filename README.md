@@ -4,6 +4,8 @@ Unified memory and skill infrastructure for AI agents. One canonical knowledge s
 
 > A central memory with stems reaching out to other systems, drawing their memories in.
 
+![Memstem — one memory layer for every AI agent](./docs/images/hero.png)
+
 ## What it is
 
 Memstem is a **standalone memory service** that acts as the single source of truth for memories and skills shared across multiple AI environments. Unlike traditional memory layers that you push to from each AI, Memstem **pulls** from the filesystem of each connected AI — so it's immune to upgrade churn in any of them.
@@ -30,7 +32,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.1 — feature-complete, soaking before tag.** The codebase ships with multi-agent OpenClaw + Claude Code adapters, hybrid search, an MCP server with five tools, a one-line installer, and an idempotent client-wiring command (`memstem connect-clients`). The repo is private until v0.1 is tagged and the soak window passes.
+**v0.2.0 — feature-complete and live.** Shipping: multi-agent OpenClaw + Claude Code adapters, hybrid search (FTS5 + sqlite-vec, RRF-merged), an MCP server with five tools, four pluggable embedder backends (Ollama / OpenAI / Gemini / Voyage), an always-on embed queue with retry/backoff, a one-line installer, `memstem doctor` for health checks, and an idempotent client-wiring command (`memstem connect-clients`) that targets `~/.claude.json` and cleans up legacy `~/.claude/settings.json` entries. Cross-platform CI covers Linux, macOS, and Windows. The repo stays private during the live soak; flips public when the v0.x line stabilizes.
 
 ## Quickstart
 
@@ -60,7 +62,7 @@ Each flag is opt-in so you can dial back the scope:
 | `--no-model` | Skip the `nomic-embed-text` pull. |
 | `--vault PATH` | Vault location (default `~/memstem-vault`). |
 | `--from-git` | Install from `github.com/Memstem/memstem` instead of PyPI. |
-| `--connect-clients` | Run `memstem connect-clients` (settings.json + CLAUDE.md edits). Prints a dry-run diff before applying. |
+| `--connect-clients` | Run `memstem connect-clients` (`~/.claude.json` + CLAUDE.md edits, plus legacy-settings cleanup). Prints a dry-run diff before applying. |
 | `--remove-flipclaw` | With `--connect-clients`, also strip the legacy `claude-code-bridge.py` SessionEnd hook. |
 | `--migrate` | Run `memstem migrate --apply` to import historical memory. |
 | `--start-daemon` | `pm2 start memstem` so ingestion survives reboots. |
@@ -79,7 +81,7 @@ memstem daemon                               # ingest + watch
 
 `memstem init` runs an interactive setup wizard that finds OpenClaw agent workspaces (any directory under `$HOME` with an `openclaw.json`), shared rules files (`HARD-RULES.md`), and Claude Code's session root, then writes `~/memstem-vault/_meta/config.yaml`. Pass `-y` to auto-include every candidate with content.
 
-`memstem connect-clients` is the cutover wiring step — it adds an `mcpServers.memstem` entry to `~/.claude/settings.json` and inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
+`memstem connect-clients` is the cutover wiring step — it adds an `mcpServers.memstem` entry to `~/.claude.json` (the user-config file current Claude Code releases read for MCP discovery), strips any stale entry from the legacy `~/.claude/settings.json`, and inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
 
 ## Querying from an agent
 
@@ -94,6 +96,10 @@ Once `memstem connect-clients` has run, an MCP-aware client (Claude Code, etc.) 
 | `memstem_upsert` | Create or update a memory record |
 
 See [docs/mcp-api.md](./docs/mcp-api.md) for the full schema.
+
+Every search runs in parallel down two paths and is merged with Reciprocal Rank Fusion, so exact-keyword hits and semantic neighbours both surface in one ranked list:
+
+<p align="center"><img src="./docs/images/hybrid-search.png" alt="Hybrid search — FTS5 BM25 + sqlite-vec cosine, merged with RRF" width="540"></p>
 
 ## Configuration
 

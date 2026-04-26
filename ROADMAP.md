@@ -7,19 +7,23 @@
 - [x] MCP tool definitions finalized
 - [x] Adapter interface defined
 
-## Phase 1 — v0.1 (single-user, local, working)
+## Phase 1 — v0.1 / v0.2 (single-user, local, working) — shipped
 
-- [ ] Markdown canonical storage layer (read/write/walk)
-- [ ] SQLite index with FTS5 + sqlite-vec
-- [ ] Embedding integration via Ollama (nomic-embed-text)
-- [ ] Hybrid search with RRF
-- [ ] Claude Code adapter (session JSONL watcher)
-- [ ] OpenClaw adapter (memory dir watcher)
-- [ ] MCP server with `search`, `get`, `list_skills`
-- [ ] CLI: `memstem init`, `daemon`, `search`, `reindex`
-- [ ] Migration script: import existing `~/ari/memory/` + Claude Code sessions
+- [x] Markdown canonical storage layer (read/write/walk)
+- [x] SQLite index with FTS5 + sqlite-vec
+- [x] Pluggable embedder backends — Ollama (default), OpenAI, Gemini (`gemini-embedding-2-preview` default + Matryoshka), Voyage
+- [x] Always-on embed queue with retry/backoff (`memstem embed` for manual drains)
+- [x] Hybrid search with RRF
+- [x] Claude Code adapter (session JSONL watcher) + extras-ingest for `~/.claude/CLAUDE.md`
+- [x] OpenClaw adapter (memory dir watcher) — multi-agent
+- [x] MCP server with `memstem_search`, `memstem_get`, `memstem_list_skills`, `memstem_get_skill`, `memstem_upsert`
+- [x] CLI: `memstem init`, `daemon`, `search`, `reindex`, `embed`, `migrate`, `mcp`, `doctor`, `connect-clients`
+- [x] Migration script: import existing `~/ari/memory/` + Claude Code sessions
+- [x] `memstem connect-clients` registers the MCP server in `~/.claude.json` and patches CLAUDE.md
+- [x] `install.sh` end-to-end installer + `memstem doctor`
+- [x] Cross-platform CI matrix (Linux + macOS + Windows)
 
-**Goal:** running locally, replacing FlipClaw end-to-end. Not yet public.
+**Goal:** running locally, replacing FlipClaw end-to-end. Achieved in v0.2.0.
 
 ## Phase 2 — v0.2 (production-ready single-user)
 

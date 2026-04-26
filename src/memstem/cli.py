@@ -47,6 +47,7 @@ from memstem.integration import (
     claude_md_targets_for_openclaw,
     register_mcp_server,
     remove_flipclaw_hook,
+    remove_legacy_mcp_server,
 )
 from memstem.servers.mcp_server import build_server
 
@@ -59,7 +60,8 @@ DEFAULT_OPENCLAW_PATHS = (
     Path.home() / "ari" / "skills",
 )
 DEFAULT_CLAUDE_CODE_PATHS = (Path.home() / ".claude" / "projects",)
-DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude.json"
+DEFAULT_LEGACY_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 DEFAULT_CLAUDE_USER_MD = Path.home() / ".claude" / "CLAUDE.md"
 
 
@@ -675,7 +677,7 @@ def connect_clients(
         bool,
         typer.Option(
             "--claude-code/--no-claude-code",
-            help="Register Memstem in ~/.claude/settings.json and patch ~/.claude/CLAUDE.md",
+            help="Register Memstem in ~/.claude.json and patch ~/.claude/CLAUDE.md",
         ),
     ] = True,
     openclaw: Annotated[
@@ -704,7 +706,19 @@ def connect_clients(
         str | None,
         typer.Option(
             "--settings",
-            help="Override the Claude Code settings.json path (default: ~/.claude/settings.json)",
+            help="Override the Claude Code user-config path (default: ~/.claude.json)",
+        ),
+    ] = None,
+    legacy_settings_path: Annotated[
+        str | None,
+        typer.Option(
+            "--legacy-settings",
+            help=(
+                "Override the legacy Claude Code settings.json path "
+                "(default: ~/.claude/settings.json). The legacy file is "
+                "scanned for a stale Memstem mcpServers entry and cleaned "
+                "up if found."
+            ),
         ),
     ] = None,
     claude_md_path: Annotated[
@@ -721,7 +735,9 @@ def connect_clients(
 ) -> None:
     """Wire Memstem into Claude Code and OpenClaw client config files.
 
-    Adds the MCP server registration to settings.json, ensures the
+    Adds the MCP server registration to ~/.claude.json (the location
+    current Claude Code releases read for MCP discovery), removes any
+    stale entry from the legacy ~/.claude/settings.json, ensures the
     Memstem directive block is present in each CLAUDE.md, and (with
     --remove-flipclaw) disables the legacy FlipClaw bridge hook.
 
@@ -730,13 +746,22 @@ def connect_clients(
     """
     cfg = _load_config(_resolve_vault_path(vault))
     settings_target = Path(settings_path).expanduser() if settings_path else DEFAULT_CLAUDE_SETTINGS
+    legacy_target = (
+        Path(legacy_settings_path).expanduser()
+        if legacy_settings_path
+        else DEFAULT_LEGACY_CLAUDE_SETTINGS
+    )
     user_md = Path(claude_md_path).expanduser() if claude_md_path else DEFAULT_CLAUDE_USER_MD
 
     typer.echo(f"connect-clients ({'dry-run' if dry_run else 'apply'}):\n")
 
     if claude_code:
-        typer.echo(f"Claude Code settings: {settings_target}")
+        typer.echo(f"Claude Code user config: {settings_target}")
         change = register_mcp_server(settings_target, dry_run=dry_run)
+        _print_change(change, dry_run)
+
+        typer.echo(f"\nLegacy settings cleanup: {legacy_target}")
+        change = remove_legacy_mcp_server(legacy_target, dry_run=dry_run)
         _print_change(change, dry_run)
 
         typer.echo(f"\nClaude Code instructions: {user_md}")
