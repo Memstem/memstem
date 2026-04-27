@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.openclaw import (
     OpenClawAdapter,
+    _classify_trajectory_path,
     _classify_type,
     _classify_workspace_path,
     _extract_h1,
     _file_to_record,
+    _parse_trajectory_file,
+    _trajectory_to_record,
 )
 from memstem.config import OpenClawLayout, OpenClawWorkspace
 
@@ -400,6 +405,305 @@ class TestWorkspaceLayout:
         assert is_int is True
         is_int, _ = _classify_workspace_path(decoy, ws)
         assert is_int is False
+
+
+class TestTrajectoryParser:
+    """Parse OpenClaw `*.trajectory.jsonl` files into session records."""
+
+    @staticmethod
+    def _write_trajectory(path: Path, events: list[dict[str, Any]]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+        return path
+
+    def test_parses_user_and_assistant_turns(self, tmp_path: Path) -> None:
+        traj = self._write_trajectory(
+            tmp_path / "abc123.trajectory.jsonl",
+            [
+                {
+                    "type": "session.started",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "sessionId": "abc123",
+                    "workspaceDir": "/home/ubuntu/ari",
+                    "data": {"agentId": "main"},
+                },
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:01.000Z",
+                    "data": {"prompt": "Hello, can you help?"},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-04-26T23:00:02.000Z",
+                    "data": {"assistantTexts": ["Sure — what do you need?"]},
+                },
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:05.000Z",
+                    "data": {"prompt": "Test the parser."},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-04-26T23:00:06.000Z",
+                    "data": {"assistantTexts": ["Done."]},
+                },
+                {"type": "session.ended", "ts": "2026-04-26T23:00:07.000Z", "data": {}},
+            ],
+        )
+        parsed = _parse_trajectory_file(traj)
+        assert parsed is not None
+        assert parsed["session_id"] == "abc123"
+        assert parsed["turn_count"] == 4
+        assert "**User:** Hello, can you help?" in parsed["body"]
+        assert "**Assistant:** Sure — what do you need?" in parsed["body"]
+        assert "**User:** Test the parser." in parsed["body"]
+        assert "**Assistant:** Done." in parsed["body"]
+        assert parsed["title"] == "Hello, can you help?"
+        assert parsed["first_timestamp"] == "2026-04-26T23:00:00.000Z"
+        assert parsed["last_timestamp"] == "2026-04-26T23:00:07.000Z"
+        assert parsed["workspace_dir"] == "/home/ubuntu/ari"
+        assert parsed["agent_id"] == "main"
+
+    def test_skips_operational_events(self, tmp_path: Path) -> None:
+        # context.compiled, trace.artifacts, openclaw, etc. should not contribute turns.
+        traj = self._write_trajectory(
+            tmp_path / "x.trajectory.jsonl",
+            [
+                {
+                    "type": "context.compiled",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "data": {"systemPrompt": "long system prompt content"},
+                },
+                {
+                    "type": "trace.artifacts",
+                    "ts": "2026-04-26T23:00:00.001Z",
+                    "data": {"items": ["a", "b", "c"]},
+                },
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:01.000Z",
+                    "data": {"prompt": "real user turn"},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-04-26T23:00:02.000Z",
+                    "data": {"assistantTexts": ["real assistant turn"]},
+                },
+            ],
+        )
+        parsed = _parse_trajectory_file(traj)
+        assert parsed is not None
+        assert parsed["turn_count"] == 2
+
+    def test_empty_assistant_texts_skipped(self, tmp_path: Path) -> None:
+        traj = self._write_trajectory(
+            tmp_path / "x.trajectory.jsonl",
+            [
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "data": {"prompt": "hi"},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-04-26T23:00:01.000Z",
+                    "data": {"assistantTexts": []},
+                },
+            ],
+        )
+        parsed = _parse_trajectory_file(traj)
+        assert parsed is not None
+        assert parsed["turn_count"] == 1
+
+    def test_session_id_falls_back_to_filename(self, tmp_path: Path) -> None:
+        # No sessionId/traceId in any event → derive from filename stem.
+        traj = self._write_trajectory(
+            tmp_path / "deadbeef.trajectory.jsonl",
+            [
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "data": {"prompt": "hi"},
+                },
+            ],
+        )
+        parsed = _parse_trajectory_file(traj)
+        assert parsed is not None
+        assert parsed["session_id"] == "deadbeef"
+
+    def test_malformed_lines_skipped(self, tmp_path: Path) -> None:
+        traj = tmp_path / "x.trajectory.jsonl"
+        traj.write_text(
+            "not json\n"
+            '{"type":"prompt.submitted","ts":"2026-04-26T23:00:00.000Z","data":{"prompt":"hi"}}\n'
+            "{ bad json\n"
+            '{"type":"model.completed","ts":"2026-04-26T23:00:01.000Z","data":{"assistantTexts":["ok"]}}\n',
+            encoding="utf-8",
+        )
+        parsed = _parse_trajectory_file(traj)
+        assert parsed is not None
+        assert parsed["turn_count"] == 2
+
+    def test_record_carries_session_metadata(self, tmp_path: Path) -> None:
+        traj = self._write_trajectory(
+            tmp_path / "abc.trajectory.jsonl",
+            [
+                {
+                    "type": "session.started",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "sessionId": "abc-session",
+                    "workspaceDir": "/x",
+                    "data": {"agentId": "main"},
+                },
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:01.000Z",
+                    "data": {"prompt": "first prompt"},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-04-26T23:00:02.000Z",
+                    "data": {"assistantTexts": ["resp"]},
+                },
+            ],
+        )
+        record = _trajectory_to_record(traj)
+        assert record is not None
+        assert record.metadata["type"] == "session"
+        assert record.metadata["session_id"] == "abc-session"
+        assert record.metadata["turn_count"] == 2
+        assert record.metadata["workspace_dir"] == "/x"
+        assert record.metadata["agent_id"] == "main"
+        assert record.title == "first prompt"
+
+    def test_empty_trajectory_returns_none(self, tmp_path: Path) -> None:
+        traj = tmp_path / "x.trajectory.jsonl"
+        traj.write_text("", encoding="utf-8")
+        record = _trajectory_to_record(traj)
+        assert record is None
+
+    def test_only_operational_events_returns_none(self, tmp_path: Path) -> None:
+        # No prompt.submitted or model.completed → no turns → no record.
+        traj = self._write_trajectory(
+            tmp_path / "x.trajectory.jsonl",
+            [
+                {"type": "session.started", "ts": "2026-04-26T23:00:00.000Z"},
+                {"type": "session.ended", "ts": "2026-04-26T23:00:01.000Z"},
+            ],
+        )
+        record = _trajectory_to_record(traj)
+        assert record is None
+
+
+class TestTrajectoryClassification:
+    def test_classifies_trajectory_inside_session_dir(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(
+            path=tmp_path / "ari",
+            tag="ari",
+            layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
+        )
+        traj = tmp_path / "ari" / "agents" / "main" / "sessions" / "x.trajectory.jsonl"
+        traj.parent.mkdir(parents=True)
+        traj.write_text("")
+        assert _classify_trajectory_path(traj, ws) is True
+
+    def test_rejects_md_file(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(
+            path=tmp_path / "ari",
+            tag="ari",
+            layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
+        )
+        md = tmp_path / "ari" / "agents" / "main" / "sessions" / "note.md"
+        md.parent.mkdir(parents=True)
+        md.write_text("# note")
+        assert _classify_trajectory_path(md, ws) is False
+
+    def test_rejects_trajectory_outside_session_dirs(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(
+            path=tmp_path / "ari",
+            tag="ari",
+            layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
+        )
+        # Trajectory file but in a different directory than configured.
+        traj = tmp_path / "ari" / "elsewhere" / "x.trajectory.jsonl"
+        traj.parent.mkdir(parents=True)
+        traj.write_text("")
+        assert _classify_trajectory_path(traj, ws) is False
+
+    def test_default_session_dirs_empty_means_no_match(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
+        traj = tmp_path / "ari" / "agents" / "main" / "sessions" / "x.trajectory.jsonl"
+        traj.parent.mkdir(parents=True)
+        traj.write_text("")
+        # With default empty session_dirs, the trajectory is invisible.
+        assert _classify_trajectory_path(traj, ws) is False
+
+
+class TestWorkspaceTrajectoryReconcile:
+    @staticmethod
+    def _write_trajectory(path: Path, events: list[dict[str, Any]]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+        return path
+
+    async def test_emits_trajectory_records_with_agent_tag(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "MEMORY.md", "# core")
+        self._write_trajectory(
+            ws_root / "agents" / "main" / "sessions" / "abc.trajectory.jsonl",
+            [
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "data": {"prompt": "hello"},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-04-26T23:00:01.000Z",
+                    "data": {"assistantTexts": ["hi"]},
+                },
+            ],
+        )
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="ari",
+                    layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        # 1 MEMORY.md + 1 trajectory
+        assert len(records) == 2
+        traj_record = next(r for r in records if r.metadata.get("type") == "session")
+        assert "agent:ari" in traj_record.tags
+        assert "**User:** hello" in traj_record.body
+        assert "**Assistant:** hi" in traj_record.body
+
+    async def test_default_layout_skips_trajectories(self, tmp_path: Path) -> None:
+        # Without session_dirs configured, trajectory files are not ingested
+        # — even if they exist on disk.
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "MEMORY.md", "# core")
+        self._write_trajectory(
+            ws_root / "agents" / "main" / "sessions" / "abc.trajectory.jsonl",
+            [
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-04-26T23:00:00.000Z",
+                    "data": {"prompt": "hello"},
+                },
+            ],
+        )
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="ari")])
+        records = await _drain(adapter.reconcile([]))
+        assert len(records) == 1
+        assert records[0].metadata.get("type") != "session"
 
 
 class TestWorkspaceWatch:

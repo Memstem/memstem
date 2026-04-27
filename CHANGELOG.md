@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — OpenClaw session trajectory ingestion
+
+- **`*.trajectory.jsonl` files under a workspace's configured
+  `session_dirs` are now ingested as `type:session` records.** Lets
+  Memstem search the full transcript of every OpenClaw session, not
+  just the distilled `[TECHNICAL]/[DECISION]/[RULE]` bullets that the
+  upstream memory writer extracts. Search for an exact phrase from
+  yesterday's chat now lands you on the exact session.
+- New `OpenClawLayout.session_dirs` field — list of workspace-relative
+  directories. Empty by default (opt-in). Set
+  `["agents/main/sessions"]` for OpenClaw's standard layout.
+- New `_parse_trajectory_file()` parses the OpenClaw event-log format,
+  pulling `prompt.submitted.data.prompt` (user turns) and
+  `model.completed.data.assistantTexts` (assistant turns) into a
+  chronological transcript. Tool calls, context-compilation events,
+  and trace artifacts are intentionally skipped — they're operational
+  metadata that adds noise to a search index.
+- Trajectory records carry `session_id`, `workspace_dir`, `agent_id`,
+  `turn_count`, `created`, `updated` in metadata, with the agent tag
+  applied by the workspace adapter (`agent:<tag>`).
+- Watch loop also handles trajectory paths — incremental updates as
+  the agent appends events get reflected in the index.
+- 14 new tests covering parser correctness (turns, operational events,
+  empty/malformed lines, metadata extraction), classification (in/out
+  of session_dirs, suffix matching, default-empty), and end-to-end
+  reconcile (default skip vs. opt-in include).
+
 ### Added — per-workspace layout overrides for OpenClaw
 
 - **`OpenClawWorkspace` now accepts a `layout` field** specifying which
@@ -15,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `memory/`, skills disabled, custom `MEMORY.md` filename) point the
   adapter at their actual paths instead of forking the adapter or
   symlinking files.
-- New `OpenClawLayout` model with four configurable fields, all with
+- New `OpenClawLayout` model with five configurable fields, all with
   defaults that preserve current behavior:
   - `memory_md` — top-level core file (default `MEMORY.md`; `None` to skip).
   - `claude_md` — operational rules file (default `CLAUDE.md`; `None` to skip).
@@ -23,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ingested (default `["memory"]`; empty list = no recursive ingestion).
   - `skills_dirs` — list of directories whose `**/SKILL.md` descendants
     are ingested (default `["skills"]`; empty list = no skills).
+  - `session_dirs` — list of directories whose `*.trajectory.jsonl`
+    descendants are ingested as session records (default `[]`; opt-in).
 - Both reconcile (`_iter_workspace_files`) and watch
   (`_classify_workspace_path`) honor the layout, so live file events
   flow into the index using the same path conventions configured for

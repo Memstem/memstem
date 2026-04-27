@@ -91,6 +91,15 @@ class OpenClawLayout(BaseModel):
     """Directories whose ``**/SKILL.md`` descendants get ingested as
     skills. Empty list = no skill ingestion."""
 
+    session_dirs: list[str] = Field(default_factory=list)
+    """Directories whose ``*.trajectory.jsonl`` descendants get ingested
+    as session records. Empty by default — opt in by listing the
+    directories where the agent runtime writes full conversation
+    trajectories (e.g. ``["agents/main/sessions"]`` for OpenClaw's
+    standard layout). Each trajectory becomes one ``type:session``
+    record containing the chronological transcript of user prompts and
+    assistant responses."""
+
 
 class OpenClawWorkspace(BaseModel):
     """One OpenClaw agent workspace and its display tag.
