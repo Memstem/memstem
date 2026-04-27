@@ -35,6 +35,9 @@ dependencies = [
     "pydantic>=2.0.0",
     # Async file ops
     "aiofiles>=23.0.0",
+    # Local HTTP API for first-party clients (Obsidian plugin, etc.)
+    "fastapi>=0.110.0",
+    "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]

@@ -64,6 +64,22 @@ class HygieneConfig(BaseModel):
     skill_extraction_enabled: bool = True
 
 
+class HttpServerConfig(BaseModel):
+    """Local HTTP server configuration.
+
+    The daemon co-hosts a small HTTP API on loopback so first-party clients
+    (the Obsidian plugin, future VS Code/web clients) can call into the
+    same `Search` / `Vault` / `Index` instances the watch loop uses,
+    without spawning a per-query subprocess.
+
+    Loopback-only by design — there's no auth surface in v0.1.
+    """
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 7821
+
+
 class OpenClawLayout(BaseModel):
     """Per-workspace path conventions.
 
@@ -152,4 +168,5 @@ class Config(BaseModel):
     embedding: EmbeddingConfig = EmbeddingConfig()
     search: SearchConfig = SearchConfig()
     hygiene: HygieneConfig = HygieneConfig()
+    http: HttpServerConfig = Field(default_factory=HttpServerConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
