@@ -12,7 +12,9 @@ from memstem.adapters.base import MemoryRecord
 from memstem.core.extraction import (
     NoiseAction,
     NoiseDecision,
+    build_boot_echo_hashes,
     is_automation_log,
+    is_boot_echo,
     is_cron_output,
     is_heartbeat,
     is_tool_dump,
@@ -323,6 +325,109 @@ class TestPipelineTagTransient:
         )
         assert memory is not None
         assert memory.frontmatter.valid_to is None
+
+
+# --- boot-echo detection (PR-C) ---
+
+
+class TestIsBootEcho:
+    def test_match_drops(self, tmp_path: Path) -> None:
+        # Set up a fake CLAUDE.md, hash it, then verify a record with that
+        # exact body matches.
+        prompt_body = "# Brad's CLAUDE.md\nUse the project conventions documented here.\n"
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text(prompt_body)
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert is_boot_echo(prompt_body, hashes) is True
+
+    def test_unrelated_body_does_not_match(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("system prompt content")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert is_boot_echo("entirely different memory content", hashes) is False
+
+    def test_empty_hashes_never_matches(self) -> None:
+        assert is_boot_echo("any body", frozenset()) is False
+
+    def test_empty_body_never_matches(self) -> None:
+        assert is_boot_echo("", frozenset({"deadbeef"})) is False
+
+
+class TestBuildBootEchoHashes:
+    def test_collects_known_filenames(self, tmp_path: Path) -> None:
+        (tmp_path / "CLAUDE.md").write_text("alpha")
+        (tmp_path / "MEMORY.md").write_text("beta")
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "subdir" / "SOUL.md").write_text("gamma")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert len(hashes) == 3
+
+    def test_skips_unknown_filenames(self, tmp_path: Path) -> None:
+        (tmp_path / "README.md").write_text("not a system prompt")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert len(hashes) == 0
+
+    def test_walks_recursively(self, tmp_path: Path) -> None:
+        deep = tmp_path / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        (deep / "MEMORY.md").write_text("nested prompt")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert len(hashes) == 1
+
+    def test_dedupes_identical_heads_across_files(self, tmp_path: Path) -> None:
+        # Two files with the same first-1KB content should produce one hash.
+        same_content = "shared system prompt content"
+        (tmp_path / "CLAUDE.md").write_text(same_content)
+        sub = tmp_path / "agent"
+        sub.mkdir()
+        (sub / "CLAUDE.md").write_text(same_content)
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert len(hashes) == 1
+
+    def test_skips_missing_paths(self, tmp_path: Path) -> None:
+        # Non-existent root path is silently skipped, not an error.
+        missing = tmp_path / "does-not-exist"
+        hashes = build_boot_echo_hashes([missing])
+        assert hashes == frozenset()
+
+    def test_only_first_1kb_is_hashed(self, tmp_path: Path) -> None:
+        # Two files that share the first 1KB but diverge after should
+        # collapse to one hash.
+        head = "x" * 1024
+        (tmp_path / "CLAUDE.md").write_text(head + "\n--first--")
+        sub = tmp_path / "y"
+        sub.mkdir()
+        (sub / "CLAUDE.md").write_text(head + "\n--second--")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert len(hashes) == 1
+
+
+class TestNoiseFilterBootEcho:
+    def test_noise_filter_drops_when_hashed(self, tmp_path: Path) -> None:
+        prompt = "# CLAUDE.md\nProject conventions go here.\n"
+        (tmp_path / "CLAUDE.md").write_text(prompt)
+        hashes = build_boot_echo_hashes([tmp_path])
+        decision = noise_filter(_record(body=prompt), boot_echo_hashes=hashes)
+        assert decision.action is NoiseAction.DROP
+        assert decision.kind == "boot_echo"
+
+    def test_noise_filter_skips_check_without_hashes(self) -> None:
+        # When no hashes are passed, boot-echo detection is skipped (test
+        # default + offline migration case). Normal records still KEEP.
+        decision = noise_filter(_record(body="ordinary content"), boot_echo_hashes=None)
+        assert decision.action is NoiseAction.KEEP
+
+    def test_pipeline_drops_boot_echo_record(
+        self, vault: Vault, index: Index, tmp_path: Path
+    ) -> None:
+        prompt = "system prompt body that's been re-extracted by an agent"
+        (tmp_path / "MEMORY.md").write_text(prompt)
+        hashes = build_boot_echo_hashes([tmp_path])
+        pipe = Pipeline(vault, index, boot_echo_hashes=hashes)
+        result = pipe.process(_record(body=prompt, ref="/echo.md"))
+        assert result is None
+        # Verify nothing reached the index.
+        rows = index.db.execute("SELECT 1 FROM memories").fetchall()
+        assert rows == []
 
 
 # --- Pipeline integration ---

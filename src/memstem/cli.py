@@ -637,7 +637,28 @@ async def _run_daemon(
     http_config: Any = None,
     search_config: Any = None,
 ) -> None:
-    pipeline = Pipeline(vault_obj, index, embedding_signature=embedding_signature)
+    # Build the boot-echo hash set up front: walk every watched workspace +
+    # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
+    # SOUL.md, USER.md, HARD-RULES.md), hash the first 1KB. Records whose
+    # first 1KB hashes to one of these are dropped at ingest as boot echoes
+    # (ADR 0011 PR-C — biggest single category in the mem0 audit at 52.7%).
+    from memstem.core.extraction import build_boot_echo_hashes
+
+    boot_echo_paths = list({p.expanduser().resolve() for p in (*openclaw_paths, *claude_paths)})
+    boot_echo_hashes = build_boot_echo_hashes(boot_echo_paths)
+    if boot_echo_hashes:
+        logger.info(
+            "boot-echo hash table built: %d unique system-prompt heads across %d paths",
+            len(boot_echo_hashes),
+            len(boot_echo_paths),
+        )
+
+    pipeline = Pipeline(
+        vault_obj,
+        index,
+        embedding_signature=embedding_signature,
+        boot_echo_hashes=boot_echo_hashes,
+    )
 
     await _reconcile_into_pipeline(
         pipeline,
