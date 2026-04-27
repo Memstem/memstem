@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — per-workspace layout overrides for OpenClaw
+
+- **`OpenClawWorkspace` now accepts a `layout` field** specifying which
+  paths inside the workspace get ingested. Lets toolkit users with
+  non-canonical OpenClaw layouts (memories under `notes/` instead of
+  `memory/`, skills disabled, custom `MEMORY.md` filename) point the
+  adapter at their actual paths instead of forking the adapter or
+  symlinking files.
+- New `OpenClawLayout` model with four configurable fields, all with
+  defaults that preserve current behavior:
+  - `memory_md` — top-level core file (default `MEMORY.md`; `None` to skip).
+  - `claude_md` — operational rules file (default `CLAUDE.md`; `None` to skip).
+  - `memory_dirs` — list of directories whose `*.md` descendants are
+    ingested (default `["memory"]`; empty list = no recursive ingestion).
+  - `skills_dirs` — list of directories whose `**/SKILL.md` descendants
+    are ingested (default `["skills"]`; empty list = no skills).
+- Both reconcile (`_iter_workspace_files`) and watch
+  (`_classify_workspace_path`) honor the layout, so live file events
+  flow into the index using the same path conventions configured for
+  reconcile.
+- Existing configs are unchanged: omitting `layout` falls back to the
+  canonical defaults via Pydantic's `default_factory`. 6 new tests cover
+  the override paths (custom memory dir, skip MEMORY.md, skip skills,
+  multiple memory dirs, default unchanged, watch classifier).
+
 ## [0.4.0] — 2026-04-26
 
 Two related cutover fixes shipped together: the post-restart re-embed

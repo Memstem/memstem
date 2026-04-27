@@ -14,7 +14,7 @@ from memstem.adapters.openclaw import (
     _extract_h1,
     _file_to_record,
 )
-from memstem.config import OpenClawWorkspace
+from memstem.config import OpenClawLayout, OpenClawWorkspace
 
 
 def _write(file: Path, content: str) -> Path:
@@ -286,6 +286,120 @@ class TestWorkspaceMode:
         records = await _drain(OpenClawAdapter().reconcile([tmp_path]))
         assert len(records) == 1
         assert "agent:" not in " ".join(records[0].tags or [""])
+
+
+class TestWorkspaceLayout:
+    """Per-workspace layout overrides for non-canonical OpenClaw setups."""
+
+    async def test_custom_memory_dir(self, tmp_path: Path) -> None:
+        # Workspace keeps memories under `notes/`, not `memory/`.
+        ws_root = tmp_path / "custom"
+        _write(ws_root / "MEMORY.md", "# core")
+        _write(ws_root / "notes" / "fact.md", "# Fact")
+        # Decoy under the default memory/ dir — should NOT be picked up.
+        _write(ws_root / "memory" / "should-be-skipped.md", "# decoy")
+
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="custom",
+                    layout=OpenClawLayout(memory_dirs=["notes"]),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        refs = {r.ref for r in records}
+        assert str(ws_root / "notes" / "fact.md") in refs
+        assert str(ws_root / "memory" / "should-be-skipped.md") not in refs
+
+    async def test_skip_memory_md(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "custom"
+        _write(ws_root / "MEMORY.md", "# would normally be ingested")
+        _write(ws_root / "memory" / "ok.md", "# ok")
+
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="custom",
+                    layout=OpenClawLayout(memory_md=None),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        refs = {r.ref for r in records}
+        assert str(ws_root / "MEMORY.md") not in refs
+        assert str(ws_root / "memory" / "ok.md") in refs
+
+    async def test_skip_skills(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "custom"
+        _write(ws_root / "MEMORY.md", "# core")
+        _write(ws_root / "skills" / "deploy" / "SKILL.md", "# skill")
+
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="custom",
+                    layout=OpenClawLayout(skills_dirs=[]),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        assert all(not r.ref.endswith("SKILL.md") for r in records)
+
+    async def test_multiple_memory_dirs(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "custom"
+        _write(ws_root / "memory" / "a.md", "# A")
+        _write(ws_root / "notes" / "b.md", "# B")
+        _write(ws_root / "logs" / "c.md", "# C")
+
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="custom",
+                    layout=OpenClawLayout(memory_dirs=["memory", "notes", "logs"]),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        refs = {r.ref for r in records}
+        assert str(ws_root / "memory" / "a.md") in refs
+        assert str(ws_root / "notes" / "b.md") in refs
+        assert str(ws_root / "logs" / "c.md") in refs
+
+    async def test_default_layout_unchanged(self, tmp_path: Path) -> None:
+        # Constructing OpenClawWorkspace without `layout=` should preserve
+        # the canonical behavior — important for backwards compat.
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "MEMORY.md", "# core")
+        _write(ws_root / "CLAUDE.md", "# rules")
+        _write(ws_root / "memory" / "people.md", "# people")
+        _write(ws_root / "skills" / "x" / "SKILL.md", "# skill")
+
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="ari")])
+        records = await _drain(adapter.reconcile([]))
+        assert len(records) == 4
+
+    def test_classify_path_honors_custom_memory_dir(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(
+            path=tmp_path / "x",
+            tag="x",
+            layout=OpenClawLayout(memory_dirs=["notes"]),
+        )
+        (tmp_path / "x" / "notes").mkdir(parents=True)
+        notes_file = tmp_path / "x" / "notes" / "a.md"
+        notes_file.write_text("# A")
+        decoy = tmp_path / "x" / "memory" / "b.md"
+        decoy.parent.mkdir(parents=True)
+        decoy.write_text("# B")
+
+        is_int, _ = _classify_workspace_path(notes_file, ws)
+        assert is_int is True
+        is_int, _ = _classify_workspace_path(decoy, ws)
+        assert is_int is False
 
 
 class TestWorkspaceWatch:

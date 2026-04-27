@@ -64,15 +64,45 @@ class HygieneConfig(BaseModel):
     skill_extraction_enabled: bool = True
 
 
+class OpenClawLayout(BaseModel):
+    """Per-workspace path conventions.
+
+    All fields are relative to the workspace root and default to the
+    canonical OpenClaw layout (`MEMORY.md`, `CLAUDE.md`, `memory/`,
+    `skills/`). Override any of them to point the adapter at a workspace
+    with a non-standard memory layout — e.g. memory under
+    `notes/` instead of `memory/`, or skills disabled entirely.
+    """
+
+    memory_md: str | None = "MEMORY.md"
+    """Always-loaded core file path (relative to workspace). Set to
+    ``None`` to skip — useful for workspaces that don't follow the
+    MEMORY.md convention."""
+
+    claude_md: str | None = "CLAUDE.md"
+    """Per-agent operational rules file path. ``None`` to skip."""
+
+    memory_dirs: list[str] = Field(default_factory=lambda: ["memory"])
+    """Directories whose ``*.md`` descendants get ingested as memories.
+    Each directory is walked recursively. Empty list = no recursive
+    memory ingestion (only top-level MEMORY.md / CLAUDE.md)."""
+
+    skills_dirs: list[str] = Field(default_factory=lambda: ["skills"])
+    """Directories whose ``**/SKILL.md`` descendants get ingested as
+    skills. Empty list = no skill ingestion."""
+
+
 class OpenClawWorkspace(BaseModel):
     """One OpenClaw agent workspace and its display tag.
 
     Records emitted from this workspace get an `agent:<tag>` tag so callers
-    can filter or group results per agent.
+    can filter or group results per agent. Override ``layout`` to point at
+    a workspace with a non-standard memory layout.
     """
 
     path: Path
     tag: str
+    layout: OpenClawLayout = Field(default_factory=OpenClawLayout)
 
 
 class OpenClawAdapterConfig(BaseModel):
