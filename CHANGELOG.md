@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `_backfill_embed_state` race on concurrent index opens
+
+- **`Index._migrate()` no longer crashes with
+  `IntegrityError: UNIQUE constraint failed: embed_state.memory_id`**
+  when two connections (e.g. an MCP child and a CLI invocation) open
+  the same vault simultaneously. Both SELECTs would return the same
+  un-stamped rows; both would try to INSERT; the loser used to crash.
+  Switched the helper's INSERT to `INSERT OR IGNORE` so the duplicate
+  is silently skipped — the `NOT EXISTS` guard in the SELECT narrows
+  the window but cannot close it.
+- 2 new regression tests: a deterministic test that drives the
+  helper's INSERT statement with a stale-view payload and verifies it
+  doesn't raise, plus a source-level guard that asserts the SQL
+  literally contains `INSERT OR IGNORE` so a future refactor cannot
+  silently reintroduce the race.
+
 ## [0.5.0] — 2026-04-27
 
 Four PRs shipped together that together close the loop on multi-agent
