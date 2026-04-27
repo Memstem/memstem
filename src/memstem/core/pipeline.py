@@ -167,7 +167,7 @@ class Pipeline:
             existing_id_for_ref is None or existing_id_for_hash != str(existing_id_for_ref)
         )
         if is_cross_record_duplicate:
-            with self.index.db:
+            with self.index._lock, self.index.db:
                 increment_seen_count(self.index.db, body_dedup_hash)
             logger.info(
                 "dedup: skipped exact body duplicate (source=%s, ref=%s, points_to=%s)",
@@ -185,7 +185,7 @@ class Pipeline:
         self.vault.write(memory)
         self.index.upsert(memory)
         self._record_mapping(record.source, record.ref, memory_id)
-        with self.index.db:
+        with self.index._lock, self.index.db:
             record_body_hash(self.index.db, body_dedup_hash, str(memory_id))
         if self.index.needs_reembed(
             str(memory_id), body_hash(record.body), self.embedding_signature
@@ -254,7 +254,7 @@ class Pipeline:
         return validate(payload)
 
     def _record_mapping(self, source: str, ref: str, memory_id: UUID) -> None:
-        with self.index.db:
+        with self.index._lock, self.index.db:
             self.index.db.execute(
                 """
                 INSERT OR REPLACE INTO record_map(source, ref, memory_id)
