@@ -12,9 +12,11 @@ from memstem.adapters.base import MemoryRecord
 from memstem.core.extraction import (
     NoiseAction,
     NoiseDecision,
+    is_automation_log,
     is_cron_output,
     is_heartbeat,
     is_tool_dump,
+    is_transient_task,
     noise_filter,
 )
 from memstem.core.index import Index
@@ -207,6 +209,120 @@ class TestNoiseFilter:
         decision = NoiseDecision(action=NoiseAction.DROP, kind="heartbeat")
         with pytest.raises(FrozenInstanceError):
             decision.action = NoiseAction.KEEP  # type: ignore[misc]
+
+
+# --- transient_task detection (PR-B) ---
+
+
+class TestIsTransientTask:
+    def test_deploy_by_friday(self) -> None:
+        assert is_transient_task("Plan: deploy by Friday after final review.") is True
+
+    def test_ship_by_eod(self) -> None:
+        assert is_transient_task("we need to ship by EOD today") is True
+
+    def test_merge_by_tomorrow(self) -> None:
+        assert is_transient_task("Merge by tomorrow morning if CI green.") is True
+
+    def test_release_by_end_of_week(self) -> None:
+        assert is_transient_task("release by end of week — no exceptions") is True
+
+    def test_long_form_plan_mentioning_friday_not_caught(self) -> None:
+        # Discussions about long-term Fridays (without the deploy/ship verb)
+        # should NOT trigger the heuristic.
+        body = "We meet every Friday. The standing agenda is documented in /docs."
+        assert is_transient_task(body) is False
+
+    def test_legitimate_decision_log_not_caught(self) -> None:
+        body = "Decision: we adopted Cloudflare for new domains. See ADR 0042."
+        assert is_transient_task(body) is False
+
+    def test_empty_body(self) -> None:
+        assert is_transient_task("") is False
+
+
+# --- automation_log detection (PR-B) ---
+
+
+class TestIsAutomationLog:
+    def test_heartbeat_path(self) -> None:
+        assert is_automation_log("/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md") is True
+
+    def test_monitoring_path(self) -> None:
+        assert is_automation_log("/var/log/monitoring/check.md") is True
+
+    def test_pm2_logs_path(self) -> None:
+        assert is_automation_log("/home/ubuntu/.pm2/logs/memstem-out-0.log") is True
+
+    def test_cron_logs_path(self) -> None:
+        assert is_automation_log("/var/cron/logs/nightly.md") is True
+
+    def test_legitimate_path_not_caught(self) -> None:
+        assert is_automation_log("/home/ubuntu/ari/MEMORY.md") is False
+        assert is_automation_log("/home/ubuntu/ari/skills/deploy/SKILL.md") is False
+
+    def test_empty_ref(self) -> None:
+        assert is_automation_log("") is False
+
+
+class TestNoiseFilterTagTransient:
+    def test_automation_log_path_tagged_transient(self) -> None:
+        rec = _record(
+            body="some heartbeat snapshot content",
+            ref="/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md",
+        )
+        decision = noise_filter(rec)
+        assert decision.action is NoiseAction.TAG_TRANSIENT
+        assert decision.kind == "automation_log"
+        assert decision.ttl_days == 28
+
+    def test_transient_task_body_tagged_transient(self) -> None:
+        decision = noise_filter(_record(body="deploy the new index by Friday."))
+        assert decision.action is NoiseAction.TAG_TRANSIENT
+        assert decision.kind == "transient_task"
+        assert decision.ttl_days == 28
+
+    def test_drop_takes_precedence_over_transient(self) -> None:
+        # Heartbeat body wins over a transient body if both match.
+        decision = noise_filter(_record(body="HEARTBEAT_OK"))
+        assert decision.action is NoiseAction.DROP
+
+    def test_normal_record_still_kept(self) -> None:
+        decision = noise_filter(_record(body="An architectural decision: pick library X."))
+        assert decision.action is NoiseAction.KEEP
+
+
+# --- pipeline integration: TAG_TRANSIENT writes valid_to ---
+
+
+class TestPipelineTagTransient:
+    def test_transient_record_persists_with_valid_to(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(
+            _record(body="ship the staging deploy by Friday afternoon", ref="/note.md")
+        )
+        assert memory is not None
+        # valid_to is approximately 4 weeks from now.
+        assert memory.frontmatter.valid_to is not None
+
+    def test_automation_log_persists_with_valid_to(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(
+            _record(
+                body="agent reported status=ok",
+                ref="/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md",
+            )
+        )
+        assert memory is not None
+        assert memory.frontmatter.valid_to is not None
+
+    def test_normal_record_has_no_valid_to(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = pipe.process(
+            _record(body="Architecture decision about Cloudflare migration.", ref="/d.md")
+        )
+        assert memory is not None
+        assert memory.frontmatter.valid_to is None
 
 
 # --- Pipeline integration ---

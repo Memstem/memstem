@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from memstem.core.embeddings import Embedder
 from memstem.core.index import FtsHit, Index, VecHit
@@ -164,6 +165,7 @@ class Search:
         rrf_k: int = DEFAULT_RRF_K,
         bm25_weight: float = 1.0,
         vector_weight: float = 1.0,
+        include_expired: bool = False,
     ) -> list[Result]:
         """Run hybrid search and materialize the top `limit` results from the vault.
 
@@ -174,6 +176,11 @@ class Search:
         ``rrf_k``, ``bm25_weight``, and ``vector_weight`` control the fusion —
         the CLI and MCP server thread the configured ``SearchConfig`` values
         through here so users can tune ranking from ``_meta/config.yaml``.
+
+        Records whose ``valid_to`` has elapsed are filtered out by default
+        (ADR 0011 PR-B). Pass ``include_expired=True`` to surface them
+        anyway — useful for audit or debugging "where did that transient
+        record go?" questions.
         """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
@@ -195,12 +202,20 @@ class Search:
             k=rrf_k,
             bm25_weight=bm25_weight,
             vector_weight=vector_weight,
-        )[:limit]
-        return self._materialize(fused)
+        )
+        return self._materialize(fused, limit=limit, include_expired=include_expired)
 
-    def _materialize(self, hits: list[FusedHit]) -> list[Result]:
+    def _materialize(
+        self,
+        hits: list[FusedHit],
+        limit: int,
+        include_expired: bool = False,
+    ) -> list[Result]:
+        now = datetime.now(tz=UTC)
         results: list[Result] = []
         for hit in hits:
+            if len(results) >= limit:
+                break
             row = self.index.db.execute(
                 "SELECT path FROM memories WHERE id = ?",
                 (hit.memory_id,),
@@ -217,6 +232,8 @@ class Search:
                     row["path"],
                 )
                 continue
+            if not include_expired and self._is_expired(memory, now):
+                continue
             results.append(
                 Result(
                     memory=memory,
@@ -226,6 +243,11 @@ class Search:
                 )
             )
         return results
+
+    @staticmethod
+    def _is_expired(memory: Memory, now: datetime) -> bool:
+        valid_to = memory.frontmatter.valid_to
+        return valid_to is not None and valid_to <= now
 
 
 __all__ = [
