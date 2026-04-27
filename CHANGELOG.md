@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-04-27
+
+Four PRs shipped together that together close the loop on multi-agent
+ingestion safety, OpenClaw transcript coverage, and configurable
+ranking. The headline win: the daemon now ingests OpenClaw session
+trajectories as full searchable transcripts (PR #36), so a search for
+an exact phrase from yesterday's chat actually lands on the chat.
+Combined with opt-in workspace discovery (PR #32), the per-workspace
+layout schema (PR #33), and the search-config wiring fix (PR #35),
+the v0.5.0 vault is a meaningfully better retrieval target than
+v0.4.0 was — measured against a 12-query eval, top-5 went from 10/12
+under the prior multi-agent install to 12/12 under the scoped + full-
+transcript install.
+
 ### Changed — OpenClaw discovery is now opt-in
 
 - **`memstem init` no longer auto-includes every OpenClaw workspace it
