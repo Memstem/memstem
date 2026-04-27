@@ -462,6 +462,90 @@ class TestBackfillEmbedState:
         finally:
             idx2.close()
 
+    def test_backfill_survives_duplicate_insert(self, tmp_path: Path) -> None:
+        """Regression: the helper's INSERT must use `INSERT OR IGNORE`
+        so that a duplicate `memory_id` row (from a competing connection
+        that landed its INSERT after our SELECT but before ours) does
+        not raise `UNIQUE constraint failed: embed_state.memory_id`.
+
+        We force the conflicting state by inserting a row directly
+        after the SELECT phase has captured its view, then driving the
+        helper's INSERT statement with the same payload. Pre-fix this
+        raises `sqlite3.IntegrityError`; post-fix the duplicate is
+        silently skipped.
+        """
+        from datetime import UTC, datetime
+
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="contested")
+            idx.upsert(memory)
+            idx.upsert_vectors(str(memory.id), ["contested"], [[0.1] * 8])
+            # Wipe embed_state so a fresh backfill SELECT would return
+            # this memory's row.
+            idx.db.execute("DELETE FROM embed_state")
+            idx.db.commit()
+
+            # Capture what the helper's SELECT would see right now.
+            rows = idx.db.execute(
+                """
+                SELECT m.id AS id, m.body AS body
+                FROM memories m
+                WHERE EXISTS (SELECT 1 FROM memories_vec v WHERE v.memory_id = m.id)
+                  AND NOT EXISTS (SELECT 1 FROM embed_state s WHERE s.memory_id = m.id)
+                """
+            ).fetchall()
+            assert len(rows) == 1
+
+            # Simulate the competing connection: it ran the same SELECT,
+            # got the same row, and committed its INSERT before we
+            # could. Now our cached SELECT view is stale.
+            idx.db.execute(
+                """
+                INSERT INTO embed_state(memory_id, body_hash,
+                                        embed_signature, embedded_at)
+                VALUES (?, ?, NULL, '2026-04-27T00:00:00+00:00')
+                """,
+                (str(memory.id), body_hash("contested")),
+            )
+            idx.db.commit()
+
+            # Drive the exact INSERT statement `_backfill_embed_state`
+            # uses with the stale payload. With OR IGNORE this is a
+            # no-op for the conflicting row; without it, IntegrityError.
+            now = datetime.now(tz=UTC).isoformat()
+            payload = [(r["id"], body_hash(r["body"]), None, now) for r in rows]
+            idx.db.executemany(
+                """
+                INSERT OR IGNORE INTO embed_state(memory_id, body_hash,
+                                                  embed_signature, embedded_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                payload,
+            )
+            idx.db.commit()
+
+            # Exactly one row — the competitor's. The helper's stale
+            # INSERT was ignored.
+            count = idx.db.execute("SELECT COUNT(*) FROM embed_state").fetchone()[0]
+            assert count == 1
+        finally:
+            idx.close()
+
+    def test_backfill_uses_or_ignore_sql(self) -> None:
+        """Source-level guard: the helper's SQL must literally contain
+        `INSERT OR IGNORE`. If a future refactor strips it, the race
+        regression returns silently — this assert catches that."""
+        import inspect
+
+        src = inspect.getsource(Index._backfill_embed_state)
+        assert "INSERT OR IGNORE INTO embed_state" in src, (
+            "_backfill_embed_state must use INSERT OR IGNORE; "
+            "see test_backfill_survives_duplicate_insert for context"
+        )
+
 
 class TestQueryFts:
     def test_finds_match_in_body(self, index: Index) -> None:

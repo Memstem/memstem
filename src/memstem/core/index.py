@@ -238,6 +238,14 @@ class Index:
         embedded memory in one pass so the daemon's next reconcile
         doesn't re-enqueue them. Subsequent boots are a no-op.
 
+        Uses ``INSERT OR IGNORE`` so the helper survives the race
+        where two connections (e.g. an MCP child and a CLI invocation)
+        open the same vault simultaneously: both SELECTs return the
+        same un-stamped rows, both try to INSERT, and the loser used
+        to crash with ``UNIQUE constraint failed: embed_state.memory_id``.
+        The ``NOT EXISTS`` guard in the SELECT narrows the window but
+        cannot close it; OR IGNORE closes it.
+
         The signature is left NULL — we don't know what embedder
         produced the existing vectors, so we shouldn't claim to. NULL
         is treated as "compatible with any current signature" by
@@ -259,7 +267,7 @@ class Index:
         payload = [(r["id"], body_hash(r["body"]), None, now) for r in rows]
         self.db.executemany(
             """
-            INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
+            INSERT OR IGNORE INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
             VALUES (?, ?, ?, ?)
             """,
             payload,
