@@ -441,7 +441,13 @@ def mcp(
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)
-    server = build_server(vault_obj, index, embedder, search_config=cfg.search)
+    server = build_server(
+        vault_obj,
+        index,
+        embedder,
+        search_config=cfg.search,
+        idle_timeout_seconds=cfg.mcp.idle_timeout_seconds,
+    )
     try:
         server.run()
     finally:
