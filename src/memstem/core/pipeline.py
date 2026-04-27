@@ -102,10 +102,12 @@ class Pipeline:
         vault: Vault,
         index: Index,
         embedding_signature: str = "",
+        boot_echo_hashes: frozenset[str] | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
         self.embedding_signature = embedding_signature
+        self.boot_echo_hashes = boot_echo_hashes
         _ensure_record_map(self.index.db)
 
     def process(self, record: MemoryRecord) -> Memory | None:
@@ -128,7 +130,7 @@ class Pipeline:
         re-embedding would just burn rate-limit quota. Body or signature
         changes (or the absence of vectors) still enqueue.
         """
-        decision = noise_filter(record)
+        decision = noise_filter(record, boot_echo_hashes=self.boot_echo_hashes)
         if decision.action is NoiseAction.DROP:
             logger.info(
                 "noise filter dropped record (source=%s, ref=%s, kind=%s): %s",

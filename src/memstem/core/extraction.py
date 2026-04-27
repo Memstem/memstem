@@ -21,11 +21,16 @@ account for >70% of captured noise across 32 days of ingestion.
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from memstem.adapters.base import MemoryRecord
+
+logger = logging.getLogger(__name__)
 
 
 class NoiseAction(StrEnum):
@@ -125,6 +130,22 @@ _AUTOMATION_PATH_RE = re.compile(
 _TRANSIENT_TTL_DAYS = 28
 
 
+# Boot-echo: re-ingestion of system-prompt files. The mem0 audit found this
+# was 52.7% of all junk — by far the largest single category. Detection works
+# by hashing the first 1024 bytes of every system-prompt file at daemon start
+# (build_boot_echo_hashes) and comparing each incoming record's first 1024
+# bytes against the set. A match means the record is a boot-file echo and
+# should be dropped.
+SYSTEM_PROMPT_FILENAMES: tuple[str, ...] = (
+    "CLAUDE.md",
+    "MEMORY.md",
+    "SOUL.md",
+    "USER.md",
+    "HARD-RULES.md",
+)
+_BOOT_ECHO_HEAD_BYTES = 1024
+
+
 def is_heartbeat(body: str) -> bool:
     """Return True if ``body`` matches a known heartbeat pattern."""
     if not body or not body.strip():
@@ -183,13 +204,65 @@ def is_automation_log(ref: str) -> bool:
     return _AUTOMATION_PATH_RE.search(ref) is not None
 
 
-def noise_filter(record: MemoryRecord) -> NoiseDecision:
+def _head_hash(data: bytes) -> str:
+    return hashlib.sha256(data[:_BOOT_ECHO_HEAD_BYTES]).hexdigest()
+
+
+def build_boot_echo_hashes(paths: list[Path]) -> frozenset[str]:
+    """Return SHA-256 hashes of the first 1KB of every system-prompt file under ``paths``.
+
+    Walks each path recursively for files whose name is in
+    :data:`SYSTEM_PROMPT_FILENAMES`. Files that don't exist or can't be
+    read are silently skipped — the goal is best-effort detection, not
+    a complete inventory. Empty heads are also skipped (they'd hash to
+    a constant value that would match every empty record).
+
+    The intended caller is the CLI daemon at startup; the returned
+    frozenset is passed to :class:`memstem.core.pipeline.Pipeline` and
+    used by :func:`noise_filter` to drop re-ingested boot files.
+    """
+    hashes: set[str] = set()
+    for root in paths:
+        if not root.exists():
+            continue
+        for filename in SYSTEM_PROMPT_FILENAMES:
+            for match in root.rglob(filename):
+                try:
+                    head = match.read_bytes()[:_BOOT_ECHO_HEAD_BYTES]
+                except OSError as exc:
+                    logger.debug("could not read %s for boot-echo hashing: %s", match, exc)
+                    continue
+                if not head:
+                    continue
+                hashes.add(_head_hash(head))
+    return frozenset(hashes)
+
+
+def is_boot_echo(body: str, hashes: frozenset[str]) -> bool:
+    """Return True if the first 1024 bytes of ``body`` hash to a known system-prompt file."""
+    if not body or not hashes:
+        return False
+    head = body.encode("utf-8")
+    if not head:
+        return False
+    return _head_hash(head) in hashes
+
+
+def noise_filter(
+    record: MemoryRecord,
+    boot_echo_hashes: frozenset[str] | None = None,
+) -> NoiseDecision:
     """Classify ``record`` as KEEP, DROP, or TAG_TRANSIENT.
 
-    DROP patterns (heartbeat / cron_output / tool_dump) shipped in PR-A.
-    TAG_TRANSIENT patterns (transient_task / automation_log) ship in
-    PR-B and stamp ``valid_to`` so the record auto-expires after the
-    documented TTL. Boot-echo hash matching arrives in PR-C.
+    DROP patterns (heartbeat / cron_output / tool_dump / boot_echo) drop
+    the record without persisting. TAG_TRANSIENT patterns
+    (transient_task / automation_log) stamp ``valid_to`` so the record
+    auto-expires after the documented TTL.
+
+    ``boot_echo_hashes`` is optional. When omitted, boot-echo detection
+    is skipped (this is the case for tests and offline migrations).
+    Production daemons build the set at startup via
+    :func:`build_boot_echo_hashes` and pass it through.
     """
     body = record.body
 
@@ -214,6 +287,13 @@ def noise_filter(record: MemoryRecord) -> NoiseDecision:
             reason="body is mostly machine-shaped lines with negligible prose",
         )
 
+    if boot_echo_hashes is not None and is_boot_echo(body, boot_echo_hashes):
+        return NoiseDecision(
+            action=NoiseAction.DROP,
+            kind="boot_echo",
+            reason="body's first 1KB hashes to a known system-prompt file",
+        )
+
     if is_automation_log(record.ref):
         return NoiseDecision(
             action=NoiseAction.TAG_TRANSIENT,
@@ -234,9 +314,12 @@ def noise_filter(record: MemoryRecord) -> NoiseDecision:
 
 
 __all__ = [
+    "SYSTEM_PROMPT_FILENAMES",
     "NoiseAction",
     "NoiseDecision",
+    "build_boot_echo_hashes",
     "is_automation_log",
+    "is_boot_echo",
     "is_cron_output",
     "is_heartbeat",
     "is_tool_dump",
