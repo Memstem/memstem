@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import random
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -238,6 +240,55 @@ class TestSearchBm25Only:
         index.upsert(_make_memory(body="anything", vault=vault))
         results = Search(vault=vault, index=index).search('()[]"^')
         assert results == []
+
+
+class TestSearchExpiredFilter:
+    """ADR 0011 PR-B: records past `valid_to` drop from default search."""
+
+    @staticmethod
+    def _make_memory_with_valid_to(body: str, valid_to: datetime | None, vault: Vault) -> Memory:
+        metadata: dict[str, Any] = {
+            "id": str(uuid4()),
+            "type": "memory",
+            "created": "2026-04-25T15:00:00+00:00",
+            "updated": "2026-04-25T15:00:00+00:00",
+            "source": "human",
+            "title": "test",
+            "tags": [],
+        }
+        if valid_to is not None:
+            metadata["valid_to"] = valid_to.isoformat()
+        fm = validate(metadata)
+        memory = Memory(frontmatter=fm, body=body, path=Path(f"memories/{fm.id}.md"))
+        vault.write(memory)
+        return memory
+
+    def test_expired_record_excluded_by_default(self, vault: Vault, index: Index) -> None:
+        past = datetime.now(tz=UTC) - timedelta(days=1)
+        expired = self._make_memory_with_valid_to("alpha expired", past, vault)
+        index.upsert(expired)
+        live = self._make_memory_with_valid_to(
+            "alpha live", datetime.now(tz=UTC) + timedelta(days=10), vault
+        )
+        index.upsert(live)
+        results = Search(vault=vault, index=index).search("alpha")
+        ids = [str(r.memory.id) for r in results]
+        assert str(live.id) in ids
+        assert str(expired.id) not in ids
+
+    def test_expired_record_included_with_flag(self, vault: Vault, index: Index) -> None:
+        past = datetime.now(tz=UTC) - timedelta(days=1)
+        expired = self._make_memory_with_valid_to("alpha expired", past, vault)
+        index.upsert(expired)
+        results = Search(vault=vault, index=index).search("alpha", include_expired=True)
+        assert any(str(r.memory.id) == str(expired.id) for r in results)
+
+    def test_no_valid_to_always_included(self, vault: Vault, index: Index) -> None:
+        # Records without `valid_to` set must surface normally.
+        m = self._make_memory_with_valid_to("alpha forever", None, vault)
+        index.upsert(m)
+        results = Search(vault=vault, index=index).search("alpha")
+        assert any(str(r.memory.id) == str(m.id) for r in results)
 
 
 class TestSearchHybrid:

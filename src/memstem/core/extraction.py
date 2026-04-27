@@ -33,6 +33,8 @@ class NoiseAction(StrEnum):
 
     KEEP = "keep"
     DROP = "drop"
+    TAG_TRANSIENT = "tag_transient"
+    """Persist but stamp ``valid_to`` so the record auto-expires."""
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,8 @@ class NoiseDecision:
     action: NoiseAction
     kind: str | None = None
     reason: str | None = None
+    ttl_days: int | None = None
+    """For ``TAG_TRANSIENT`` decisions: how many days from now ``valid_to`` is set."""
 
 
 # Heartbeat patterns. Two anchors are enough to catch the common cases
@@ -83,6 +87,44 @@ _TOOL_LINE_RE = re.compile(
 )
 
 
+# Transient task state: phrases that strongly indicate ephemeral state
+# ("deploy by Friday", "ship by EOD", "merge by tomorrow"). The deliberately
+# narrow shape — verb + "by" + day/EOD marker — is conservative to avoid
+# false-tagging long-form content that happens to mention temporal words.
+# The TTL is 4 weeks (per ADR 0011 Phase A taxonomy), so even a false positive
+# only buries the record after a month rather than dropping it outright.
+_TRANSIENT_TASK_RE = re.compile(
+    r"""\b
+        (?:deploy(?:ing)?|ship(?:ping)?|fix(?:ing)?|merge|merging|
+           release|releasing|land(?:ing)?|push(?:ing)?)
+        \b[^.\n]{0,40}\bby\b\s+
+        (?:tomorrow|today|tonight
+           |mon(?:day)?|tues?(?:day)?|wed(?:nesday)?|thur?s?(?:day)?
+           |fri(?:day)?|sat(?:urday)?|sun(?:day)?
+           |eo[dw]
+           |end\s+of\s+(?:day|week|sprint)
+           |next\s+(?:week|sprint))
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+# Automation-log refs: source paths that come from monitoring / heartbeat /
+# scheduler infrastructure. Path-shape is more reliable than body-shape
+# for these because the bodies can look like anything (JSON output,
+# free-form notes, etc.) while their location is structurally stable.
+_AUTOMATION_PATH_RE = re.compile(
+    r"(?:^|[/\\.])(?:heartbeat|monitoring|pm2[/\\]+logs|cron[/\\]+logs|automation)(?:/|\\)",
+    re.IGNORECASE,
+)
+
+
+# How long transient records stay searchable before `valid_to` expires them.
+# Brad's preference (per the design conversation): "couple of weeks, or four
+# weeks at most." Four weeks is the documented default in ADR 0011's table.
+_TRANSIENT_TTL_DAYS = 28
+
+
 def is_heartbeat(body: str) -> bool:
     """Return True if ``body`` matches a known heartbeat pattern."""
     if not body or not body.strip():
@@ -115,11 +157,39 @@ def is_tool_dump(body: str) -> bool:
     return machine_lines / len(lines) >= _TOOL_DUMP_RATIO
 
 
-def noise_filter(record: MemoryRecord) -> NoiseDecision:
-    """Classify ``record`` as KEEP or DROP based on noise patterns.
+def is_transient_task(body: str) -> bool:
+    """Return True if ``body`` looks like an ephemeral task statement.
 
-    PR-A scope: DROP-only patterns. Boot-echo hash matching (PR-C) and
-    ``TAG_TRANSIENT`` TTL tagging (PR-B) extend this function in later PRs.
+    Matches strongly time-bound phrases like "deploy by Friday" or
+    "ship by EOD". Conservative on purpose — the TTL is 4 weeks, so a
+    false positive only auto-expires the record after a month, but a
+    false positive on a long-form *plan* document would still be
+    annoying.
+    """
+    if not body or not body.strip():
+        return False
+    return _TRANSIENT_TASK_RE.search(body) is not None
+
+
+def is_automation_log(ref: str) -> bool:
+    """Return True if ``ref`` (the source path) comes from automation infrastructure.
+
+    Path-shape is the reliable signal here — heartbeat / monitoring /
+    cron / pm2-log directories. Body-shape varies too much to detect
+    reliably from content alone.
+    """
+    if not ref:
+        return False
+    return _AUTOMATION_PATH_RE.search(ref) is not None
+
+
+def noise_filter(record: MemoryRecord) -> NoiseDecision:
+    """Classify ``record`` as KEEP, DROP, or TAG_TRANSIENT.
+
+    DROP patterns (heartbeat / cron_output / tool_dump) shipped in PR-A.
+    TAG_TRANSIENT patterns (transient_task / automation_log) ship in
+    PR-B and stamp ``valid_to`` so the record auto-expires after the
+    documented TTL. Boot-echo hash matching arrives in PR-C.
     """
     body = record.body
 
@@ -144,14 +214,32 @@ def noise_filter(record: MemoryRecord) -> NoiseDecision:
             reason="body is mostly machine-shaped lines with negligible prose",
         )
 
+    if is_automation_log(record.ref):
+        return NoiseDecision(
+            action=NoiseAction.TAG_TRANSIENT,
+            kind="automation_log",
+            reason="record originates from an automation/monitoring path",
+            ttl_days=_TRANSIENT_TTL_DAYS,
+        )
+
+    if is_transient_task(body):
+        return NoiseDecision(
+            action=NoiseAction.TAG_TRANSIENT,
+            kind="transient_task",
+            reason="body matches an ephemeral task-state pattern",
+            ttl_days=_TRANSIENT_TTL_DAYS,
+        )
+
     return NoiseDecision(action=NoiseAction.KEEP)
 
 
 __all__ = [
     "NoiseAction",
     "NoiseDecision",
+    "is_automation_log",
     "is_cron_output",
     "is_heartbeat",
     "is_tool_dump",
+    "is_transient_task",
     "noise_filter",
 ]

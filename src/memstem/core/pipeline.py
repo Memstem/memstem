@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -139,6 +139,21 @@ class Pipeline:
             )
             return None
 
+        # TAG_TRANSIENT: persist the record but stamp `valid_to` so the
+        # search layer auto-expires it after the documented TTL.
+        transient_valid_to: datetime | None = None
+        if decision.action is NoiseAction.TAG_TRANSIENT:
+            ttl_days = decision.ttl_days or 28
+            transient_valid_to = datetime.now(tz=UTC) + timedelta(days=ttl_days)
+            logger.info(
+                "noise filter tagged transient (source=%s, ref=%s, kind=%s, valid_to=%s): %s",
+                record.source,
+                record.ref,
+                decision.kind,
+                transient_valid_to.isoformat(),
+                decision.reason,
+            )
+
         # ADR 0012, Layer 1: exact-body dedup. The hash check catches the
         # recall feedback loop (mem0's 808-copy failure mode) for free.
         # We check BEFORE assigning a memory_id so a true duplicate doesn't
@@ -161,7 +176,7 @@ class Pipeline:
             return None
 
         memory_id = existing_id_for_ref or uuid4()
-        fm = self._build_frontmatter(record, memory_id)
+        fm = self._build_frontmatter(record, memory_id, valid_to=transient_valid_to)
         path = self._existing_path(memory_id) or _path_for_memory(fm, record)
         memory = Memory(frontmatter=fm, body=record.body, path=path)
 
@@ -199,7 +214,12 @@ class Pipeline:
         except MemoryNotFoundError:
             return None
 
-    def _build_frontmatter(self, record: MemoryRecord, memory_id: UUID) -> Frontmatter:
+    def _build_frontmatter(
+        self,
+        record: MemoryRecord,
+        memory_id: UUID,
+        valid_to: datetime | None = None,
+    ) -> Frontmatter:
         meta = dict(record.metadata)
         type_str = meta.get("type", "memory")
         created = _parse_iso(meta.get("created")) or datetime.now(tz=UTC)
@@ -219,6 +239,8 @@ class Pipeline:
             "tags": list(record.tags),
             "provenance": provenance,
         }
+        if valid_to is not None:
+            payload["valid_to"] = valid_to.isoformat()
         # Skill-typed records need scope+verification; default to permissive.
         if type_str == "skill":
             raw_fm = (
