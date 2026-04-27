@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — local HTTP API + Obsidian plugin scaffold
+
+- **`memstem daemon` now co-hosts a local HTTP server** on
+  `127.0.0.1:7821` (configurable via `http.port` in
+  `_meta/config.yaml`). The server reuses the daemon's live `Vault`,
+  `Index`, and `Embedder` instances — no per-query subprocess, no
+  duplicate state. Endpoints mirror the MCP tool list one-to-one:
+  `GET /health`, `GET /version`, `POST /search`, `GET /memory/{id_or_path}`.
+  Loopback-only by design; v0.1 has no auth surface.
+- **First-party Obsidian plugin scaffold under `clients/obsidian/`.**
+  v0.1 proves the integration loop end-to-end: connects to the
+  daemon's `/health`, shows the connection state in the Obsidian
+  status bar, and exposes a settings tab for daemon URL + poll
+  interval. Search modal, sidebar pane, and "New memory" command
+  arrive in follow-up PRs.
+- **ADR 0010** documents the four design decisions: monorepo,
+  co-hosted HTTP, BRAT-first distribution, read+write semantics with
+  frontmatter scaffolding.
+- **New deps:** `fastapi>=0.110.0`, `uvicorn>=0.30.0`. Imported lazily
+  inside the daemon path so the CLI's other commands don't pay for
+  them.
+- 14 new tests cover the HTTP server (health/version/search/memory,
+  type filtering, request-level RRF overrides, 404 handling).
+
 ## [0.5.0] — 2026-04-27
 
 Four PRs shipped together that together close the loop on multi-agent

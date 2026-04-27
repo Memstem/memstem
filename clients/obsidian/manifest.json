@@ -1,0 +1,11 @@
+{
+  "id": "memstem",
+  "name": "Memstem",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Hybrid keyword + semantic search and frontmatter-aware editing for your Memstem vault.",
+  "author": "Memstem contributors",
+  "authorUrl": "https://github.com/Memstem/memstem",
+  "fundingUrl": "",
+  "isDesktopOnly": true
+}
