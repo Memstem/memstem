@@ -634,6 +634,8 @@ async def _run_daemon(
     claude_adapter: ClaudeCodeAdapter,
     claude_paths: list[Path],
     embedding_signature: str = "",
+    http_config: Any = None,
+    search_config: Any = None,
 ) -> None:
     pipeline = Pipeline(vault_obj, index, embedding_signature=embedding_signature)
 
@@ -667,6 +669,22 @@ async def _run_daemon(
         )
     else:
         logger.warning("no embedder configured — queue will fill but never drain")
+
+    if http_config is not None and getattr(http_config, "enabled", False):
+        from memstem.servers.http_server import serve as serve_http
+
+        tasks.append(
+            asyncio.create_task(
+                serve_http(
+                    http_config,
+                    vault_obj,
+                    index,
+                    embedder,
+                    search_config=search_config,
+                )
+            )
+        )
+
     try:
         await asyncio.gather(*tasks)
     finally:
@@ -895,6 +913,9 @@ def daemon(
     else:
         typer.echo("  embedder: (none — queue will fill but not drain)")
 
+    if cfg.http.enabled:
+        typer.echo(f"  http server: http://{cfg.http.host}:{cfg.http.port}")
+
     try:
         asyncio.run(
             _run_daemon(
@@ -908,6 +929,8 @@ def daemon(
                 claude_adapter=claude_adapter,
                 claude_paths=claude_paths,
                 embedding_signature=_embedding_signature(cfg),
+                http_config=cfg.http,
+                search_config=cfg.search,
             )
         )
     except KeyboardInterrupt:

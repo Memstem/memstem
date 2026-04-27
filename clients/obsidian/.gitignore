@@ -1,0 +1,10 @@
+# build output
+main.js
+main.js.map
+
+# dependencies
+node_modules/
+
+# editor
+.vscode/
+*.log
