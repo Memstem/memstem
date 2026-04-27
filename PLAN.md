@@ -86,7 +86,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 - **Tests passing:** 220 (5 deselected — Ollama integration tests, all pass when run with `-m requires_ollama`)
 - **Coverage:** 88% overall; new modules typically 90%+
 - **CI:** green on every merged PR
-- **Decisions locked:** ADRs 0001–0007 in [`docs/decisions/`](./docs/decisions/). ADR 0008 (tiered memory) is proposed and awaiting Brad's review.
+- **Decisions locked:** ADRs 0001–0007, 0009, 0010 are accepted in [`docs/decisions/`](./docs/decisions/). ADRs 0008 (tiered memory), 0011 (noise filter + fact extraction), 0012 (LLM-judge dedup) are proposed and awaiting Brad's review.
 - **Live infra status:** Ollama 0.21.2 installed and running on `127.0.0.1:11434`, `nomic-embed-text` (768 dims) loaded.
 
 ### Merged PRs (full Phase 1 + extensions)
@@ -379,11 +379,20 @@ across 100 domains. GoDaddy renewal pricing is 2x+. Migration plan...
 
 Already on ROADMAP as Phase 2 work. Specifically:
 
-- **Pairwise dedup**: pairs with cosine similarity > 0.95 get merged. Higher-importance one wins; lower one becomes `deprecated_by:` redirect.
+- **Dedup**: ADR 0012 supersedes the original simple-cosine sketch with a three-layer pipeline (exact body-hash → embedding candidates → LLM-as-judge using Graphiti's MIT-licensed prompts). Resolution invalidates rather than deletes (`deprecated_by` / `valid_to` / `supersedes`). Skills route to a human-review queue (`memstem skill-review`); never auto-merged.
 - **Decay**: importance falls over time per the curve in Tier 1. Decayed memories that haven't been retrieved in 6 months drop below the search threshold by default (still findable with `--include-decayed`).
 - **5-minute reconciliation pass** to catch files that changed while the daemon was offline. (Not in v0.1; documented as a v0.2 follow-up.)
 - **Bi-temporal validity**: when a fact contradicts an existing one (LLM-judged or explicit `supersedes:` field), the old gets `valid_to:` rather than being deleted. Search defaults to "currently valid" but historical queries are possible.
 - **Auto-skill extraction**: detect multi-step procedures from session transcripts; write them as `skills/auto/<slug>/SKILL.md` with `provenance.source: hygiene-worker`. Brad reviews and either keeps or deletes.
+
+### ADRs 0011 + 0012 — Quality pipeline (proposed 2026-04-27)
+
+Two ADRs narrow the v0.2 plan to address the mem0-audit failure modes (97.8% of 10,134 captured entries were junk after 32 days; 808 duplicate copies traced to one hallucinated fact). Both are 100% MemStem-internal — nothing in Claude Code or OpenClaw changes — and run on Linux + macOS today (Python + local Ollama, no platform-specific deps; Windows targeted for later).
+
+- **ADR 0011 — Write-time noise filter + atomic-fact extraction** ([decisions/0011](./docs/decisions/0011-noise-filter-and-fact-extraction.md)). Inserts a `core/extraction.py` stage between adapter output and pipeline upsert. Phase A: deterministic heuristic filter drops heartbeats / cron output / boot-file echoes; tags transient task state with a 4-week `valid_to`. Phase B: local Ollama (`qwen2.5:7b`) splits long sessions into atomic `type: fact` records, preserving the original as `type: session_raw` (excluded from default search, still linkable for audit). Adds two `type` enum values and one frontmatter field. Phasing: PR-A heuristics → PR-B TTL tagging → PR-C boot-echo hash → PR-D LLM extraction → PR-E `session_raw` filter.
+- **ADR 0012 — Two-stage dedup with LLM-as-judge** ([decisions/0012](./docs/decisions/0012-llm-judge-dedup.md)). Replaces the simple cosine-≥0.95 step from Tier 3 above. Three layers: (1) exact body-hash dedup at write time (catches the hallucination feedback loop for free), (2) embedding-cosine candidate generation, (3) LLM judge using Graphiti's MIT-licensed prompts with explicit failure-mode rules. Resolution uses existing schema fields (`deprecated_by` / `valid_to` / `supersedes`); no record is ever deleted. Skills route to `vault/skills/_review/` and require manual `memstem skill-review apply`. Phasing: PR-A hash layer → PR-B candidate query → PR-C judge + audit log → PR-D resolution actions → PR-E skill-review CLI.
+
+Both depend on the same local Ollama model that Tier 2 distillations will use, so install footprint stays the same. Each ADR's PR-A (heuristic filter, hash-layer dedup) is the cheapest, most isolated first piece — good parallel starting points once the ADRs land.
 
 ### Other Phase 2 items already on ROADMAP
 
