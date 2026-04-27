@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -145,6 +146,37 @@ SYSTEM_PROMPT_FILENAMES: tuple[str, ...] = (
 )
 _BOOT_ECHO_HEAD_BYTES = 1024
 
+# Directories the boot-echo walk skips on sight. None of them contain
+# system-prompt files, and several of them (especially Claude Code's
+# `projects` dir under `.claude/`) hold tens to hundreds of thousands of
+# session JSONLs that would otherwise dominate the walk. Skipping them
+# in-place via `os.walk` avoids descending into them at all.
+_BOOT_ECHO_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "site-packages",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        # OpenClaw automation / session dirs — bodies live here but never
+        # system-prompt files.
+        "sessions",
+        "heartbeat",
+        "monitoring",
+        "session-cache",
+    }
+)
+
+# Cap descent depth from each root. System-prompt files live at or near
+# workspace roots — a workspace's CLAUDE.md is at depth 0, an agent's
+# memory/MEMORY.md at depth 1. Beyond a few levels we are walking
+# user-data trees that won't contain matches.
+_BOOT_ECHO_MAX_DEPTH = 4
+
 
 def is_heartbeat(body: str) -> bool:
     """Return True if ``body`` matches a known heartbeat pattern."""
@@ -211,26 +243,61 @@ def _head_hash(data: bytes) -> str:
 def build_boot_echo_hashes(paths: list[Path]) -> frozenset[str]:
     """Return SHA-256 hashes of the first 1KB of every system-prompt file under ``paths``.
 
-    Walks each path recursively for files whose name is in
-    :data:`SYSTEM_PROMPT_FILENAMES`. Files that don't exist or can't be
-    read are silently skipped — the goal is best-effort detection, not
-    a complete inventory. Empty heads are also skipped (they'd hash to
-    a constant value that would match every empty record).
+    Walks each path with two pruning rules to keep startup fast:
+
+    - **Skip dirs.** Names in :data:`_BOOT_ECHO_SKIP_DIRS` are removed
+      from the walk in place. The most important is ``projects`` when
+      its parent is ``.claude``: that one directory routinely holds
+      hundreds of thousands of session JSONLs and was responsible for
+      the ~2-minute startup before this fix.
+    - **Max depth.** Walk descends at most :data:`_BOOT_ECHO_MAX_DEPTH`
+      levels from each root. System-prompt files live near workspace
+      roots; deeper paths are user-data trees that don't contain matches.
+
+    Files that don't exist or can't be read are silently skipped — the
+    goal is best-effort detection, not a complete inventory. Empty
+    heads are also skipped (they'd hash to a constant value that would
+    match every empty record).
 
     The intended caller is the CLI daemon at startup; the returned
     frozenset is passed to :class:`memstem.core.pipeline.Pipeline` and
     used by :func:`noise_filter` to drop re-ingested boot files.
     """
+    target = frozenset(SYSTEM_PROMPT_FILENAMES)
     hashes: set[str] = set()
     for root in paths:
         if not root.exists():
             continue
-        for filename in SYSTEM_PROMPT_FILENAMES:
-            for match in root.rglob(filename):
+        root_resolved = root.resolve()
+        root_depth = len(root_resolved.parts)
+        for dirpath_str, dirnames, filenames in os.walk(root_resolved):
+            dirpath = Path(dirpath_str)
+            depth = len(dirpath.parts) - root_depth
+
+            if depth >= _BOOT_ECHO_MAX_DEPTH:
+                # Process files at this level but don't descend further.
+                dirnames[:] = []
+
+            # Prune skip-dir names in place so os.walk won't descend.
+            # The "projects under .claude" rule is special-cased so
+            # generic "projects" dirs elsewhere are still walked.
+            pruned: list[str] = []
+            for name in dirnames:
+                if name in _BOOT_ECHO_SKIP_DIRS:
+                    continue
+                if name == "projects" and dirpath.name == ".claude":
+                    continue
+                pruned.append(name)
+            dirnames[:] = pruned
+
+            for fname in filenames:
+                if fname not in target:
+                    continue
+                file_path = dirpath / fname
                 try:
-                    head = match.read_bytes()[:_BOOT_ECHO_HEAD_BYTES]
+                    head = file_path.read_bytes()[:_BOOT_ECHO_HEAD_BYTES]
                 except OSError as exc:
-                    logger.debug("could not read %s for boot-echo hashing: %s", match, exc)
+                    logger.debug("could not read %s for boot-echo hashing: %s", file_path, exc)
                     continue
                 if not head:
                     continue

@@ -400,6 +400,76 @@ class TestBuildBootEchoHashes:
         hashes = build_boot_echo_hashes([tmp_path])
         assert len(hashes) == 1
 
+    def test_skips_node_modules(self, tmp_path: Path) -> None:
+        # System-prompt names buried under node_modules/ are common in
+        # real projects (test fixtures, examples). Don't walk them.
+        nm = tmp_path / "node_modules" / "some-pkg"
+        nm.mkdir(parents=True)
+        (nm / "CLAUDE.md").write_text("buried under node_modules")
+        (tmp_path / "CLAUDE.md").write_text("at the root")
+        hashes = build_boot_echo_hashes([tmp_path])
+        # Only the root CLAUDE.md should be hashed.
+        assert len(hashes) == 1
+
+    def test_skips_dot_git(self, tmp_path: Path) -> None:
+        # `.git` may contain fixture files that match.
+        gitdir = tmp_path / ".git" / "objects"
+        gitdir.mkdir(parents=True)
+        (gitdir / "MEMORY.md").write_text("inside .git")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert hashes == frozenset()
+
+    def test_skips_python_cache_dirs(self, tmp_path: Path) -> None:
+        for skipdir in ("__pycache__", ".venv", ".mypy_cache", "site-packages"):
+            d = tmp_path / skipdir
+            d.mkdir()
+            (d / "MEMORY.md").write_text(f"inside {skipdir}")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert hashes == frozenset()
+
+    def test_skips_openclaw_session_dirs(self, tmp_path: Path) -> None:
+        # OpenClaw bundles session/heartbeat dirs that match SYSTEM_PROMPT_FILENAMES
+        # only by accident; never as a legitimate boot file.
+        for skipdir in ("sessions", "heartbeat", "monitoring", "session-cache"):
+            d = tmp_path / skipdir
+            d.mkdir()
+            (d / "USER.md").write_text(f"inside {skipdir}")
+        hashes = build_boot_echo_hashes([tmp_path])
+        assert hashes == frozenset()
+
+    def test_skips_claude_projects_only_under_dot_claude(self, tmp_path: Path) -> None:
+        # `.claude/projects/` is the Claude Code session dir — skip it.
+        dot_claude = tmp_path / ".claude"
+        dot_claude.mkdir()
+        (dot_claude / "CLAUDE.md").write_text("legit boot file at .claude/")
+        proj = dot_claude / "projects" / "some-project"
+        proj.mkdir(parents=True)
+        (proj / "CLAUDE.md").write_text("session-dir CLAUDE.md (should be skipped)")
+
+        # A generic `projects` dir elsewhere should NOT be skipped.
+        other = tmp_path / "code" / "projects"
+        other.mkdir(parents=True)
+        (other / "MEMORY.md").write_text("legit nested project memory")
+
+        hashes = build_boot_echo_hashes([tmp_path])
+        # The .claude/CLAUDE.md and code/projects/MEMORY.md should both hash;
+        # the .claude/projects/.../CLAUDE.md should not.
+        assert len(hashes) == 2
+
+    def test_max_depth_caps_descent(self, tmp_path: Path) -> None:
+        # File at depth equal to the cap is still found (we process before
+        # pruning subsequent descent); a file deeper than the cap is missed.
+        # _BOOT_ECHO_MAX_DEPTH is 4 — make a file at depth 5.
+        deep = tmp_path / "a" / "b" / "c" / "d" / "e"
+        deep.mkdir(parents=True)
+        (deep / "CLAUDE.md").write_text("too deep")
+        # Comparison: file at depth 3 should be found.
+        shallow = tmp_path / "a" / "b" / "c"
+        (shallow / "MEMORY.md").write_text("at depth 3")
+        hashes = build_boot_echo_hashes([tmp_path])
+        # Only the depth-3 file should be hashed.
+        assert len(hashes) == 1
+
 
 class TestNoiseFilterBootEcho:
     def test_noise_filter_drops_when_hashed(self, tmp_path: Path) -> None:
