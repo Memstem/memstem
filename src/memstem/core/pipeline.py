@@ -21,6 +21,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from memstem.adapters.base import MemoryRecord
+from memstem.core.dedup import (
+    find_existing_memory_for_hash,
+    increment_seen_count,
+    normalized_body_hash,
+    record_body_hash,
+)
 from memstem.core.extraction import NoiseAction, noise_filter
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index, body_hash
@@ -106,7 +112,8 @@ class Pipeline:
         """Persist one record as a canonical Memory; idempotent for re-emits.
 
         Returns ``None`` if the record was filtered out as noise (ADR
-        0011). Callers that already discarded the result keep working
+        0011) or detected as an exact-body duplicate (ADR 0012, Layer
+        1). Callers that already discarded the result keep working
         unchanged; callers that use the result must accept ``None``.
 
         The pipeline is fast-path only: it writes the markdown file, the
@@ -132,7 +139,28 @@ class Pipeline:
             )
             return None
 
-        memory_id = self._lookup_or_assign_id(record.source, record.ref)
+        # ADR 0012, Layer 1: exact-body dedup. The hash check catches the
+        # recall feedback loop (mem0's 808-copy failure mode) for free.
+        # We check BEFORE assigning a memory_id so a true duplicate doesn't
+        # leave a record_map entry that would fight with the canonical one.
+        body_dedup_hash = normalized_body_hash(record.body)
+        existing_id_for_ref = self._lookup_id_or_none(record.source, record.ref)
+        existing_id_for_hash = find_existing_memory_for_hash(self.index.db, body_dedup_hash)
+        is_cross_record_duplicate = existing_id_for_hash is not None and (
+            existing_id_for_ref is None or existing_id_for_hash != str(existing_id_for_ref)
+        )
+        if is_cross_record_duplicate:
+            with self.index.db:
+                increment_seen_count(self.index.db, body_dedup_hash)
+            logger.info(
+                "dedup: skipped exact body duplicate (source=%s, ref=%s, points_to=%s)",
+                record.source,
+                record.ref,
+                existing_id_for_hash,
+            )
+            return None
+
+        memory_id = existing_id_for_ref or uuid4()
         fm = self._build_frontmatter(record, memory_id)
         path = self._existing_path(memory_id) or _path_for_memory(fm, record)
         memory = Memory(frontmatter=fm, body=record.body, path=path)
@@ -140,20 +168,23 @@ class Pipeline:
         self.vault.write(memory)
         self.index.upsert(memory)
         self._record_mapping(record.source, record.ref, memory_id)
+        with self.index.db:
+            record_body_hash(self.index.db, body_dedup_hash, str(memory_id))
         if self.index.needs_reembed(
             str(memory_id), body_hash(record.body), self.embedding_signature
         ):
             self.index.enqueue_embed(str(memory_id))
         return memory
 
-    def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
+    def _lookup_id_or_none(self, source: str, ref: str) -> UUID | None:
         row = self.index.db.execute(
             "SELECT memory_id FROM record_map WHERE source = ? AND ref = ?",
             (source, ref),
         ).fetchone()
-        if row is not None:
-            return UUID(row["memory_id"])
-        return uuid4()
+        return UUID(row["memory_id"]) if row is not None else None
+
+    def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
+        return self._lookup_id_or_none(source, ref) or uuid4()
 
     def _existing_path(self, memory_id: UUID) -> Path | None:
         row = self.index.db.execute(

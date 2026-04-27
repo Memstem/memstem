@@ -108,6 +108,7 @@ class TestPathForMemory:
         ari = _processed(
             pipe,
             _record(
+                body="Ari's deploy procedure (different content from Sarah's).",
                 ref="/home/ubuntu/ari/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
@@ -120,6 +121,7 @@ class TestPathForMemory:
         sarah = _processed(
             pipe,
             _record(
+                body="Sarah's deploy procedure (different content from Ari's).",
                 ref="/home/ubuntu/sarah/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
@@ -139,6 +141,7 @@ class TestPathForMemory:
         ari = _processed(
             pipe,
             _record(
+                body="Ari's notes for 2026-04-26 (distinct from Sarah's).",
                 ref="/home/ubuntu/ari/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
@@ -149,6 +152,7 @@ class TestPathForMemory:
         sarah = _processed(
             pipe,
             _record(
+                body="Sarah's notes for 2026-04-26 (distinct from Ari's).",
                 ref="/home/ubuntu/sarah/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
@@ -165,6 +169,7 @@ class TestPathForMemory:
         skill = _processed(
             pipe,
             _record(
+                body="Legacy deploy skill content.",
                 title="Deploy",
                 type_="skill",
                 extra_metadata={
@@ -175,6 +180,7 @@ class TestPathForMemory:
         daily = _processed(
             pipe,
             _record(
+                body="Legacy daily log content.",
                 ref="/tmp/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
@@ -206,16 +212,16 @@ class TestProcess:
 
     def test_distinct_refs_get_distinct_ids(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        a = _processed(pipe, _record(ref="/a.md"))
-        b = _processed(pipe, _record(ref="/b.md"))
+        a = _processed(pipe, _record(ref="/a.md", body="content for a"))
+        b = _processed(pipe, _record(ref="/b.md", body="content for b"))
         assert a.id != b.id
 
     def test_different_sources_get_distinct_ids_for_same_ref(
         self, vault: Vault, index: Index
     ) -> None:
         pipe = Pipeline(vault, index)
-        a = _processed(pipe, _record(source="openclaw", ref="/x.md"))
-        b = _processed(pipe, _record(source="claude-code", ref="/x.md"))
+        a = _processed(pipe, _record(source="openclaw", ref="/x.md", body="A"))
+        b = _processed(pipe, _record(source="claude-code", ref="/x.md", body="B"))
         assert a.id != b.id
 
     def test_provenance_recorded_in_frontmatter(self, vault: Vault, index: Index) -> None:

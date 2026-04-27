@@ -25,7 +25,7 @@ import sqlite_vec
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -135,6 +135,31 @@ MIGRATIONS: dict[int, str] = {
             embed_signature TEXT,
             embedded_at TEXT NOT NULL
         );
+    """,
+    4: """
+        -- Layer 1 of the dedup pipeline (ADR 0012). Maps the SHA-256 hash
+        -- of a normalized body (whitespace-collapsed, lowercased) to the
+        -- canonical memory_id that stores that body.
+        --
+        -- A second record arriving with the same hash under a different
+        -- (source, ref) is treated as a duplicate: the pipeline skips
+        -- writing it and bumps `seen_count` on the existing row instead.
+        -- That gives us an audit trail for "how many times did the same
+        -- content try to enter the index?" — the kind of signal that
+        -- catches recall feedback loops (mem0's 808-copy failure mode).
+        --
+        -- ON DELETE CASCADE keeps the index clean: when the canonical
+        -- memory is deleted, its hash row goes too. Single-row-per-hash
+        -- (PRIMARY KEY on body_hash) is intentional — there is at most
+        -- one canonical owner per body.
+        CREATE TABLE IF NOT EXISTS body_hash_index (
+            body_hash TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            seen_count INTEGER NOT NULL DEFAULT 1,
+            last_seen TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_body_hash_index_memory_id
+            ON body_hash_index(memory_id);
     """,
 }
 
