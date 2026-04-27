@@ -134,6 +134,41 @@ class TestRrfCombine:
         fused = rrf_combine(bm25, [])
         assert fused[0].score == pytest.approx(1 / (DEFAULT_RRF_K + 1))
 
+    def test_bm25_weight_scales_contribution(self) -> None:
+        bm25 = [FtsHit(memory_id="a", score=-0.5)]
+        fused = rrf_combine(bm25, [], k=60, bm25_weight=2.0)
+        assert fused[0].score == pytest.approx(2.0 / 61)
+
+    def test_vector_weight_scales_contribution(self) -> None:
+        vec = [VecHit(memory_id="a", chunk_id="a:0", chunk_index=0, distance=0.1)]
+        fused = rrf_combine([], vec, k=60, vector_weight=3.0)
+        assert fused[0].score == pytest.approx(3.0 / 61)
+
+    def test_zero_bm25_weight_makes_vec_dominate(self) -> None:
+        # bm25_weight=0 effectively disables BM25 contribution; a memory present
+        # only in vec ranks above one that's only in BM25.
+        bm25 = [FtsHit(memory_id="x", score=-0.1)]
+        vec = [VecHit(memory_id="y", chunk_id="y:0", chunk_index=0, distance=0.1)]
+        fused = rrf_combine(bm25, vec, k=60, bm25_weight=0.0, vector_weight=1.0)
+        assert fused[0].memory_id == "y"
+        # x still appears in the result (rank tracking) but with score 0.
+        x = next(h for h in fused if h.memory_id == "x")
+        assert x.score == 0.0
+        assert x.bm25_rank == 1
+
+    def test_zero_vector_weight_makes_bm25_dominate(self) -> None:
+        bm25 = [FtsHit(memory_id="x", score=-0.1)]
+        vec = [VecHit(memory_id="y", chunk_id="y:0", chunk_index=0, distance=0.1)]
+        fused = rrf_combine(bm25, vec, k=60, bm25_weight=1.0, vector_weight=0.0)
+        assert fused[0].memory_id == "x"
+
+    def test_weighted_overlap_combines(self) -> None:
+        # When a memory hits both, the per-source contributions add with weights.
+        bm25 = [FtsHit(memory_id="a", score=-0.5)]
+        vec = [VecHit(memory_id="a", chunk_id="a:0", chunk_index=0, distance=0.1)]
+        fused = rrf_combine(bm25, vec, k=60, bm25_weight=2.0, vector_weight=3.0)
+        assert fused[0].score == pytest.approx(2.0 / 61 + 3.0 / 61)
+
 
 class TestSearchBm25Only:
     """Search without an embedder falls back to BM25-only ranking."""
