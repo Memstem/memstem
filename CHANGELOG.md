@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Claude Code / OpenClaw search skill
+
+- **First-party `memstem-search` skill** under `clients/skills/memstem-search/`.
+  A single `SKILL.md` with frontmatter compatible with both Claude Code's skill
+  loader and OpenClaw's bundled-skill format (`metadata.clawdbot` and
+  `metadata.openclaw` namespaces side by side). Installed by symlink or copy
+  into the consumer's skill directory.
+- **Why a skill in addition to the MCP:** Claude Code does not pre-load MCP
+  tool schemas; they appear as deferred tools and must be loaded via
+  `ToolSearch` before they can be called. Agents miss this step and skip
+  MemStem even when configured. A skill is pre-listed in the session-start
+  available-skills block, so the agent sees `memstem-search` immediately
+  with no schema-loading dance.
+- **Skill owns the full priority ladder.** The procedure tries
+  MCP → HTTP `/search` (the daemon shipped above) → `memstem` CLI →
+  grep, in order. Callers do not need to remember the order; invoking
+  the skill is enough.
+- Distribution to consumers stays manual in this PR (symlink/copy from
+  `clients/skills/memstem-search/` into `~/.claude/skills/`,
+  `<project>/.claude/skills/`, or `~/<openclaw-workspace>/skills/`).
+  Automated install via `memstem connect-clients` lands in a follow-up.
+
 ### Added — local HTTP API + Obsidian plugin scaffold
 
 - **`memstem daemon` now co-hosts a local HTTP server** on
