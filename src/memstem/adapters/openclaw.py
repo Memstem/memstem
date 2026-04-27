@@ -22,11 +22,13 @@ this preserves the v0.1 behavior and keeps existing callers working.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import frontmatter as fm
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -38,6 +40,7 @@ from memstem.config import OpenClawWorkspace
 logger = logging.getLogger(__name__)
 
 DAILY_FILENAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+TRAJECTORY_SUFFIX = ".trajectory.jsonl"
 H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
@@ -102,6 +105,146 @@ def _file_to_record(path: Path, source_name: str) -> MemoryRecord | None:
     )
 
 
+def _format_turn(role: str, text: str) -> str:
+    if not text.strip():
+        return ""
+    return f"**{role.title()}:** {text}"
+
+
+def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
+    """Parse an OpenClaw `*.trajectory.jsonl` into a transcript summary.
+
+    Trajectory format is one JSON event per line. Two event types carry
+    semantic conversation content:
+
+    - ``prompt.submitted``: ``data.prompt`` is the user turn.
+    - ``model.completed``: ``data.assistantTexts`` is a list of strings
+      (the assistant's text responses).
+
+    Other events (tool calls, context compilation, session boundary
+    markers) are skipped — they're operational metadata that adds
+    nothing to a search index.
+    """
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("could not read %s: %s", path, exc)
+        return None
+
+    turns: list[str] = []
+    title: str | None = None
+    session_id: str | None = None
+    first_timestamp: str | None = None
+    last_timestamp: str | None = None
+    workspace_dir: str | None = None
+    agent_id: str | None = None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry: dict[str, Any] = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+
+        ts = entry.get("ts")
+        if isinstance(ts, str):
+            if first_timestamp is None:
+                first_timestamp = ts
+            last_timestamp = ts
+
+        # Capture session metadata from the first session.started event.
+        if session_id is None:
+            sid = entry.get("sessionId") or entry.get("traceId")
+            if isinstance(sid, str):
+                session_id = sid
+        if workspace_dir is None:
+            wd = entry.get("workspaceDir")
+            if isinstance(wd, str):
+                workspace_dir = wd
+        if agent_id is None:
+            data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+            aid = data.get("agentId") if isinstance(data, dict) else None
+            if isinstance(aid, str):
+                agent_id = aid
+
+        event_type = entry.get("type")
+        data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+
+        if event_type == "prompt.submitted":
+            prompt = data.get("prompt") if isinstance(data, dict) else None
+            if isinstance(prompt, str):
+                turn = _format_turn("user", prompt)
+                if turn:
+                    turns.append(turn)
+        elif event_type == "model.completed":
+            assistant_texts = data.get("assistantTexts") if isinstance(data, dict) else None
+            if isinstance(assistant_texts, list):
+                joined = "\n\n".join(t for t in assistant_texts if isinstance(t, str) and t.strip())
+                turn = _format_turn("assistant", joined)
+                if turn:
+                    turns.append(turn)
+
+    if not session_id:
+        # Trajectory filenames are `<id>.trajectory.jsonl`; strip both suffixes.
+        session_id = path.name.removesuffix(TRAJECTORY_SUFFIX) or path.stem
+
+    if title is None and turns:
+        for turn in turns:
+            if turn.startswith("**User:**"):
+                title = turn[len("**User:** ") :].splitlines()[0][:80].strip()
+                break
+    if not title:
+        title = f"session {session_id[:8]}"
+
+    return {
+        "session_id": session_id,
+        "title": title,
+        "body": "\n\n".join(turns),
+        "first_timestamp": first_timestamp,
+        "last_timestamp": last_timestamp,
+        "turn_count": len(turns),
+        "workspace_dir": workspace_dir,
+        "agent_id": agent_id,
+    }
+
+
+def _trajectory_to_record(path: Path, source_name: str = "openclaw") -> MemoryRecord | None:
+    parsed = _parse_trajectory_file(path)
+    if parsed is None:
+        return None
+    body = parsed["body"]
+    if not isinstance(body, str) or not body.strip():
+        return None
+
+    mtime = _file_mtime_iso(path)
+    metadata: dict[str, Any] = {
+        "type": "session",
+        "session_id": parsed["session_id"],
+        "created": parsed["first_timestamp"] or mtime,
+        "updated": parsed["last_timestamp"] or mtime,
+        "turn_count": parsed["turn_count"],
+    }
+    if parsed["workspace_dir"]:
+        metadata["workspace_dir"] = parsed["workspace_dir"]
+    if parsed["agent_id"]:
+        metadata["agent_id"] = parsed["agent_id"]
+
+    return MemoryRecord(
+        source=source_name,
+        ref=str(path),
+        title=str(parsed["title"]),
+        body=body,
+        tags=[],
+        metadata=metadata,
+    )
+
+
 def _iter_markdown_files(root: Path) -> Iterator[Path]:
     if not root.exists():
         return
@@ -121,6 +264,10 @@ def _iter_workspace_files(ws: OpenClawWorkspace) -> Iterator[tuple[Path, list[st
     memories under ``notes/`` instead of ``memory/`` will iterate through
     ``notes/**/*.md``. Top-level ``MEMORY.md``/``CLAUDE.md`` paths are also
     layout-configurable; setting either to ``None`` skips that file entirely.
+
+    Session trajectory JSONLs (``*.trajectory.jsonl``) under
+    ``layout.session_dirs`` are NOT yielded here — the caller routes them
+    through ``_trajectory_to_record`` instead of the markdown reader.
 
     extra_tags annotate the role of top-level files beyond the agent tag:
     `core` for MEMORY.md, `instructions` for CLAUDE.md.
@@ -156,12 +303,33 @@ def _iter_workspace_files(ws: OpenClawWorkspace) -> Iterator[tuple[Path, list[st
                     yield (f, [])
 
 
+def _iter_workspace_trajectories(ws: OpenClawWorkspace) -> Iterator[Path]:
+    """Yield ``*.trajectory.jsonl`` files from the workspace's session_dirs.
+
+    Empty session_dirs (the default) yields nothing — trajectory ingestion
+    is opt-in.
+    """
+    base = ws.path
+    if not base.is_dir():
+        return
+    for rel_dir in ws.layout.session_dirs:
+        session_dir = base / rel_dir
+        if not session_dir.is_dir():
+            continue
+        for f in sorted(session_dir.rglob(f"*{TRAJECTORY_SUFFIX}")):
+            if f.is_file():
+                yield f
+
+
 def _classify_workspace_path(path: Path, ws: OpenClawWorkspace) -> tuple[bool, list[str]]:
     """Return `(is_interesting, extra_tags)` for a path inside a workspace.
 
     Used by the watch loop to decide whether to emit a record on file change
     and to figure out the right role tags for top-level files. Mirrors the
     layout overrides used by ``_iter_workspace_files``.
+
+    Trajectory JSONLs are matched here too but routed via the trajectory
+    classifier — see ``_classify_trajectory_path``.
     """
     base = ws.path.resolve()
     try:
@@ -192,6 +360,29 @@ def _classify_workspace_path(path: Path, ws: OpenClawWorkspace) -> tuple[bool, l
     return (False, [])
 
 
+def _classify_trajectory_path(path: Path, ws: OpenClawWorkspace) -> bool:
+    """Return True if `path` is a trajectory JSONL inside one of the
+    workspace's `session_dirs`.
+
+    Separate from `_classify_workspace_path` because trajectories use a
+    different reader (``_trajectory_to_record``) instead of the markdown
+    reader.
+    """
+    if not path.name.endswith(TRAJECTORY_SUFFIX):
+        return False
+    base = ws.path.resolve()
+    try:
+        path = path.resolve()
+        path.relative_to(base)
+    except (ValueError, OSError):
+        return False
+    for rel_dir in ws.layout.session_dirs:
+        session_root = (base / rel_dir).resolve()
+        if session_root in path.parents:
+            return True
+    return False
+
+
 def _apply_workspace_tags(record: MemoryRecord, ws_tag: str, extra_tags: list[str]) -> MemoryRecord:
     new_tags = [*record.tags, f"agent:{ws_tag}", *extra_tags]
     return record.model_copy(update={"tags": new_tags})
@@ -213,7 +404,9 @@ class _EventHandler(FileSystemEventHandler):
 
     def _enqueue(self, src: str) -> None:
         path = Path(src)
-        if path.suffix != ".md":
+        # Markdown for memory/skill/instructions; *.trajectory.jsonl for
+        # session trajectories (filtered further by _classify_*_path).
+        if path.suffix != ".md" and not path.name.endswith(TRAJECTORY_SUFFIX):
             return
         self._loop.call_soon_threadsafe(self._queue.put_nowait, path)
 
@@ -274,6 +467,11 @@ class OpenClawAdapter(Adapter):
                 if ws_record is None:
                     continue
                 yield _apply_workspace_tags(ws_record, ws.tag, extra_tags)
+            for traj_path in _iter_workspace_trajectories(ws):
+                traj_record = _trajectory_to_record(traj_path, self.name)
+                if traj_record is None:
+                    continue
+                yield _apply_workspace_tags(traj_record, ws.tag, [])
         for shared in self.shared_files:
             if not shared.is_file():
                 continue
@@ -329,6 +527,11 @@ class OpenClawAdapter(Adapter):
                 record = _file_to_record(changed, self.name)
                 if record is not None:
                     yield _apply_workspace_tags(record, ws.tag, extra_tags)
+                return
+            if _classify_trajectory_path(changed, ws):
+                traj_record = _trajectory_to_record(changed, self.name)
+                if traj_record is not None:
+                    yield _apply_workspace_tags(traj_record, ws.tag, [])
                 return
 
         for shared in self.shared_files:
