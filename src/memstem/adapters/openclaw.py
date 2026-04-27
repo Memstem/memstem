@@ -117,6 +117,11 @@ def _iter_markdown_files(root: Path) -> Iterator[Path]:
 def _iter_workspace_files(ws: OpenClawWorkspace) -> Iterator[tuple[Path, list[str]]]:
     """Yield `(file, extra_tags)` for the conventional locations in a workspace.
 
+    Honors the workspace's ``layout`` overrides — e.g. an agent that keeps
+    memories under ``notes/`` instead of ``memory/`` will iterate through
+    ``notes/**/*.md``. Top-level ``MEMORY.md``/``CLAUDE.md`` paths are also
+    layout-configurable; setting either to ``None`` skips that file entirely.
+
     extra_tags annotate the role of top-level files beyond the agent tag:
     `core` for MEMORY.md, `instructions` for CLAUDE.md.
     """
@@ -124,31 +129,39 @@ def _iter_workspace_files(ws: OpenClawWorkspace) -> Iterator[tuple[Path, list[st
     if not base.is_dir():
         return
 
-    memory_md = base / "MEMORY.md"
-    if memory_md.is_file():
-        yield (memory_md, ["core"])
-    claude_md = base / "CLAUDE.md"
-    if claude_md.is_file():
-        yield (claude_md, ["instructions"])
+    layout = ws.layout
 
-    memory_dir = base / "memory"
-    if memory_dir.is_dir():
-        for f in sorted(memory_dir.rglob("*.md")):
-            if f.is_file():
-                yield (f, [])
+    if layout.memory_md is not None:
+        memory_md = base / layout.memory_md
+        if memory_md.is_file():
+            yield (memory_md, ["core"])
 
-    skills_dir = base / "skills"
-    if skills_dir.is_dir():
-        for f in sorted(skills_dir.rglob("SKILL.md")):
-            if f.is_file():
-                yield (f, [])
+    if layout.claude_md is not None:
+        claude_md = base / layout.claude_md
+        if claude_md.is_file():
+            yield (claude_md, ["instructions"])
+
+    for rel_dir in layout.memory_dirs:
+        memory_dir = base / rel_dir
+        if memory_dir.is_dir():
+            for f in sorted(memory_dir.rglob("*.md")):
+                if f.is_file():
+                    yield (f, [])
+
+    for rel_dir in layout.skills_dirs:
+        skills_dir = base / rel_dir
+        if skills_dir.is_dir():
+            for f in sorted(skills_dir.rglob("SKILL.md")):
+                if f.is_file():
+                    yield (f, [])
 
 
 def _classify_workspace_path(path: Path, ws: OpenClawWorkspace) -> tuple[bool, list[str]]:
     """Return `(is_interesting, extra_tags)` for a path inside a workspace.
 
     Used by the watch loop to decide whether to emit a record on file change
-    and to figure out the right role tags for top-level files.
+    and to figure out the right role tags for top-level files. Mirrors the
+    layout overrides used by ``_iter_workspace_files``.
     """
     base = ws.path.resolve()
     try:
@@ -157,14 +170,25 @@ def _classify_workspace_path(path: Path, ws: OpenClawWorkspace) -> tuple[bool, l
     except (ValueError, OSError):
         return (False, [])
 
-    if path == base / "MEMORY.md":
+    layout = ws.layout
+
+    if layout.memory_md is not None and path == (base / layout.memory_md).resolve():
         return (True, ["core"])
-    if path == base / "CLAUDE.md":
+    if layout.claude_md is not None and path == (base / layout.claude_md).resolve():
         return (True, ["instructions"])
-    if path.suffix == ".md" and (base / "memory") in path.parents:
-        return (True, [])
-    if path.name == "SKILL.md" and (base / "skills") in path.parents:
-        return (True, [])
+
+    if path.suffix == ".md":
+        for rel_dir in layout.memory_dirs:
+            memory_root = (base / rel_dir).resolve()
+            if memory_root in path.parents:
+                return (True, [])
+
+    if path.name == "SKILL.md":
+        for rel_dir in layout.skills_dirs:
+            skills_root = (base / rel_dir).resolve()
+            if skills_root in path.parents:
+                return (True, [])
+
     return (False, [])
 
 
