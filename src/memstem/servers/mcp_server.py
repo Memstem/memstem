@@ -14,6 +14,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from memstem.config import SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index
@@ -76,10 +77,18 @@ def build_server(
     embedder: Embedder | None = None,
     *,
     name: str = "memstem",
+    search_config: SearchConfig | None = None,
 ) -> FastMCP:
-    """Construct a FastMCP server bound to the given vault/index/embedder."""
+    """Construct a FastMCP server bound to the given vault/index/embedder.
+
+    ``search_config`` lets the caller thread the user's configured RRF
+    parameters (``rrf_k``, ``bm25_weight``, ``vector_weight``) through
+    to every ``memstem_search`` call. Defaults to ``SearchConfig()``
+    when omitted, which matches the legacy 60/1.0/1.0 behavior.
+    """
     mcp = FastMCP(name)
     search = Search(vault=vault, index=index, embedder=embedder)
+    sc = search_config or SearchConfig()
 
     @mcp.tool()
     async def memstem_search(
@@ -88,7 +97,14 @@ def build_server(
         types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Hybrid keyword + semantic search across memories and skills."""
-        results = search.search(query=query, limit=limit, types=types)
+        results = search.search(
+            query=query,
+            limit=limit,
+            types=types,
+            rrf_k=sc.rrf_k,
+            bm25_weight=sc.bm25_weight,
+            vector_weight=sc.vector_weight,
+        )
         return [_serialize_result(r) for r in results]
 
     @mcp.tool()

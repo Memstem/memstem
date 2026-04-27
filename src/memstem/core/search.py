@@ -60,17 +60,23 @@ def rrf_combine(
     bm25_hits: list[FtsHit],
     vec_hits: list[VecHit],
     k: int = DEFAULT_RRF_K,
+    bm25_weight: float = 1.0,
+    vector_weight: float = 1.0,
 ) -> list[FusedHit]:
     """Reciprocal Rank Fusion of BM25 and vector hits.
 
-    Score for each memory = sum(1 / (k + rank)) across both lists. Vector
-    hits at the chunk level are de-duplicated to one rank per memory, taking
-    the best (first-seen) occurrence.
+    Score for each memory = sum(weight / (k + rank)) across both lists.
+    Vector hits at the chunk level are de-duplicated to one rank per memory,
+    taking the best (first-seen) occurrence.
+
+    The weights let callers bias toward one signal — set ``bm25_weight=0``
+    for vec-only fusion, ``vector_weight=0`` for BM25-only — without having
+    to short-circuit the call.
     """
     fused: dict[str, FusedHit] = {}
 
     for rank, fts_hit in enumerate(bm25_hits, start=1):
-        contribution = 1.0 / (k + rank)
+        contribution = bm25_weight / (k + rank)
         existing = fused.get(fts_hit.memory_id)
         if existing is None:
             fused[fts_hit.memory_id] = FusedHit(
@@ -94,7 +100,7 @@ def rrf_combine(
             continue
         seen_for_vec.add(vec_hit.memory_id)
         vec_rank += 1
-        contribution = 1.0 / (k + vec_rank)
+        contribution = vector_weight / (k + vec_rank)
         existing = fused.get(vec_hit.memory_id)
         if existing is None:
             fused[vec_hit.memory_id] = FusedHit(
@@ -156,12 +162,18 @@ class Search:
         limit: int = 10,
         types: list[str] | None = None,
         rrf_k: int = DEFAULT_RRF_K,
+        bm25_weight: float = 1.0,
+        vector_weight: float = 1.0,
     ) -> list[Result]:
         """Run hybrid search and materialize the top `limit` results from the vault.
 
         BM25 always runs. Vector search runs only when an embedder is configured;
         on embedder failure we log and fall back to BM25-only so the daemon
         never goes mute.
+
+        ``rrf_k``, ``bm25_weight``, and ``vector_weight`` control the fusion —
+        the CLI and MCP server thread the configured ``SearchConfig`` values
+        through here so users can tune ranking from ``_meta/config.yaml``.
         """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
@@ -177,7 +189,13 @@ class Search:
             except Exception as exc:
                 logger.warning("vec query failed; falling back to BM25: %s", exc)
 
-        fused = rrf_combine(bm25, vec, k=rrf_k)[:limit]
+        fused = rrf_combine(
+            bm25,
+            vec,
+            k=rrf_k,
+            bm25_weight=bm25_weight,
+            vector_weight=vector_weight,
+        )[:limit]
         return self._materialize(fused)
 
     def _materialize(self, hits: list[FusedHit]) -> list[Result]:

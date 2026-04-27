@@ -82,6 +82,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the override paths (custom memory dir, skip MEMORY.md, skip skills,
   multiple memory dirs, default unchanged, watch classifier).
 
+### Fixed — search config knobs are now actually read
+
+- **`SearchConfig.rrf_k`, `bm25_weight`, and `vector_weight` were dead
+  config.** The values lived in `_meta/config.yaml` but neither the CLI
+  (`memstem search`) nor the MCP server read them — both call sites used
+  the function defaults. So changing those values in config did nothing.
+  Found while investigating ranking quality on a 12-query retrieval
+  test: vault cleanup alone moved top-5 from 6/12 to 8/12, but tuning
+  the (unused) weights showed no further improvement until the wiring
+  was fixed.
+- `Search.search()` now accepts `rrf_k`, `bm25_weight`, `vector_weight`
+  parameters; the CLI threads `cfg.search.*` through, and the MCP
+  server's `build_server()` accepts a `search_config: SearchConfig`
+  kwarg that the daemon passes from the loaded config.
+- `rrf_combine()` applies the weights as
+  `score += weight / (k + rank)` per source. Default weights stay
+  `1.0/1.0` so existing installs see no behavior change. Set
+  `bm25_weight: 0` to make search vec-only, or vice versa. 5 new tests
+  cover weight scaling, zero-weight short-circuit, and weighted
+  overlap.
+
 ## [0.4.0] — 2026-04-26
 
 Two related cutover fixes shipped together: the post-restart re-embed

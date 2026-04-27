@@ -254,6 +254,9 @@ def search(
             query,
             limit=limit,
             types=list(types) if types else None,
+            rrf_k=cfg.search.rrf_k,
+            bm25_weight=cfg.search.bm25_weight,
+            vector_weight=cfg.search.vector_weight,
         )
     finally:
         index.close()
@@ -438,7 +441,7 @@ def mcp(
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)
-    server = build_server(vault_obj, index, embedder)
+    server = build_server(vault_obj, index, embedder, search_config=cfg.search)
     try:
         server.run()
     finally:
