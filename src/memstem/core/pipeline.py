@@ -21,6 +21,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from memstem.adapters.base import MemoryRecord
+from memstem.core.extraction import NoiseAction, noise_filter
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index, body_hash
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
@@ -101,8 +102,12 @@ class Pipeline:
         self.embedding_signature = embedding_signature
         _ensure_record_map(self.index.db)
 
-    def process(self, record: MemoryRecord) -> Memory:
+    def process(self, record: MemoryRecord) -> Memory | None:
         """Persist one record as a canonical Memory; idempotent for re-emits.
+
+        Returns ``None`` if the record was filtered out as noise (ADR
+        0011). Callers that already discarded the result keep working
+        unchanged; callers that use the result must accept ``None``.
 
         The pipeline is fast-path only: it writes the markdown file, the
         memories/tags/links/FTS5 rows, and (if needed) enqueues the
@@ -116,6 +121,17 @@ class Pipeline:
         re-embedding would just burn rate-limit quota. Body or signature
         changes (or the absence of vectors) still enqueue.
         """
+        decision = noise_filter(record)
+        if decision.action is NoiseAction.DROP:
+            logger.info(
+                "noise filter dropped record (source=%s, ref=%s, kind=%s): %s",
+                record.source,
+                record.ref,
+                decision.kind,
+                decision.reason,
+            )
+            return None
+
         memory_id = self._lookup_or_assign_id(record.source, record.ref)
         fm = self._build_frontmatter(record, memory_id)
         path = self._existing_path(memory_id) or _path_for_memory(fm, record)

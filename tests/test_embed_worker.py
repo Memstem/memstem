@@ -19,7 +19,7 @@ from memstem.core.embed_worker import EmbedWorker, drain_once
 from memstem.core.embeddings import Embedder, EmbeddingError
 from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
-from memstem.core.storage import Vault
+from memstem.core.storage import Memory, Vault
 
 
 @pytest.fixture
@@ -53,6 +53,13 @@ def _record(body: str = "hello world", ref: str | None = None) -> MemoryRecord:
     )
 
 
+def _processed(pipe: Pipeline, record: MemoryRecord) -> Memory:
+    """Pipeline.process wrapper that asserts the record wasn't noise-filtered."""
+    memory = pipe.process(record)
+    assert memory is not None, "pipeline unexpectedly noise-filtered the test record"
+    return memory
+
+
 class _StubEmbedder(Embedder):
     """Records calls; returns deterministic dummy vectors."""
 
@@ -77,7 +84,7 @@ class TestTick:
     def test_drains_pending_records(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
         for _ in range(3):
-            pipe.process(_record())
+            _processed(pipe, _record())
         embedder = _StubEmbedder()
         worker = EmbedWorker(
             vault=vault, index=index, embedder=embedder, batch_size=10, idle_sleep=0
@@ -89,7 +96,7 @@ class TestTick:
 
     def test_writes_vec_rows(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body="alpha"))
+        memory = _processed(pipe, _record(body="alpha"))
         worker = EmbedWorker(
             vault=vault,
             index=index,
@@ -106,7 +113,7 @@ class TestTick:
 
     def test_failure_increments_retry_then_marks_failed(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         embedder = _StubEmbedder()
         embedder.fail_always = True
         worker = EmbedWorker(
@@ -143,7 +150,7 @@ class TestTick:
 
     def test_recover_after_one_shot_failure(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         embedder = _StubEmbedder()
         embedder.fail_once = True
         worker = EmbedWorker(
@@ -176,7 +183,7 @@ class TestTick:
 
     def test_drops_queue_entry_when_vault_file_missing(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         # Delete the file out from under us.
         (vault.root / memory.path).unlink()
 
@@ -195,7 +202,7 @@ class TestDrainOnce:
     def test_processes_all_then_returns(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
         for _ in range(7):
-            pipe.process(_record())
+            _processed(pipe, _record())
         result = asyncio.run(
             drain_once(
                 vault=vault,
@@ -210,7 +217,7 @@ class TestDrainOnce:
 
     def test_drain_with_failed_records(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         embedder = _StubEmbedder()
         embedder.fail_always = True
         # Fail max_retries=1 → first tick marks it failed.
@@ -237,7 +244,7 @@ class TestDrainOnce:
 class TestQueueOps:
     def test_enqueue_idempotent_resets_state(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         index.mark_embed_error(str(memory.id), "boom", max_retries=1)
         assert (
             index.db.execute(
@@ -257,7 +264,7 @@ class TestQueueOps:
 
     def test_reset_failed_queue(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         index.mark_embed_error(str(memory.id), "x", max_retries=1)
         assert index.queue_stats()["failed"] == 1
         n = index.reset_failed_queue()
@@ -274,7 +281,7 @@ class TestEmbedStateOnSuccess:
 
     def test_records_state_with_signature(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body="hello world"))
+        memory = _processed(pipe, _record(body="hello world"))
         worker = EmbedWorker(
             vault=vault,
             index=index,
@@ -295,7 +302,7 @@ class TestEmbedStateOnSuccess:
 
     def test_state_not_recorded_on_failure(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record())
+        memory = _processed(pipe, _record())
         embedder = _StubEmbedder()
         embedder.fail_always = True
         worker = EmbedWorker(
@@ -318,7 +325,7 @@ class TestEmbedStateOnSuccess:
         a record whose body and signature haven't changed."""
         pipe = Pipeline(vault, index, embedding_signature=self.SIG)
         ref = "/tmp/stable.md"
-        memory = pipe.process(_record(body="stable content", ref=ref))
+        memory = _processed(pipe, _record(body="stable content", ref=ref))
         worker = EmbedWorker(
             vault=vault,
             index=index,
@@ -332,7 +339,7 @@ class TestEmbedStateOnSuccess:
         assert index.queue_stats()["pending"] == 0
 
         # Reconcile re-emit with the same body — must NOT re-enqueue.
-        pipe.process(_record(body="stable content", ref=ref))
+        _processed(pipe, _record(body="stable content", ref=ref))
         rows = index.db.execute(
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
@@ -342,7 +349,7 @@ class TestEmbedStateOnSuccess:
         """Records with empty bodies still get stamped so the pipeline
         doesn't keep re-enqueueing them (chunk_text returns [])."""
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body=""))
+        memory = _processed(pipe, _record(body=""))
         worker = EmbedWorker(
             vault=vault,
             index=index,

@@ -10,7 +10,7 @@ import pytest
 from memstem.adapters.base import MemoryRecord
 from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
-from memstem.core.storage import Vault
+from memstem.core.storage import Memory, Vault
 
 
 def _record(
@@ -40,6 +40,20 @@ def _record(
     )
 
 
+def _processed(pipe: Pipeline, record: MemoryRecord) -> Memory:
+    """Pipeline.process wrapper that asserts the record wasn't noise-filtered.
+
+    ADR 0011's noise filter (`memstem.core.extraction.noise_filter`) gives
+    `Pipeline.process` a `Memory | None` return type. Tests in this file
+    use bodies that should never match a noise pattern, so a `None` return
+    indicates a regression — assert it eagerly so the failure surfaces at
+    the call site, not three lines later on a `memory.id` access.
+    """
+    memory = pipe.process(record)
+    assert memory is not None, "pipeline unexpectedly noise-filtered the test record"
+    return memory
+
+
 @pytest.fixture
 def vault(tmp_path: Path) -> Vault:
     root = tmp_path / "vault"
@@ -59,37 +73,40 @@ def index(tmp_path: Path) -> Iterator[Index]:
 class TestPathForMemory:
     def test_skill_uses_title_slug(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(
+        memory = _processed(
+            pipe,
             _record(
                 title="Deploy via Cloudflare",
                 type_="skill",
                 extra_metadata={
                     "raw_frontmatter": {"scope": "universal", "verification": "ok"},
                 },
-            )
+            ),
         )
         assert memory.path == Path("skills/deploy-via-cloudflare.md")
 
     def test_memory_lives_under_source_subdir(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(source="openclaw"))
+        memory = _processed(pipe, _record(source="openclaw"))
         assert memory.path.parts[0] == "memories"
         assert memory.path.parts[1] == "openclaw"
 
     def test_session_uses_session_id_metadata(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(
+        memory = _processed(
+            pipe,
             _record(
                 type_="session",
                 extra_metadata={"session_id": "sess-1234"},
-            )
+            ),
         )
         assert memory.path == Path("sessions/sess-1234.md")
 
     def test_agent_tag_disambiguates_skill_path(self, vault: Vault, index: Index) -> None:
         """Two agents with the same skill title must not collide on disk."""
         pipe = Pipeline(vault, index)
-        ari = pipe.process(
+        ari = _processed(
+            pipe,
             _record(
                 ref="/home/ubuntu/ari/skills/deploy/SKILL.md",
                 title="Deploy",
@@ -98,9 +115,10 @@ class TestPathForMemory:
                 extra_metadata={
                     "raw_frontmatter": {"scope": "universal", "verification": "ok"},
                 },
-            )
+            ),
         )
-        sarah = pipe.process(
+        sarah = _processed(
+            pipe,
             _record(
                 ref="/home/ubuntu/sarah/skills/deploy/SKILL.md",
                 title="Deploy",
@@ -109,7 +127,7 @@ class TestPathForMemory:
                 extra_metadata={
                     "raw_frontmatter": {"scope": "universal", "verification": "ok"},
                 },
-            )
+            ),
         )
         assert ari.path == Path("skills/ari/deploy.md")
         assert sarah.path == Path("skills/sarah/deploy.md")
@@ -118,23 +136,25 @@ class TestPathForMemory:
     def test_agent_tag_disambiguates_daily_path(self, vault: Vault, index: Index) -> None:
         """Daily logs from different agents on the same date must not collide."""
         pipe = Pipeline(vault, index)
-        ari = pipe.process(
+        ari = _processed(
+            pipe,
             _record(
                 ref="/home/ubuntu/ari/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
                 tags=["agent:ari"],
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
-            )
+            ),
         )
-        sarah = pipe.process(
+        sarah = _processed(
+            pipe,
             _record(
                 ref="/home/ubuntu/sarah/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
                 tags=["agent:sarah"],
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
-            )
+            ),
         )
         assert ari.path == Path("daily/ari/2026-04-26.md")
         assert sarah.path == Path("daily/sarah/2026-04-26.md")
@@ -142,22 +162,24 @@ class TestPathForMemory:
     def test_no_agent_tag_keeps_legacy_path(self, vault: Vault, index: Index) -> None:
         """Records without an `agent:` tag use the pre-PR-25 paths (back-compat)."""
         pipe = Pipeline(vault, index)
-        skill = pipe.process(
+        skill = _processed(
+            pipe,
             _record(
                 title="Deploy",
                 type_="skill",
                 extra_metadata={
                     "raw_frontmatter": {"scope": "universal", "verification": "ok"},
                 },
-            )
+            ),
         )
-        daily = pipe.process(
+        daily = _processed(
+            pipe,
             _record(
                 ref="/tmp/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
-            )
+            ),
         )
         assert skill.path == Path("skills/deploy.md")
         assert daily.path == Path("daily/2026-04-26.md")
@@ -166,7 +188,7 @@ class TestPathForMemory:
 class TestProcess:
     def test_creates_memory_in_vault(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body="hello"))
+        memory = _processed(pipe, _record(body="hello"))
         on_disk = vault.read(memory.path)
         assert on_disk.body == "hello"
         # Index row exists.
@@ -175,8 +197,8 @@ class TestProcess:
 
     def test_re_emit_updates_existing_memory(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        first = pipe.process(_record(body="v1"))
-        second = pipe.process(_record(body="v2"))
+        first = _processed(pipe, _record(body="v1"))
+        second = _processed(pipe, _record(body="v2"))
         # Same source+ref → same id, same path.
         assert first.id == second.id
         assert first.path == second.path
@@ -184,21 +206,21 @@ class TestProcess:
 
     def test_distinct_refs_get_distinct_ids(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        a = pipe.process(_record(ref="/a.md"))
-        b = pipe.process(_record(ref="/b.md"))
+        a = _processed(pipe, _record(ref="/a.md"))
+        b = _processed(pipe, _record(ref="/b.md"))
         assert a.id != b.id
 
     def test_different_sources_get_distinct_ids_for_same_ref(
         self, vault: Vault, index: Index
     ) -> None:
         pipe = Pipeline(vault, index)
-        a = pipe.process(_record(source="openclaw", ref="/x.md"))
-        b = pipe.process(_record(source="claude-code", ref="/x.md"))
+        a = _processed(pipe, _record(source="openclaw", ref="/x.md"))
+        b = _processed(pipe, _record(source="claude-code", ref="/x.md"))
         assert a.id != b.id
 
     def test_provenance_recorded_in_frontmatter(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(source="openclaw", ref="/path.md"))
+        memory = _processed(pipe, _record(source="openclaw", ref="/path.md"))
         prov = memory.frontmatter.provenance
         assert prov is not None
         assert prov.source == "openclaw"
@@ -208,14 +230,15 @@ class TestProcess:
         self, vault: Vault, index: Index
     ) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(type_="skill", title="My Skill"))
+        memory = _processed(pipe, _record(type_="skill", title="My Skill"))
         assert memory.frontmatter.scope == "universal"
         assert memory.frontmatter.verification
 
     def test_invalid_iso_timestamp_falls_back_to_now(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(
-            _record(extra_metadata={"created": "not-a-date", "updated": "also not"})
+        memory = _processed(
+            pipe,
+            _record(extra_metadata={"created": "not-a-date", "updated": "also not"}),
         )
         # Just verify a valid datetime was produced.
         assert memory.frontmatter.created is not None
@@ -229,7 +252,7 @@ class TestEmbedQueueing:
 
     def test_process_enqueues_record(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body="hello"))
+        memory = _processed(pipe, _record(body="hello"))
         rows = index.db.execute(
             "SELECT memory_id, retry_count, failed FROM embed_queue WHERE memory_id = ?",
             (str(memory.id),),
@@ -240,7 +263,7 @@ class TestEmbedQueueing:
 
     def test_no_vec_rows_written_synchronously(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body="some body"))
+        memory = _processed(pipe, _record(body="some body"))
         rows = index.db.execute(
             "SELECT COUNT(*) AS c FROM memories_vec WHERE memory_id = ?",
             (str(memory.id),),
@@ -250,7 +273,7 @@ class TestEmbedQueueing:
     def test_re_emit_resets_queue_state(self, vault: Vault, index: Index) -> None:
         """A failing record that the user edits should get another shot."""
         pipe = Pipeline(vault, index)
-        memory = pipe.process(_record(body="v1"))
+        memory = _processed(pipe, _record(body="v1"))
         index.mark_embed_error(str(memory.id), "boom", max_retries=1)
         # After the simulated failure the record is `failed=1`.
         row = index.db.execute(
@@ -258,7 +281,7 @@ class TestEmbedQueueing:
         ).fetchone()
         assert row["failed"] == 1
         # Re-processing the same source+ref re-enqueues with cleared state.
-        pipe.process(_record(body="v2"))
+        _processed(pipe, _record(body="v2"))
         row = index.db.execute(
             "SELECT failed, retry_count FROM embed_queue WHERE memory_id = ?",
             (str(memory.id),),
@@ -297,14 +320,14 @@ class TestSkipEnqueueWhenUnchanged:
 
     def test_unchanged_re_emit_does_not_re_enqueue(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index, embedding_signature=self.SIG)
-        memory = pipe.process(_record(body="hello"))
+        memory = _processed(pipe, _record(body="hello"))
         # Simulate the worker successfully embedding it.
         self._stamp_as_embedded(index, str(memory.id), "hello", self.SIG)
         # Drop the queue entry as the worker would have on success.
         index.dequeue_embed(str(memory.id))
 
         # Re-emit with identical body — pipeline must not enqueue.
-        pipe.process(_record(body="hello"))
+        _processed(pipe, _record(body="hello"))
         rows = index.db.execute(
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
@@ -312,11 +335,11 @@ class TestSkipEnqueueWhenUnchanged:
 
     def test_changed_body_re_enqueues(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index, embedding_signature=self.SIG)
-        memory = pipe.process(_record(body="v1"))
+        memory = _processed(pipe, _record(body="v1"))
         self._stamp_as_embedded(index, str(memory.id), "v1", self.SIG)
         index.dequeue_embed(str(memory.id))
 
-        pipe.process(_record(body="v2"))
+        _processed(pipe, _record(body="v2"))
         rows = index.db.execute(
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
@@ -324,14 +347,14 @@ class TestSkipEnqueueWhenUnchanged:
 
     def test_signature_change_re_enqueues(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index, embedding_signature=self.SIG)
-        memory = pipe.process(_record(body="hello"))
+        memory = _processed(pipe, _record(body="hello"))
         # Stamp with a different signature, as if the user just switched
         # provider mid-soak.
         self._stamp_as_embedded(index, str(memory.id), "hello", self.OTHER_SIG)
         index.dequeue_embed(str(memory.id))
 
         # Same body, but the signature mismatches → re-enqueue.
-        pipe.process(_record(body="hello"))
+        _processed(pipe, _record(body="hello"))
         rows = index.db.execute(
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
@@ -341,12 +364,12 @@ class TestSkipEnqueueWhenUnchanged:
         """A re-emit during the queue-still-draining window must enqueue
         the record again (the worker hasn't gotten to it yet)."""
         pipe = Pipeline(vault, index, embedding_signature=self.SIG)
-        memory = pipe.process(_record(body="hello"))
+        memory = _processed(pipe, _record(body="hello"))
         # First emit enqueued; clear the queue to simulate "worker hasn't
         # picked this up yet" — but no vec rows or state row exist.
         index.dequeue_embed(str(memory.id))
 
-        pipe.process(_record(body="hello"))
+        _processed(pipe, _record(body="hello"))
         rows = index.db.execute(
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
@@ -355,7 +378,7 @@ class TestSkipEnqueueWhenUnchanged:
     def test_first_emit_always_enqueues(self, vault: Vault, index: Index) -> None:
         """No state, no vectors → always enqueue, regardless of signature."""
         pipe = Pipeline(vault, index, embedding_signature=self.SIG)
-        memory = pipe.process(_record(body="hello"))
+        memory = _processed(pipe, _record(body="hello"))
         rows = index.db.execute(
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
