@@ -127,48 +127,60 @@ class TestInitWizard:
             (ws / "skills" / "deploy" / "SKILL.md").write_text("# deploy\n")
         return ws
 
-    def test_non_interactive_auto_selects_content_agents(
+    def test_non_interactive_excludes_openclaw_workspaces(
         self, tmp_path: Path, runner: CliRunner
     ) -> None:
-        home = tmp_path / "home"
-        home.mkdir()
-        self._seed_agent(home, "ari", with_content=True)
-        self._seed_agent(home, "blake", with_content=False)
-        # `blake` only has MEMORY.md + CLAUDE.md (no memory/ or skills/) — counts
-        # as content because top-level files exist; we want it included too.
-        # Force a true "empty" agent for the negative case:
-        empty_dir = home / "ghost"
-        empty_dir.mkdir()
-        (empty_dir / "openclaw.json").write_text("{}")
-
-        vault_path = tmp_path / "vault"
-        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
-        assert result.exit_code == 0, result.output
-        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
-        tags = {ws["tag"] for ws in cfg["adapters"]["openclaw"]["agent_workspaces"]}
-        assert "ari" in tags
-        assert "blake" in tags
-        assert "ghost" not in tags
-
-    def test_wizard_prompts_per_agent(self, tmp_path: Path, runner: CliRunner) -> None:
+        # `-y` writes a Claude-Code-only config; OpenClaw is opt-in via wizard.
         home = tmp_path / "home"
         home.mkdir()
         self._seed_agent(home, "ari", with_content=True)
         self._seed_agent(home, "blake", with_content=True)
 
         vault_path = tmp_path / "vault"
-        # Defaults: ari yes, blake no. Plus declines for any shared/claude prompts.
+        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert cfg["adapters"]["openclaw"]["agent_workspaces"] == []
+        assert cfg["adapters"]["openclaw"]["shared_files"] == []
+
+    def test_wizard_prompts_per_agent_opt_in(self, tmp_path: Path, runner: CliRunner) -> None:
+        # New behavior: each agent defaults to "no". User opts in by typing "y".
+        home = tmp_path / "home"
+        home.mkdir()
+        self._seed_agent(home, "ari", with_content=True)
+        self._seed_agent(home, "blake", with_content=True)
+
+        vault_path = tmp_path / "vault"
+        # ari=y, blake=<accept default no>. No shared files / claude prompts to answer.
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],
-            input="y\nn\n",
+            input="y\n\n",
         )
         assert result.exit_code == 0, result.output
         cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
         tags = {ws["tag"] for ws in cfg["adapters"]["openclaw"]["agent_workspaces"]}
         assert tags == {"ari"}
 
-    def test_wizard_includes_shared_files(self, tmp_path: Path, runner: CliRunner) -> None:
+    def test_wizard_shared_files_default_no(self, tmp_path: Path, runner: CliRunner) -> None:
+        # Shared files default to no — they belong to a workspace, so opt-in too.
+        home = tmp_path / "home"
+        home.mkdir()
+        ws = self._seed_agent(home, "ari", with_content=True)
+        (ws / "HARD-RULES.md").write_text("# rules\n")
+
+        vault_path = tmp_path / "vault"
+        # All defaults (no for ari, no for HARD-RULES.md).
+        result = runner.invoke(
+            app,
+            ["init", "--home", str(home), str(vault_path)],
+            input="\n\n",
+        )
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert cfg["adapters"]["openclaw"]["shared_files"] == []
+
+    def test_wizard_can_include_shared_files(self, tmp_path: Path, runner: CliRunner) -> None:
         home = tmp_path / "home"
         home.mkdir()
         ws = self._seed_agent(home, "ari", with_content=True)
@@ -176,7 +188,12 @@ class TestInitWizard:
         rules.write_text("# rules\n")
 
         vault_path = tmp_path / "vault"
-        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
+        # ari=y, HARD-RULES.md=y.
+        result = runner.invoke(
+            app,
+            ["init", "--home", str(home), str(vault_path)],
+            input="y\ny\n",
+        )
         assert result.exit_code == 0, result.output
         cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
         assert str(rules) in cfg["adapters"]["openclaw"]["shared_files"]
@@ -476,6 +493,10 @@ class TestConnectClients:
         """Initialize a vault whose config points at a single OpenClaw workspace.
 
         Returns `(vault, workspace)`.
+
+        Uses the interactive wizard with "y" for the single discovered agent,
+        since `init -y` (non-interactive) writes a Claude-Code-only config —
+        OpenClaw workspaces are opt-in.
         """
         home = tmp_path / "home"
         ws = home / "ari"
@@ -488,7 +509,7 @@ class TestConnectClients:
         (ws / "skills" / "deploy").mkdir(parents=True)
         (ws / "skills" / "deploy" / "SKILL.md").write_text("# deploy\n")
         vault = tmp_path / "vault"
-        result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault)])
+        result = runner.invoke(app, ["init", "--home", str(home), str(vault)], input="y\n")
         assert result.exit_code == 0, result.output
         return vault, ws
 

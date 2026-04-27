@@ -15,7 +15,6 @@ from memstem.config import (
     AdaptersConfig,
     ClaudeCodeAdapterConfig,
     OpenClawAdapterConfig,
-    OpenClawWorkspace,
 )
 
 
@@ -123,20 +122,22 @@ def discover_claude_code_extras(home: Path | None = None) -> list[Path]:
 
 
 def build_default_adapters_config(home: Path | None = None) -> AdaptersConfig:
-    """Build an AdaptersConfig that includes every candidate with non-empty content."""
-    workspaces = [
-        OpenClawWorkspace(path=c.workspace, tag=c.tag)
-        for c in discover_openclaw_candidates(home)
-        if c.has_content
-    ]
-    shared = discover_shared_files(home)
+    """Build a conservative default AdaptersConfig.
+
+    Auto-includes Claude Code paths (single user, no multi-agent ambiguity).
+    OpenClaw workspaces and shared files are **not** auto-included — on a
+    multi-agent host this would silently index every agent on disk. The
+    init wizard surfaces discovered candidates and lets the user opt in
+    explicitly; non-interactive installs get a Claude-Code-only config
+    and can edit the resulting config.yaml to add OpenClaw workspaces.
+    """
     claude_root = discover_claude_code_root(home)
     claude_extras = discover_claude_code_extras(home)
     project_roots = [claude_root] if claude_root is not None else []
     return AdaptersConfig(
         openclaw=OpenClawAdapterConfig(
-            agent_workspaces=workspaces,
-            shared_files=shared,
+            agent_workspaces=[],
+            shared_files=[],
         ),
         claude_code=ClaudeCodeAdapterConfig(
             project_roots=project_roots,

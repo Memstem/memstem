@@ -108,28 +108,39 @@ class TestDiscoverClaudeCode:
 
 
 class TestBuildDefaultAdaptersConfig:
-    def test_includes_only_content_workspaces(self, tmp_path: Path) -> None:
+    def test_does_not_auto_include_openclaw_workspaces(self, tmp_path: Path) -> None:
+        # Two workspaces with full content — neither should auto-include.
+        # Discovery is opt-in via the wizard, not via the default config.
         _make_workspace(tmp_path, "ari", content=True)
-        # An agent dir with only openclaw.json — no MEMORY/CLAUDE/memory/skills.
-        empty_dir = tmp_path / "ghost"
-        empty_dir.mkdir()
-        (empty_dir / "openclaw.json").write_text("{}")
+        _make_workspace(tmp_path, "blake", content=True)
 
         cfg = build_default_adapters_config(tmp_path)
-        tags = {ws.tag for ws in cfg.openclaw.agent_workspaces}
-        assert tags == {"ari"}
+        assert cfg.openclaw.agent_workspaces == []
 
-    def test_picks_up_shared_and_claude_paths(self, tmp_path: Path) -> None:
+    def test_does_not_auto_include_shared_files(self, tmp_path: Path) -> None:
         ws = _make_workspace(tmp_path, "ari", content=True)
-        rules = ws / "HARD-RULES.md"
-        rules.write_text("# rules\n")
+        (ws / "HARD-RULES.md").write_text("# rules\n")
+
+        cfg = build_default_adapters_config(tmp_path)
+        # Shared files belong to a workspace; if the workspace is opt-in,
+        # so are its shared rules.
+        assert cfg.openclaw.shared_files == []
+
+    def test_auto_includes_claude_code_paths(self, tmp_path: Path) -> None:
+        # Claude Code is per-user and unambiguous — auto-detect it.
         (tmp_path / ".claude" / "projects").mkdir(parents=True)
         (tmp_path / ".claude" / "CLAUDE.md").write_text("# instructions\n")
 
         cfg = build_default_adapters_config(tmp_path)
-        assert rules in cfg.openclaw.shared_files
         assert (tmp_path / ".claude" / "projects") in cfg.claude_code.project_roots
         assert (tmp_path / ".claude" / "CLAUDE.md") in cfg.claude_code.extra_files
+
+    def test_no_claude_code_when_absent(self, tmp_path: Path) -> None:
+        cfg = build_default_adapters_config(tmp_path)
+        assert cfg.claude_code.project_roots == []
+        assert cfg.claude_code.extra_files == []
+        assert cfg.openclaw.agent_workspaces == []
+        assert cfg.openclaw.shared_files == []
 
 
 class TestOpenClawCandidate:
