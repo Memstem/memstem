@@ -83,8 +83,8 @@ class _StubEmbedder(Embedder):
 class TestTick:
     def test_drains_pending_records(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        for _ in range(3):
-            _processed(pipe, _record())
+        for i in range(3):
+            _processed(pipe, _record(body=f"distinct body {i}"))
         embedder = _StubEmbedder()
         worker = EmbedWorker(
             vault=vault, index=index, embedder=embedder, batch_size=10, idle_sleep=0
@@ -201,8 +201,8 @@ class TestTick:
 class TestDrainOnce:
     def test_processes_all_then_returns(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
-        for _ in range(7):
-            _processed(pipe, _record())
+        for i in range(7):
+            _processed(pipe, _record(body=f"distinct body {i}"))
         result = asyncio.run(
             drain_once(
                 vault=vault,
