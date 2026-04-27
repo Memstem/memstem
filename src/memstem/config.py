@@ -80,6 +80,26 @@ class HttpServerConfig(BaseModel):
     port: int = 7821
 
 
+class McpServerConfig(BaseModel):
+    """MCP server configuration.
+
+    Each Claude Code session that uses Memstem spawns its own
+    ``memstem mcp`` subprocess. Without an idle timeout these
+    subprocesses linger after the parent session ends — they pile up
+    over weeks until they contend on the SQLite file lock and embed
+    workers start crashing on "database is locked".
+
+    ``idle_timeout_seconds`` causes the MCP process to self-terminate
+    after the configured number of seconds with no tool calls. Claude
+    Code transparently respawns it on the next request, so users never
+    see the interruption. Set to ``0`` to disable (useful for tests
+    and for users who run MCP from scripts that should outlive idle
+    periods).
+    """
+
+    idle_timeout_seconds: int = 1800  # 30 minutes
+
+
 class OpenClawLayout(BaseModel):
     """Per-workspace path conventions.
 
@@ -169,4 +189,5 @@ class Config(BaseModel):
     search: SearchConfig = SearchConfig()
     hygiene: HygieneConfig = HygieneConfig()
     http: HttpServerConfig = Field(default_factory=HttpServerConfig)
+    mcp: McpServerConfig = Field(default_factory=McpServerConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
