@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — deterministic hygiene importance bumps (ADR 0008 Tier 1, PR-C)
+
+- **New `memstem hygiene importance` subcommand** consumes the
+  `query_log` written by PR-B and proposes conservative `importance`
+  bumps for memories the user actually retrieved. Default is
+  `--dry-run` (prints proposed changes; doesn't mutate); pass
+  `--apply` to persist.
+- **Per-row formula:** each `memstem_get` open contributes `0.05`,
+  each search hit at rank `r` contributes `0.01 / r`, weighted at
+  half for exposures older than 30 days. Per-record cap of `0.1`
+  per sweep, final cap at `1.0`. Importance never decreases here —
+  decay is a separate concern.
+- **Skip rules:** records whose `valid_to` is in the past, whose
+  `deprecated_by` is set, or that are already at `importance == 1.0`
+  are not bumped. Phased-out content shouldn't earn weight.
+- **Idempotence:** the cursor in the new `hygiene_state` table
+  (schema migration v6) advances only on `--apply`, so dry-runs
+  re-show the same proposals and reruns of `--apply` are no-ops
+  until new log rows arrive.
+- 21 new tests in `tests/test_hygiene_importance.py` covering the
+  formula, the per-run and absolute caps, the skip rules, the
+  unset-importance default, the recency penalty, the cursor
+  advancement, the empty-plan-still-advances rule, and the CLI
+  subcommand's dry-run vs apply behavior.
+
 ### Added — retrieval feedback logging (ADR 0008 Tier 1, PR-B)
 
 - **Search now records per-hit exposure into a bounded `query_log`
