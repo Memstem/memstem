@@ -217,6 +217,14 @@ class Index:
         sqlite_vec.load(db)
         db.enable_load_extension(False)
         db.execute("PRAGMA foreign_keys = ON")
+        # Concurrency hardening: WAL mode lets readers run alongside a
+        # writer (instead of blocking), and busy_timeout makes both
+        # readers and writers wait up to 5s for a lock instead of
+        # failing immediately with `database is locked`. Without these,
+        # a CLI invocation (e.g. `memstem reindex`) running while the
+        # daemon is writing can crash either side intermittently.
+        db.execute("PRAGMA journal_mode = WAL")
+        db.execute("PRAGMA busy_timeout = 5000")
         self._db = db
         self._migrate()
 
@@ -567,6 +575,19 @@ class Index:
                 (limit,),
             ).fetchall()
         return [r["memory_id"] for r in rows]
+
+    def get_path(self, memory_id: str) -> str | None:
+        """Return the vault-relative path for a memory id, or None if missing.
+
+        Properly serialized through the Index lock — the embed worker
+        used to call `index.db.execute` directly which races other
+        threads and intermittently triggers `sqlite3.InterfaceError:
+        bad parameter or other API misuse` when a concurrent operation
+        leaves the connection state inconsistent.
+        """
+        with self._lock:
+            row = self.db.execute("SELECT path FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        return row["path"] if row else None
 
     def queue_stats(self) -> dict[str, int]:
         """Return `{pending, failed, total}` for `memstem doctor`."""
