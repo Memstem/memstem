@@ -29,6 +29,10 @@ DOCUMENTED_FLAGS = (
     "--no-model",
     "--vault",
     "--from-git",
+    "--embedder",
+    "--openai-key",
+    "--gemini-key",
+    "--voyage-key",
     "--connect-clients",
     "--remove-flipclaw",
     "--migrate",
@@ -91,3 +95,41 @@ class TestArgParsing:
         )
         assert result.returncode != 0
         assert "Unknown option" in result.stderr or "Unknown option" in result.stdout
+
+
+class TestEmbedderValidation:
+    """`--embedder` only accepts known providers — bad values bail before
+    touching the network or filesystem."""
+
+    def test_unknown_embedder_exits_2(self) -> None:
+        if not shutil.which("bash"):
+            pytest.skip("bash is not installed")
+        result = subprocess.run(
+            ["bash", str(INSTALL_SH), "--embedder", "bogus"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert "Unknown --embedder" in result.stderr
+
+    @pytest.mark.parametrize("provider", ("ollama", "openai", "gemini", "voyage"))
+    def test_known_embedder_is_accepted(self, provider: str) -> None:
+        # Validation happens immediately after arg parsing, before any
+        # network or filesystem work. We give the script a PATH that
+        # contains bash but no Python — so it gets past embedder
+        # validation, then bails on the Python lookup. Exit != 2 with
+        # no "Unknown --embedder" in stderr proves validation accepted
+        # the provider.
+        bash_path = shutil.which("bash")
+        if not bash_path:
+            pytest.skip("bash is not installed")
+        bash_dir = str(Path(bash_path).parent)
+        result = subprocess.run(
+            [bash_path, str(INSTALL_SH), "--embedder", provider],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": bash_dir, "HOME": "/tmp"},
+        )
+        assert "Unknown --embedder" not in result.stderr, result.stderr

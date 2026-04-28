@@ -72,6 +72,21 @@ curl -fsSL https://memstem.com/install.sh | bash -s -- \
   --yes --connect-clients --migrate --migrate-no-embed --start-daemon
 ```
 
+The default uses **Ollama** (local, no API key, no network call). To install with a cloud embedder in one go:
+
+```bash
+# OpenAI (text-embedding-3-large at 3072 dimensions)
+curl -fsSL https://memstem.com/install.sh | bash -s -- \
+  --yes --embedder openai --openai-key "$OPENAI_API_KEY" \
+  --connect-clients --migrate --start-daemon
+
+# Or Voyage / Gemini — same shape:
+#   --embedder voyage --voyage-key "$VOYAGE_API_KEY"
+#   --embedder gemini --gemini-key "$GEMINI_API_KEY"
+```
+
+Picking `--embedder openai|gemini|voyage` implies `--no-ollama` (cloud doesn't need a local daemon). The key gets stored via `memstem auth set <provider>`, so cron, PM2, and fresh shells all pick it up afterward without per-shell exports. Keys can also come from `MEMSTEM_OPENAI_KEY` / `MEMSTEM_GEMINI_KEY` / `MEMSTEM_VOYAGE_KEY` env vars (helpful for unattended installs that don't want the key on the command line).
+
 The `--migrate-no-embed` flag is the practical default on a CPU-only Ollama box: it imports records to vault + FTS5 in minutes instead of hours. After it returns:
 
 ```bash
@@ -80,17 +95,21 @@ pm2 logs memstem --lines 20                          # watch ingestion + embed w
 memstem doctor                                       # `Embed queue: N pending` shows backfill progress
 ```
 
-Embedding is **always queued** rather than inline (see ADR 0009): the migrate finishes in seconds and the daemon's embed worker drains the queue at its own pace. On CPU-only Ollama that means semantic search becomes "good" over an hour or two; on the API providers below it's done in seconds.
+Embedding is **always queued** rather than inline (see ADR 0009): the migrate finishes in seconds and the daemon's embed worker drains the queue at its own pace. On CPU-only Ollama that means semantic search becomes "good" over an hour or two; on the API providers above it's done in seconds.
 
 Each flag is opt-in so you can dial back the scope:
 
 | Flag | What it does |
 |---|---|
 | `--yes` | Unattended; passes `-y` to `memstem init` so the wizard doesn't prompt. |
-| `--no-ollama` | Skip the Ollama install (already have it). |
+| `--no-ollama` | Skip the Ollama install (already have it). Implied by `--embedder openai|gemini|voyage`. |
 | `--no-model` | Skip the `nomic-embed-text` pull. |
 | `--vault PATH` | Vault location (default `~/memstem-vault`). |
 | `--from-git` | Install from `github.com/Memstem/memstem` instead of PyPI. |
+| `--embedder NAME` | Embedder provider: `ollama` (default), `openai`, `gemini`, `voyage`. |
+| `--openai-key KEY` | Store an OpenAI key via `memstem auth set openai`. Also reads `MEMSTEM_OPENAI_KEY`. |
+| `--gemini-key KEY` | Same, for Gemini (env: `MEMSTEM_GEMINI_KEY`). |
+| `--voyage-key KEY` | Same, for Voyage (env: `MEMSTEM_VOYAGE_KEY`). |
 | `--connect-clients` | Run `memstem connect-clients` (`~/.claude.json` + CLAUDE.md edits, plus legacy-settings cleanup). Prints a dry-run diff before applying. |
 | `--remove-flipclaw` | With `--connect-clients`, also strip the legacy `claude-code-bridge.py` SessionEnd hook. |
 | `--migrate` | Run `memstem migrate --apply` to import historical memory. |

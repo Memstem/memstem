@@ -403,6 +403,55 @@ class TestEmbedForFactory:
         emb.close()
 
 
+class TestForProviderFactory:
+    """`EmbeddingConfig.for_provider()` populates known-good defaults
+    so scripted setup (install.sh, `memstem init --provider`) doesn't
+    need to remember each provider's right model + dimensions + env var."""
+
+    def test_openai_defaults(self) -> None:
+        cfg = EmbeddingConfig.for_provider("openai")
+        assert cfg.provider == "openai"
+        assert cfg.model == "text-embedding-3-large"
+        assert cfg.dimensions == 3072
+        assert cfg.api_key_env == "OPENAI_API_KEY"
+
+    def test_gemini_defaults(self) -> None:
+        cfg = EmbeddingConfig.for_provider("gemini")
+        assert cfg.provider == "gemini"
+        assert cfg.model == "gemini-embedding-2-preview"
+        assert cfg.dimensions == 768
+        assert cfg.api_key_env == "GEMINI_API_KEY"
+
+    def test_voyage_defaults(self) -> None:
+        cfg = EmbeddingConfig.for_provider("voyage")
+        assert cfg.provider == "voyage"
+        assert cfg.model == "voyage-3"
+        assert cfg.dimensions == 1024
+        assert cfg.api_key_env == "VOYAGE_API_KEY"
+
+    def test_ollama_no_api_key(self) -> None:
+        cfg = EmbeddingConfig.for_provider("ollama")
+        assert cfg.provider == "ollama"
+        assert cfg.api_key_env is None
+
+    def test_case_insensitive(self) -> None:
+        cfg = EmbeddingConfig.for_provider("OpenAI")
+        assert cfg.provider == "openai"
+
+    def test_unknown_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown embedder provider"):
+            EmbeddingConfig.for_provider("claude")
+
+    def test_unknown_lists_known_providers(self) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            EmbeddingConfig.for_provider("nope")
+        # The error message is the user's primary signal — make sure it
+        # actually names what they CAN use.
+        msg = str(exc_info.value)
+        for known in ("ollama", "openai", "gemini", "voyage"):
+            assert known in msg, f"{known} missing from error: {msg}"
+
+
 class TestSecretsFileFallback:
     """When env vars are missing, the embedder falls back to ~/.config/memstem/secrets.yaml."""
 

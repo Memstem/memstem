@@ -6,6 +6,33 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+PROVIDER_PROFILES: dict[str, dict[str, object]] = {
+    "ollama": {
+        "model": "nomic-embed-text",
+        "dimensions": 768,
+        "api_key_env": None,
+    },
+    "openai": {
+        "model": "text-embedding-3-large",
+        "dimensions": 3072,
+        "api_key_env": "OPENAI_API_KEY",
+    },
+    "gemini": {
+        "model": "gemini-embedding-2-preview",
+        "dimensions": 768,
+        "api_key_env": "GEMINI_API_KEY",
+    },
+    "voyage": {
+        "model": "voyage-3",
+        "dimensions": 1024,
+        "api_key_env": "VOYAGE_API_KEY",
+    },
+}
+"""Known-good defaults for each shipped provider. Used by
+``EmbeddingConfig.for_provider()`` to populate a fresh config without
+the caller having to remember the right model + dimensions + env var
+combination. Override any field via the constructor as usual."""
+
 
 class EmbeddingConfig(BaseModel):
     """Embedding model configuration.
@@ -21,6 +48,9 @@ class EmbeddingConfig(BaseModel):
       provider's URL when not using OpenAI directly.
     - ``gemini`` — Google's Generative Language API.
     - ``voyage`` — Voyage AI (Anthropic's embedding partner).
+
+    Use :meth:`for_provider` to build a config with sensible per-provider
+    defaults (model, dimensions, ``api_key_env``).
     """
 
     provider: str = "ollama"
@@ -33,7 +63,7 @@ class EmbeddingConfig(BaseModel):
 
     api_key_env: str | None = None
     """Name of the environment variable holding the API key. Defaults
-    to ``OPENAI_API_KEY`` / ``GOOGLE_API_KEY`` / ``VOYAGE_API_KEY``
+    to ``OPENAI_API_KEY`` / ``GEMINI_API_KEY`` / ``VOYAGE_API_KEY``
     depending on provider; ignored for ollama."""
 
     workers: int = 2
@@ -45,6 +75,22 @@ class EmbeddingConfig(BaseModel):
     """How many records the worker pulls from the queue per iteration.
     Each record's chunks are batched in a single API call when the
     backend supports it."""
+
+    @classmethod
+    def for_provider(cls, provider: str) -> EmbeddingConfig:
+        """Build a config pre-populated with sensible defaults for ``provider``.
+
+        Raises :class:`ValueError` if the provider isn't in
+        :data:`PROVIDER_PROFILES`. Use this when scripted setup needs
+        a working config without remembering each provider's right
+        model + dimensions + env var combination.
+        """
+        provider_lc = provider.lower()
+        if provider_lc not in PROVIDER_PROFILES:
+            known = ", ".join(sorted(PROVIDER_PROFILES))
+            raise ValueError(f"unknown embedder provider {provider!r}. Known: {known}")
+        profile = PROVIDER_PROFILES[provider_lc]
+        return cls(provider=provider_lc, **profile)  # type: ignore[arg-type]
 
 
 class SearchConfig(BaseModel):
