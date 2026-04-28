@@ -268,6 +268,52 @@ class TestLimit:
         assert len(limited) == 3
 
 
+class TestMaxMemories:
+    def test_max_memories_caps_outer_loop(self, vault: Vault, index: Index) -> None:
+        # Build six identical-vector memories; full scan would surface
+        # C(6,2) = 15 canonical pairs. ``max_memories`` caps the outer
+        # loop, so only pairs anchored on the first M (sorted by id)
+        # memories appear — every pair has at least one anchor in that
+        # subset.
+        v = _normalized_random(11)
+        memories = []
+        for _ in range(6):
+            m = _make_memory(body="x", vault=vault)
+            index.upsert(m)
+            index.upsert_vectors(str(m.id), ["c"], [v])
+            memories.append(m)
+
+        full = find_dedup_candidate_pairs(vault, index, neighbors_per_memory=10)
+        bounded = find_dedup_candidate_pairs(vault, index, neighbors_per_memory=10, max_memories=2)
+        assert len(bounded) < len(full)
+        assert len(bounded) > 0
+        # Every bounded pair must include one of the first two memory
+        # ids (sorted lexicographically) as anchor.
+        anchor_set = sorted(str(m.id) for m in memories)[:2]
+        for pair in bounded:
+            assert pair.a_id in anchor_set or pair.b_id in anchor_set
+
+    def test_max_memories_zero_returns_empty(self, vault: Vault, index: Index) -> None:
+        v = _normalized_random(2)
+        for _ in range(3):
+            m = _make_memory(body="y", vault=vault)
+            index.upsert(m)
+            index.upsert_vectors(str(m.id), ["c"], [v])
+        assert find_dedup_candidate_pairs(vault, index, max_memories=0) == []
+
+    def test_max_memories_none_is_full_scan(self, vault: Vault, index: Index) -> None:
+        v = _normalized_random(3)
+        for _ in range(4):
+            m = _make_memory(body="z", vault=vault)
+            index.upsert(m)
+            index.upsert_vectors(str(m.id), ["c"], [v])
+        full_default = find_dedup_candidate_pairs(vault, index, neighbors_per_memory=10)
+        full_explicit = find_dedup_candidate_pairs(
+            vault, index, neighbors_per_memory=10, max_memories=None
+        )
+        assert {(p.a_id, p.b_id) for p in full_default} == {(p.a_id, p.b_id) for p in full_explicit}
+
+
 class TestNoMutation:
     def test_no_writes_to_vault(self, vault: Vault, index: Index) -> None:
         a = _make_memory(body="alpha", vault=vault)
