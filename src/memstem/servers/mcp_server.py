@@ -28,10 +28,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from memstem.config import SearchConfig
+from memstem.config import HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index
+from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
@@ -295,6 +296,7 @@ def build_server(
     resources: _Resources | None = None,
     name: str = "memstem",
     search_config: SearchConfig | None = None,
+    hygiene_config: HygieneConfig | None = None,
     idle_timeout_seconds: int = 0,
 ) -> FastMCP:
     """Construct a FastMCP server bound to the given resources.
@@ -338,6 +340,8 @@ def build_server(
 
     mcp = FastMCP(name)
     sc = search_config or SearchConfig()
+    hc = hygiene_config or HygieneConfig()
+    log_client = "mcp" if hc.query_log_enabled else None
     activity = _ActivityTracker()
     if idle_timeout_seconds > 0:
         _start_idle_watcher(activity, idle_timeout_seconds)
@@ -358,6 +362,8 @@ def build_server(
             bm25_weight=sc.bm25_weight,
             vector_weight=sc.vector_weight,
             importance_weight=sc.importance_weight,
+            log_client=log_client,
+            log_max_rows=hc.query_log_max_rows,
         )
         return [_serialize_result(r) for r in results]
 
@@ -368,6 +374,13 @@ def build_server(
         # Try path first (most common); fall back to id lookup via the index.
         try:
             memory = res.vault.read(id_or_path)
+            if log_client is not None:
+                log_get(
+                    res.index.db,
+                    memory_id=str(memory.id),
+                    client=f"{log_client}:get",
+                    max_rows=hc.query_log_max_rows,
+                )
             return _serialize_memory(memory)
         except MemoryNotFoundError:
             pass
@@ -377,6 +390,13 @@ def build_server(
         if row is None:
             raise ValueError(f"no memory found for {id_or_path!r}")
         memory = res.vault.read(row["path"])
+        if log_client is not None:
+            log_get(
+                res.index.db,
+                memory_id=str(memory.id),
+                client=f"{log_client}:get",
+                max_rows=hc.query_log_max_rows,
+            )
         return _serialize_memory(memory)
 
     @mcp.tool()

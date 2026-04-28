@@ -25,6 +25,13 @@ from datetime import UTC, datetime
 
 from memstem.core.embeddings import Embedder
 from memstem.core.index import FtsHit, Index, VecHit
+from memstem.core.retrieval_log import (
+    DEFAULT_MAX_ROWS as DEFAULT_QUERY_LOG_MAX_ROWS,
+)
+from memstem.core.retrieval_log import (
+    LoggedHit,
+    log_search_results,
+)
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
 logger = logging.getLogger(__name__)
@@ -182,6 +189,8 @@ class Search:
         vector_weight: float = 1.0,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         include_expired: bool = False,
+        log_client: str | None = None,
+        log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
     ) -> list[Result]:
         """Run hybrid search and materialize the top `limit` results from the vault.
 
@@ -200,6 +209,13 @@ class Search:
         Records without an explicit ``importance`` get the neutral default
         (``0.5``) so un-scored records don't lose ranking just because no
         one annotated them.
+
+        ``log_client`` (ADR 0008 Tier 1 query log) tags retrieval-log rows
+        with the call site (``"cli"``, ``"mcp"``, ``"http"``). Pass
+        ``None`` to disable logging for this call — useful for tests and
+        for internal calls where you don't want to credit anything to
+        importance. Logging failures are warned and swallowed; they
+        never break search.
 
         Records whose ``valid_to`` has elapsed are filtered out by default
         (ADR 0011 PR-B). Pass ``include_expired=True`` to surface them
@@ -227,12 +243,47 @@ class Search:
             bm25_weight=bm25_weight,
             vector_weight=vector_weight,
         )
-        return self._materialize(
+        results = self._materialize(
             fused,
             limit=limit,
             importance_weight=importance_weight,
             include_expired=include_expired,
         )
+        if log_client is not None and results:
+            self._log_results(
+                query=query, results=results, client=log_client, max_rows=log_max_rows
+            )
+        return results
+
+    def _log_results(
+        self,
+        *,
+        query: str,
+        results: list[Result],
+        client: str,
+        max_rows: int,
+    ) -> None:
+        """Append one row per surfaced result to the query log.
+
+        Wrapped here (rather than at every call site) so failures stay
+        local to the search path's catch — :func:`log_search_results`
+        already absorbs ``sqlite3.Error``, but a programming error inside
+        this wrapper would otherwise propagate.
+        """
+        try:
+            hits = [
+                LoggedHit(memory_id=str(r.memory.id), rank=i + 1, score=r.score)
+                for i, r in enumerate(results)
+            ]
+            log_search_results(
+                self.index.db,
+                query=query,
+                hits=hits,
+                client=client,
+                max_rows=max_rows,
+            )
+        except Exception as exc:
+            logger.warning("query_log: unexpected error during search logging: %s", exc)
 
     def _materialize(
         self,

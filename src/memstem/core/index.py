@@ -25,7 +25,7 @@ import sqlite_vec
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -160,6 +160,40 @@ MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_body_hash_index_memory_id
             ON body_hash_index(memory_id);
+    """,
+    5: """
+        -- ADR 0008 Tier 1 query log: the hygiene worker reads this to
+        -- bump importance on memories the user actually retrieved. Each
+        -- row records ONE memory's exposure inside ONE query result list
+        -- (or one `memstem_get` open). A 10-result search produces 10
+        -- rows; a single get produces 1.
+        --
+        -- This table is intentionally non-canonical — losing it during
+        -- a crash drifts importance back toward heuristic-only, which
+        -- the rest of the system tolerates. Storing it inside the
+        -- existing `_meta/index.db` keeps backups simple (one file).
+        --
+        -- Bounded by a row cap (`hygiene.query_log_max_rows`, default
+        -- 100k) enforced at write time. The auto-increment id lets the
+        -- hygiene worker scan only "rows since last sweep" without
+        -- needing a side cursor.
+        --
+        -- ON DELETE CASCADE keeps the log honest: if a memory is removed
+        -- from the vault, its retrieval rows go with it (the hygiene
+        -- worker shouldn't credit deleted records).
+        CREATE TABLE IF NOT EXISTS query_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            query TEXT,
+            client TEXT,
+            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            rank INTEGER,
+            score REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts);
+        CREATE INDEX IF NOT EXISTS idx_query_log_memory_id ON query_log(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_query_log_kind ON query_log(kind);
     """,
 }
 
