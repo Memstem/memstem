@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — Obsidian plugin scaffold
+
+- **`clients/obsidian/`** (TypeScript scaffold) and **ADR 0010** are
+  removed. The v0.6.0 scaffold only proved the integration loop
+  end-to-end (status-bar daemon indicator); it didn't ship the
+  promised search modal, sidebar pane, "New memory" command, or
+  frontmatter scaffolding. Releasing it as-is would have been a brand
+  promise the code didn't keep — the manifest claimed "Hybrid keyword +
+  semantic search" but only delivered a connection-status pixel.
+- **The HTTP API stays.** `GET /health`, `GET /version`, `POST /search`,
+  `GET /memory/{id_or_path}` continue to be co-hosted in `memstem
+  daemon`; they're useful infrastructure for any first-party client
+  (CLI tools, future editor extensions). The `memstem-search` skill
+  (PR #42) uses `POST /search` as one of its priority levels and
+  continues to work.
+- An Obsidian plugin will return as a dedicated future release with a
+  feature set that matches the manifest copy.
+
 ### Added — embedder selection at install time
 
 - **`memstem init` now accepts `--provider <name>`** to write a config
@@ -39,8 +57,8 @@ from being polluted by the firehose of low-signal AI-session memories.
 The **operational layer** — idle-timeout self-exit, Index locking with
 WAL, OpenAI/Voyage batch chunking — kept the live daemon stable through
 a Gemini → OpenAI embedder migration of ~1,085 records. The
-**developer-facing layer** — first-party HTTP API + Obsidian plugin
-scaffold, `memstem-search` skill for Claude Code/OpenClaw, `memstem
+**developer-facing layer** — first-party HTTP API for first-party
+clients, `memstem-search` skill for Claude Code/OpenClaw, `memstem
 auth` for persistent API keys, and a 15-second e2e smoke test —
 removes the friction that was blocking external use.
 
@@ -168,7 +186,7 @@ removes the friction that was blocking external use.
   `<project>/.claude/skills/`, or `~/<openclaw-workspace>/skills/`).
   Automated install via `memstem connect-clients` lands in a follow-up.
 
-### Added — local HTTP API + Obsidian plugin scaffold
+### Added — local HTTP API for first-party clients
 
 - **`memstem daemon` now co-hosts a local HTTP server** on
   `127.0.0.1:7821` (configurable via `http.port` in
@@ -177,15 +195,6 @@ removes the friction that was blocking external use.
   duplicate state. Endpoints mirror the MCP tool list one-to-one:
   `GET /health`, `GET /version`, `POST /search`, `GET /memory/{id_or_path}`.
   Loopback-only by design; v0.1 has no auth surface.
-- **First-party Obsidian plugin scaffold under `clients/obsidian/`.**
-  v0.1 proves the integration loop end-to-end: connects to the
-  daemon's `/health`, shows the connection state in the Obsidian
-  status bar, and exposes a settings tab for daemon URL + poll
-  interval. Search modal, sidebar pane, and "New memory" command
-  arrive in follow-up PRs.
-- **ADR 0010** documents the four design decisions: monorepo,
-  co-hosted HTTP, BRAT-first distribution, read+write semantics with
-  frontmatter scaffolding.
 - **New deps:** `fastapi>=0.110.0`, `uvicorn>=0.30.0`. Imported lazily
   inside the daemon path so the CLI's other commands don't pay for
   them.

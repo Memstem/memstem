@@ -31,7 +31,6 @@
 - [ ] Auto-skill extraction
 - [ ] Anthropic `BetaAbstractMemoryTool` adapter
 - [ ] HTTP API
-- [ ] Obsidian-vault-compatibility audit (wikilinks parser, OFM dialect)
 - [ ] Backup: nightly `git push` to private remote
 - [ ] Test coverage > 80%
 - [ ] Documentation site
@@ -66,7 +65,7 @@
 
 - Becoming a chat application
 - Becoming a wiki engine UI
-- Replacing Obsidian/Logseq for human note-taking
+- Replacing dedicated human note-taking apps
 
 ## Versioning
 
