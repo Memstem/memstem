@@ -1,6 +1,6 @@
 [project]
 name = "memstem"
-version = "0.6.0"
+version = "0.6.1"
 description = "Unified memory and skill infrastructure for AI agents"
 readme = "README.md"
 license = "MIT"
