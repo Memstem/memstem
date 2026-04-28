@@ -265,6 +265,12 @@ are trivial — single SQLite file).
    lands.*
 3. **PR-C: Layer 3 judge + audit log.** Includes prompt loader,
    Ollama call, JSON parser, audit writes. ~300 LOC.
+   *Status: scaffolding shipped (Unreleased, 2026-04-28).
+   `memstem hygiene dedup-judge` runs candidate pairs through a
+   judge (NoOp by default; OllamaDedupJudge with `--enable-llm`)
+   and appends to a new `dedup_audit` table (migration v7) with
+   `applied = 0`. No vault mutations. Tests use stub judges only,
+   never call real LLMs.*
 4. **PR-D: Resolution actions for memories.** `deprecated_by`,
    `valid_to`, `supersedes`, `links` writers. ~250 LOC.
 5. **PR-E: Skill review queue + CLI.** `_review/` directory writer,

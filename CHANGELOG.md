@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — LLM-judge scaffolding + audit log (ADR 0012 Layer 3)
+
+- **New `memstem hygiene dedup-judge` subcommand** runs each candidate
+  pair (from `dedup-candidates`) through a judge and writes an
+  audit row to the new `dedup_audit` table (schema migration v7).
+  **No vault mutations.** The future resolution PR will read
+  `applied = 0` rows and apply safe verdicts to vault frontmatter
+  (`deprecated_by` / `valid_to` / `supersedes` / `links`); until
+  then this is purely an inventory + opinion step.
+- **Default judge is `NoOpJudge`** — every pair gets verdict
+  `UNRELATED` recorded with `judge = "noop"`. The operator opts
+  into the real Ollama judge with `--enable-llm`. This means the
+  default CLI run is safe in CI, on cron, and for users who don't
+  want to spend LLM cycles.
+- **`OllamaDedupJudge`** ships behind `--enable-llm`. It loads the
+  prompt from `src/memstem/prompts/dedup_judge.txt` (ADR 0012's
+  canonical text), calls `/api/generate` on the configured Ollama
+  model, and parses strict-or-fenced JSON. Malformed responses
+  fall back to `UNRELATED` with the raw text in the rationale —
+  the audit log surfaces what went wrong; the sweep never crashes.
+- **Tests use stub judges only.** `StubJudge` accepts canned
+  verdicts; `OllamaDedupJudge` is exercised via a fake HTTP client
+  passed to its constructor. **No real LLM is ever invoked from
+  any test.**
+- 28 new tests in `tests/test_hygiene_dedup_judge.py` covering the
+  `Verdict` enum, `NoOpJudge`, `StubJudge`, `judge_pairs`
+  orchestration (including the safe default), audit-log writes
+  (one-row-per-result, multi-result batch, empty list, swallow on
+  failure, `applied = 0` contract), `OllamaDedupJudge` with mocked
+  HTTP for well-formed JSON / fenced JSON / garbage / empty / call
+  errors / unknown verdict strings, the `_parse_response` helper
+  with parametrized fixtures, the prompt-template-on-disk regression
+  guard, and three CLI smoke tests including a "default does not
+  mutate vault frontmatter" check.
+
 ### Added — near-duplicate candidate report (ADR 0012 Layer 2)
 
 - **New `memstem hygiene dedup-candidates` subcommand** scans the

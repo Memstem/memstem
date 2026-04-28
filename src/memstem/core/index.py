@@ -25,7 +25,7 @@ import sqlite_vec
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -210,6 +210,32 @@ MIGRATIONS: dict[int, str] = {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+    """,
+    7: """
+        -- ADR 0012 Layer 3: append-only audit log of every LLM-as-judge
+        -- decision on a dedup candidate pair. The `applied` column is
+        -- always 0 in this slice (the resolution step that flips it to
+        -- 1 lives in a future PR); the audit log stands on its own as
+        -- a record of what the judge decided and why.
+        --
+        -- Non-canonical: losing this table loses the audit trail but
+        -- not any vault content. We accept that trade-off because the
+        -- table can be many MB long and gets rebuilt by re-running the
+        -- judge.
+        CREATE TABLE IF NOT EXISTS dedup_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            new_id TEXT NOT NULL,
+            existing_id TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            judge TEXT NOT NULL,
+            applied INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_dedup_audit_ts ON dedup_audit(ts);
+        CREATE INDEX IF NOT EXISTS idx_dedup_audit_new_id ON dedup_audit(new_id);
+        CREATE INDEX IF NOT EXISTS idx_dedup_audit_existing_id ON dedup_audit(existing_id);
+        CREATE INDEX IF NOT EXISTS idx_dedup_audit_verdict ON dedup_audit(verdict);
     """,
 }
 
