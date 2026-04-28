@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,7 @@ from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
 from memstem.servers.mcp_server import (
     _ActivityTracker,
+    _Resources,
     _start_idle_watcher,
     build_server,
 )
@@ -460,3 +462,264 @@ class TestBuildServerIdleTimeout:
         # Just exercising the build_server path with the real tools too.
         tools = await mcp.list_tools()
         assert {t.name for t in tools} >= {"memstem_search", "memstem_get"}
+
+
+class _CallCounter:
+    """Tiny spy that wraps a zero-arg callable and counts invocations."""
+
+    __slots__ = ("calls", "fn")
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        self.fn = fn
+        self.calls = 0
+
+    def __call__(self) -> Any:
+        self.calls += 1
+        return self.fn()
+
+
+class TestResourcesEager:
+    def test_eager_does_not_invoke_factories(self, vault: Vault, index: Index) -> None:
+        # The eager path takes already-initialized objects. It internally
+        # constructs trivial factories, but it pre-populates the cached
+        # values so accessing a property never triggers a factory call.
+        # We verify by exposing the factory through a spy.
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.eager(vault, index, None)
+        # Replace the embedder factory with the spy after the fact —
+        # since `eager` already pre-resolved, the spy must NEVER fire.
+        res._build_embedder = embedder_spy
+        _ = res.vault
+        _ = res.index
+        _ = res.embedder
+        _ = res.search
+        assert embedder_spy.calls == 0
+
+    def test_eager_returns_passed_in_objects(self, vault: Vault, index: Index) -> None:
+        res = _Resources.eager(vault, index, None)
+        assert res.vault is vault
+        assert res.index is index
+        assert res.embedder is None
+        # search is composed lazily even on eager (it's cheap; just stores refs).
+        assert res.search.vault is vault
+        assert res.search.index is index
+
+    def test_eager_index_initialized_is_true(self, vault: Vault, index: Index) -> None:
+        res = _Resources.eager(vault, index)
+        assert res.index_initialized is True
+
+
+class TestResourcesLazy:
+    def test_lazy_factories_not_called_until_property_accessed(
+        self, vault: Vault, index: Index
+    ) -> None:
+        vault_spy = _CallCounter(lambda: vault)
+        index_spy = _CallCounter(lambda: index)
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=vault_spy,
+            build_index=index_spy,
+            build_embedder=embedder_spy,
+        )
+        # Before any access, no factory has been invoked.
+        assert vault_spy.calls == 0
+        assert index_spy.calls == 0
+        assert embedder_spy.calls == 0
+        assert res.index_initialized is False
+
+    def test_lazy_each_factory_called_exactly_once(self, vault: Vault, index: Index) -> None:
+        vault_spy = _CallCounter(lambda: vault)
+        index_spy = _CallCounter(lambda: index)
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=vault_spy,
+            build_index=index_spy,
+            build_embedder=embedder_spy,
+        )
+        # Touch each property many times.
+        for _ in range(5):
+            _ = res.vault
+            _ = res.index
+            _ = res.embedder
+            _ = res.search
+        assert vault_spy.calls == 1
+        assert index_spy.calls == 1
+        assert embedder_spy.calls == 1
+
+    def test_lazy_search_triggers_underlying_factories(self, vault: Vault, index: Index) -> None:
+        vault_spy = _CallCounter(lambda: vault)
+        index_spy = _CallCounter(lambda: index)
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=vault_spy,
+            build_index=index_spy,
+            build_embedder=embedder_spy,
+        )
+        # Accessing search alone should pull all three through.
+        _ = res.search
+        assert vault_spy.calls == 1
+        assert index_spy.calls == 1
+        assert embedder_spy.calls == 1
+
+    def test_lazy_embedder_factory_returning_none_resolves_only_once(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # Even when the embedder factory returns None, the resolution flag
+        # must flip so the factory isn't re-invoked on every property access.
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=lambda: vault,
+            build_index=lambda: index,
+            build_embedder=embedder_spy,
+        )
+        for _ in range(3):
+            assert res.embedder is None
+        assert embedder_spy.calls == 1
+
+    def test_lazy_index_initialized_flips_after_access(self, vault: Vault, index: Index) -> None:
+        res = _Resources.lazy(
+            build_vault=lambda: vault,
+            build_index=lambda: index,
+            build_embedder=lambda: None,
+        )
+        assert res.index_initialized is False
+        _ = res.index
+        assert res.index_initialized is True
+
+    def test_lazy_concurrent_access_calls_factory_once(self, vault: Vault, index: Index) -> None:
+        # Simulate the FastMCP scenario: multiple worker threads racing
+        # to read `res.search` on the very first tool call. The double-
+        # checked lock inside `_Resources` should ensure each factory
+        # fires exactly once even under contention.
+        import threading
+
+        # Slow factory makes the race window observable: without the lock
+        # all threads would see `_index is None` and each call the factory.
+        def slow_index() -> Index:
+            time.sleep(0.05)
+            return index
+
+        index_spy = _CallCounter(slow_index)
+        res = _Resources.lazy(
+            build_vault=lambda: vault,
+            build_index=index_spy,
+            build_embedder=lambda: None,
+        )
+
+        results: list[Index] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            got = res.index
+            with results_lock:
+                results.append(got)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=2.0)
+
+        assert index_spy.calls == 1
+        assert len(results) == 8
+        assert all(r is index for r in results)
+
+
+class TestBuildServerLazy:
+    async def test_handshake_does_not_trigger_factories(self, vault: Vault, index: Index) -> None:
+        # The MCP handshake is `initialize` + `tools/list`. Neither should
+        # touch vault/index/embedder. This is the bug class the lazy-init
+        # refactor is meant to fix: OpenClaw bundle-mcp times out at 30s
+        # waiting for the handshake when those resources are loaded
+        # eagerly at server start.
+        vault_spy = _CallCounter(lambda: vault)
+        index_spy = _CallCounter(lambda: index)
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=vault_spy,
+            build_index=index_spy,
+            build_embedder=embedder_spy,
+        )
+        mcp = build_server(resources=res)
+        tools = await mcp.list_tools()
+        assert {t.name for t in tools} == {
+            "memstem_search",
+            "memstem_get",
+            "memstem_list_skills",
+            "memstem_get_skill",
+            "memstem_upsert",
+        }
+        # Critically: no factory has fired yet.
+        assert vault_spy.calls == 0
+        assert index_spy.calls == 0
+        assert embedder_spy.calls == 0
+        assert res.index_initialized is False
+
+    async def test_first_tool_call_triggers_init(self, vault: Vault, index: Index) -> None:
+        vault_spy = _CallCounter(lambda: vault)
+        index_spy = _CallCounter(lambda: index)
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=vault_spy,
+            build_index=index_spy,
+            build_embedder=embedder_spy,
+        )
+        mcp = build_server(resources=res)
+        # Empty index → empty result, but the factories still have to fire.
+        await _call_tool(mcp, "memstem_search", {"query": "anything"})
+        assert vault_spy.calls == 1
+        assert index_spy.calls == 1
+        assert embedder_spy.calls == 1
+
+    async def test_subsequent_tool_calls_reuse_cached_resources(
+        self, vault: Vault, index: Index
+    ) -> None:
+        vault_spy = _CallCounter(lambda: vault)
+        index_spy = _CallCounter(lambda: index)
+        embedder_spy = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=vault_spy,
+            build_index=index_spy,
+            build_embedder=embedder_spy,
+        )
+        mcp = build_server(resources=res)
+        for _ in range(5):
+            await _call_tool(mcp, "memstem_search", {"query": "anything"})
+        # Each factory ran exactly once across all five calls.
+        assert vault_spy.calls == 1
+        assert index_spy.calls == 1
+        assert embedder_spy.calls == 1
+
+    async def test_lazy_round_trip_produces_real_results(self, vault: Vault, index: Index) -> None:
+        # Behaviour parity: a memory inserted before the lazy server starts
+        # should still come back through search once the resources resolve.
+        memory = _make_memory(body="needle in lazy haystack", vault=vault, index=index)
+        res = _Resources.lazy(
+            build_vault=lambda: vault,
+            build_index=lambda: index,
+            build_embedder=lambda: None,
+        )
+        mcp = build_server(resources=res)
+        results = await _call_tool(mcp, "memstem_search", {"query": "needle"})
+        assert len(results) == 1
+        assert results[0]["id"] == str(memory.id)
+
+
+class TestBuildServerArgValidation:
+    def test_rejects_both_resources_and_eager_args(self, vault: Vault, index: Index) -> None:
+        res = _Resources.lazy(
+            build_vault=lambda: vault,
+            build_index=lambda: index,
+            build_embedder=lambda: None,
+        )
+        with pytest.raises(ValueError, match="not both"):
+            build_server(vault, index, resources=res)
+
+    def test_rejects_no_args(self) -> None:
+        with pytest.raises(ValueError, match="provide vault and index"):
+            build_server()
+
+    def test_rejects_partial_eager_args(self, vault: Vault) -> None:
+        # Passing vault without index (or vice versa) is ambiguous.
+        with pytest.raises(ValueError, match="provide vault and index"):
+            build_server(vault, None)

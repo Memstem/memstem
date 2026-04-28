@@ -54,7 +54,7 @@ from memstem.integration import (
     remove_flipclaw_hook,
     remove_legacy_mcp_server,
 )
-from memstem.servers.mcp_server import build_server
+from memstem.servers.mcp_server import _Resources, build_server
 
 logger = logging.getLogger(__name__)
 
@@ -474,22 +474,30 @@ def migrate(
 def mcp(
     vault: str | None = typer.Option(None, help="Vault path override"),
 ) -> None:
-    """Run the Memstem MCP server on stdio."""
+    """Run the Memstem MCP server on stdio.
+
+    Resources (vault, index, embedder) are loaded lazily on the first
+    tool call. The MCP handshake (``initialize`` + ``tools/list``)
+    completes immediately so clients with short connection timeouts
+    (OpenClaw's bundle-mcp defaults to 30s) don't trip while a large
+    index is opening.
+    """
     cfg = _load_config(_resolve_vault_path(vault))
-    vault_obj = Vault(cfg.vault_path)
-    index = _open_index(cfg)
-    embedder = _maybe_embedder(cfg)
+    resources = _Resources.lazy(
+        build_vault=lambda: Vault(cfg.vault_path),
+        build_index=lambda: _open_index(cfg),
+        build_embedder=lambda: _maybe_embedder(cfg),
+    )
     server = build_server(
-        vault_obj,
-        index,
-        embedder,
+        resources=resources,
         search_config=cfg.search,
         idle_timeout_seconds=cfg.mcp.idle_timeout_seconds,
     )
     try:
         server.run()
     finally:
-        index.close()
+        if resources.index_initialized:
+            resources.index.close()
 
 
 def _doctor_check(label: str, ok_status: bool, detail: str = "") -> bool:
