@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-04-28
+
+### Fixed — installer now persists standard provider API env vars
+
+- `scripts/install.sh` now falls back from `MEMSTEM_OPENAI_KEY`,
+  `MEMSTEM_GEMINI_KEY`, and `MEMSTEM_VOYAGE_KEY` to the standard
+  `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `VOYAGE_API_KEY` names before
+  calling `memstem auth set`. This prevents installs from working only
+  in the original shell or MCP-specific environment while plain shell,
+  cron, PM2, and systemd invocations report `embedder unavailable`.
+- `memstem connect-clients` no longer warns about a missing shell env var
+  when a provider key is already present in Memstem's persistent secret
+  store.
+
 ## [0.6.1] — 2026-04-28
 
 ### Fixed — `memstem mcp` cold-start exceeded MCP client connection timeout

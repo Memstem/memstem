@@ -46,9 +46,13 @@ MIGRATE_NO_EMBED=false
 START_DAEMON=false
 EMBEDDER="ollama"
 EMBEDDER_EXPLICIT=false
-OPENAI_KEY="${MEMSTEM_OPENAI_KEY:-}"
-GEMINI_KEY="${MEMSTEM_GEMINI_KEY:-}"
-VOYAGE_KEY="${MEMSTEM_VOYAGE_KEY:-}"
+# Provider-specific MEMSTEM_* vars win, but the standard SDK env vars are
+# also accepted and persisted into Memstem's secret store below. That keeps
+# fresh shells/cron/systemd/PM2 working after install instead of relying on
+# one process-local export.
+OPENAI_KEY="${MEMSTEM_OPENAI_KEY:-${OPENAI_API_KEY:-}}"
+GEMINI_KEY="${MEMSTEM_GEMINI_KEY:-${GEMINI_API_KEY:-}}"
+VOYAGE_KEY="${MEMSTEM_VOYAGE_KEY:-${VOYAGE_API_KEY:-}}"
 VAULT_PATH="${MEMSTEM_VAULT:-$HOME/memstem-vault}"
 SOURCE="${MEMSTEM_INSTALL_SOURCE:-pypi}"
 
@@ -91,9 +95,9 @@ Options:
   --openai-key KEY    Store an OpenAI API key via `memstem auth set openai`
                       after init. Required for unattended installs that
                       use --embedder openai. Can also be set via the
-                      MEMSTEM_OPENAI_KEY env var.
-  --gemini-key KEY    Same, for Gemini (env: MEMSTEM_GEMINI_KEY).
-  --voyage-key KEY    Same, for Voyage (env: MEMSTEM_VOYAGE_KEY).
+                      MEMSTEM_OPENAI_KEY or OPENAI_API_KEY env var.
+  --gemini-key KEY    Same, for Gemini (env: MEMSTEM_GEMINI_KEY or GEMINI_API_KEY).
+  --voyage-key KEY    Same, for Voyage (env: MEMSTEM_VOYAGE_KEY or VOYAGE_API_KEY).
   --connect-clients   After install, run `memstem connect-clients` to wire
                       Claude Code (settings.json + CLAUDE.md) and every
                       OpenClaw workspace's CLAUDE.md. Prints a unified
@@ -119,9 +123,10 @@ Environment:
   MEMSTEM_INSTALL_SOURCE=git|pypi   Equivalent to --from-git when set to git.
   MEMSTEM_VAULT=/path/to/vault      Default vault path.
   MEMSTEM_OPENAI_KEY=sk-...         OpenAI key for --embedder openai
-                                    (alternative to --openai-key).
-  MEMSTEM_GEMINI_KEY=...            Gemini key (alternative to --gemini-key).
-  MEMSTEM_VOYAGE_KEY=pa-...         Voyage key (alternative to --voyage-key).
+                                    (alternative to --openai-key; falls back to
+                                    OPENAI_API_KEY when unset).
+  MEMSTEM_GEMINI_KEY=...            Gemini key (falls back to GEMINI_API_KEY).
+  MEMSTEM_VOYAGE_KEY=pa-...         Voyage key (falls back to VOYAGE_API_KEY).
 EOF
       exit 0
       ;;
@@ -293,9 +298,8 @@ auth_set_if openai "$OPENAI_KEY"
 auth_set_if gemini "$GEMINI_KEY"
 auth_set_if voyage "$VOYAGE_KEY"
 
-if [ "$EMBEDDER" != "ollama" ] && [ -z "$OPENAI_KEY$GEMINI_KEY$VOYAGE_KEY" ] \
-   && [ -z "${OPENAI_API_KEY:-}${GEMINI_API_KEY:-}${VOYAGE_API_KEY:-}" ]; then
-  warn "No API key provided for $EMBEDDER. Embedding will fail until you run \`memstem auth set $EMBEDDER <key>\` (or export ${EMBEDDER^^}_API_KEY)."
+if [ "$EMBEDDER" != "ollama" ] && [ -z "$OPENAI_KEY$GEMINI_KEY$VOYAGE_KEY" ]; then
+  warn "No API key provided for $EMBEDDER. Embedding will fail until you run \`memstem auth set $EMBEDDER <key>\` (or export MEMSTEM_${EMBEDDER^^}_KEY / ${EMBEDDER^^}_API_KEY)."
 fi
 
 # --- Migrate (optional) -----------------------------------------------------

@@ -82,6 +82,13 @@ class TestHelp:
         # text should make the propagation explicit so future readers know.
         assert "Propagated" in help_output or "memstem init -y" in help_output
 
+    def test_help_documents_standard_api_key_env_fallbacks(self, help_output: str) -> None:
+        # Installer should persist the common SDK env vars into Memstem's
+        # secret store too, not only the MEMSTEM_* installer-specific names.
+        assert "OPENAI_API_KEY" in help_output
+        assert "GEMINI_API_KEY" in help_output
+        assert "VOYAGE_API_KEY" in help_output
+
 
 class TestArgParsing:
     def test_unknown_flag_exits_nonzero(self) -> None:

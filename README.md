@@ -85,7 +85,7 @@ curl -fsSL https://memstem.com/install.sh | bash -s -- \
 #   --embedder gemini --gemini-key "$GEMINI_API_KEY"
 ```
 
-Picking `--embedder openai|gemini|voyage` implies `--no-ollama` (cloud doesn't need a local daemon). The key gets stored via `memstem auth set <provider>`, so cron, PM2, and fresh shells all pick it up afterward without per-shell exports. Keys can also come from `MEMSTEM_OPENAI_KEY` / `MEMSTEM_GEMINI_KEY` / `MEMSTEM_VOYAGE_KEY` env vars (helpful for unattended installs that don't want the key on the command line).
+Picking `--embedder openai|gemini|voyage` implies `--no-ollama` (cloud doesn't need a local daemon). The key gets stored via `memstem auth set <provider>`, so cron, PM2, and fresh shells all pick it up afterward without per-shell exports. Keys can also come from `MEMSTEM_OPENAI_KEY` / `MEMSTEM_GEMINI_KEY` / `MEMSTEM_VOYAGE_KEY` env vars, falling back to the standard `OPENAI_API_KEY` / `GEMINI_API_KEY` / `VOYAGE_API_KEY` names when the `MEMSTEM_*` variable is unset (helpful for unattended installs that don't want the key on the command line).
 
 The `--migrate-no-embed` flag is the practical default on a CPU-only Ollama box: it imports records to vault + FTS5 in minutes instead of hours. After it returns:
 
@@ -107,7 +107,7 @@ Each flag is opt-in so you can dial back the scope:
 | `--vault PATH` | Vault location (default `~/memstem-vault`). |
 | `--from-git` | Install from `github.com/Memstem/memstem` instead of PyPI. |
 | `--embedder NAME` | Embedder provider: `ollama` (default), `openai`, `gemini`, `voyage`. |
-| `--openai-key KEY` | Store an OpenAI key via `memstem auth set openai`. Also reads `MEMSTEM_OPENAI_KEY`. |
+| `--openai-key KEY` | Store an OpenAI key via `memstem auth set openai`. Also reads `MEMSTEM_OPENAI_KEY`, then `OPENAI_API_KEY`. |
 | `--gemini-key KEY` | Same, for Gemini (env: `MEMSTEM_GEMINI_KEY`). |
 | `--voyage-key KEY` | Same, for Voyage (env: `MEMSTEM_VOYAGE_KEY`). |
 | `--connect-clients` | Run `memstem connect-clients` (`~/.claude.json` + CLAUDE.md edits, plus legacy-settings cleanup). Prints a dry-run diff before applying. |

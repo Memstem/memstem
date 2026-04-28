@@ -897,17 +897,22 @@ def connect_clients(
     typer.echo(f"connect-clients ({'dry-run' if dry_run else 'apply'}):\n")
 
     # Resolve the embedder's API key once, up front, so we propagate it
-    # into every MCP registration the command writes. Empty dict for
-    # local providers (Ollama) or when the env var isn't set.
+    # into every MCP registration the command writes when it is present in
+    # the current shell. Memstem MCP can also read keys from
+    # ~/.config/memstem/secrets.yaml, so warn only when neither source is set.
     api_key_env_name = cfg.embedding.api_key_env
     mcp_env = mcp_env_from_embedding(api_key_env_name)
     if api_key_env_name and not mcp_env:
-        typer.echo(
-            f"warning: ${api_key_env_name} is not set in the current shell. "
-            f"Memstem MCP entries will be written without an API key — "
-            f"export {api_key_env_name} and re-run, or edit the config(s) "
-            f"manually after this command finishes.\n"
-        )
+        from memstem.auth import get_secret
+
+        if not get_secret(cfg.embedding.provider, api_key_env_name):
+            typer.echo(
+                f"warning: ${api_key_env_name} is not set in the current shell and "
+                f"no stored {cfg.embedding.provider} key was found. Memstem MCP "
+                f"entries will be written without an API key — run "
+                f"`memstem auth set {cfg.embedding.provider} <key>` or export "
+                f"{api_key_env_name} and re-run.\n"
+            )
 
     if claude_code:
         typer.echo(f"Claude Code user config: {settings_target}")
