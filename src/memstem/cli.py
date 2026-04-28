@@ -1204,5 +1204,60 @@ def hygiene_importance(
         index.close()
 
 
+@hygiene_app.command("distill")
+def hygiene_distill(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    min_cluster_size: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Minimum cluster size to qualify as a candidate. "
+                "ADR 0008 Tier 2 sets this at 5 by default."
+            ),
+        ),
+    ] = 5,
+) -> None:
+    """List distillation candidates: clusters of memories that could be summarized.
+
+    First slice (ADR 0008 PR-D): purely a candidate report — walks
+    the vault, groups memories by shared topic tags or by ``type=daily``
+    + agent + ISO week, and prints any cluster of at least
+    ``--min-cluster-size`` records. **Does not call any LLM**, **does
+    not mutate the vault**, **does not create distillation records.**
+
+    The LLM-driven distiller that consumes this report and writes
+    actual ``type=distillation`` memories ships in a later PR behind
+    an explicit config flag.
+
+    Re-running is cheap: candidates whose every member is already
+    linked from an existing distillation memory are filtered out.
+    """
+    from memstem.hygiene.distillation import find_distillation_candidates
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    candidates = find_distillation_candidates(
+        vault_obj,
+        min_cluster_size=min_cluster_size,
+    )
+    if not candidates:
+        typer.echo(
+            f"hygiene distill: no distillation candidates (min cluster size = {min_cluster_size})."
+        )
+        return
+    typer.echo(
+        f"hygiene distill: {len(candidates)} candidate(s) "
+        f"(min cluster size = {min_cluster_size}):\n"
+    )
+    for candidate in candidates:
+        typer.echo(
+            f"  [{candidate.kind}] {candidate.cluster_id}  "
+            f"({candidate.size} members) — {candidate.rationale}"
+        )
+        for title, path in zip(candidate.member_titles, candidate.member_paths, strict=True):
+            typer.echo(f"    · {title}  ({path})")
+        typer.echo("")
+
+
 if __name__ == "__main__":
     app()
