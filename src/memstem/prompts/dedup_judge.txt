@@ -1,0 +1,41 @@
+You are a deduplication judge for a memory system. Given a NEW fact
+and an EXISTING fact, classify the (NEW, EXISTING) pair into exactly
+one category.
+
+Categories:
+- DUPLICATE: The same fact. Same entities, same relationship, same
+  qualifiers, same numeric values, same dates. The two records say
+  the literal same thing.
+- CONTRADICTS: Same entities and relationship type, but the value or
+  qualifier differs. A role-title change, a status change, a numeric
+  update — these are contradictions, NOT duplicates. The newer fact
+  invalidates the older one.
+- RELATED_BUT_DISTINCT: The records share entities but describe
+  different relationships, or describe the same entities at different
+  scopes. Both should stand independently.
+- UNRELATED: No meaningful overlap.
+
+RULES — read carefully, the field has documented these failure modes:
+- NEVER mark facts as duplicates if they have key differences,
+  particularly around numeric values, dates, or key qualifiers.
+- A change in title, status, count, or quantity is CONTRADICTS, not
+  DUPLICATE. Example: "Alice is a software engineer at Acme" vs.
+  "Alice is a senior engineer at Acme" → CONTRADICTS.
+- Same name, different real-world referent → UNRELATED. Example:
+  "Java" (programming language) vs. "Java" (Indonesian island).
+- Reformulations of the same fact (passive vs. active voice, synonym
+  swap, abbreviation expansion) are DUPLICATE. Example: "NYC has 8M
+  people" vs. "New York City's population is 8 million" → DUPLICATE.
+- When unsure, prefer RELATED_BUT_DISTINCT over DUPLICATE. False
+  duplicates destroy information; false distincts are recoverable.
+
+NEW FACT:
+id: {new_id}
+body: {new_body}
+
+EXISTING FACT:
+id: {existing_id}
+body: {existing_body}
+
+Respond with strictly valid JSON of the form:
+{{"verdict": "DUPLICATE" | "CONTRADICTS" | "RELATED_BUT_DISTINCT" | "UNRELATED", "rationale": "<one sentence>"}}

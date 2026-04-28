@@ -1328,5 +1328,113 @@ def hygiene_dedup_candidates(
         typer.echo(f"    b: {pair.b_path}  ({pair.b_id})")
 
 
+@hygiene_app.command("dedup-judge")
+def hygiene_dedup_judge(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    min_cosine: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Cosine threshold for candidate pair generation (passed "
+                "through to dedup-candidates). Default 0.85."
+            ),
+        ),
+    ] = 0.85,
+    neighbors: Annotated[
+        int,
+        typer.Option(help="Vec-nearest-neighbors per memory."),
+    ] = 5,
+    limit: Annotated[
+        int | None,
+        typer.Option(help="Cap pairs evaluated by the judge."),
+    ] = None,
+    enable_llm: Annotated[
+        bool,
+        typer.Option(
+            "--enable-llm/--no-llm",
+            help=(
+                "Use the configured Ollama model as the judge. Default "
+                "off — the audit log is populated with NoOpJudge "
+                "(verdict=UNRELATED for every pair) so the operator "
+                "can review what would be evaluated before paying "
+                "LLM cost."
+            ),
+        ),
+    ] = False,
+    ollama_url: Annotated[
+        str,
+        typer.Option(help="Ollama base URL (used only with --enable-llm)."),
+    ] = "http://localhost:11434",
+    ollama_model: Annotated[
+        str,
+        typer.Option(help="Ollama model id (used only with --enable-llm)."),
+    ] = "qwen2.5:7b",
+) -> None:
+    """Judge near-duplicate candidate pairs and append to the audit log.
+
+    First slice of ADR 0012 Layer 3: pulls candidates from the same
+    pipeline as `memstem hygiene dedup-candidates`, runs each through
+    a judge (NoOpJudge by default; OllamaDedupJudge with `--enable-llm`),
+    and writes one row per pair to the `dedup_audit` table with
+    `applied = 0`.
+
+    **No vault mutations.** Verdicts sit in the audit table for the
+    operator to review. The future resolution PR will flip
+    `applied = 1` on rows whose verdict is safe to apply (writing
+    `deprecated_by`, `valid_to`, `supersedes`, or `links` to vault
+    frontmatter as appropriate). Until then, this is purely an
+    inventory + opinion step.
+    """
+    from memstem.hygiene.dedup_candidates import find_dedup_candidate_pairs
+    from memstem.hygiene.dedup_judge import (
+        DedupJudge,
+        NoOpJudge,
+        OllamaDedupJudge,
+        judge_pairs,
+        write_audit_rows,
+    )
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+    try:
+        pairs = find_dedup_candidate_pairs(
+            vault_obj,
+            index,
+            min_cosine=min_cosine,
+            neighbors_per_memory=neighbors,
+            limit=limit,
+        )
+        if not pairs:
+            typer.echo("hygiene dedup-judge: no candidate pairs to judge.")
+            return
+
+        judge: DedupJudge
+        if enable_llm:
+            typer.echo(
+                f"hygiene dedup-judge: judging {len(pairs)} pair(s) via "
+                f"Ollama ({ollama_url}, model={ollama_model})"
+            )
+            judge = OllamaDedupJudge(base_url=ollama_url, model=ollama_model)
+        else:
+            typer.echo(
+                f"hygiene dedup-judge: writing {len(pairs)} NoOp audit row(s) "
+                "(use --enable-llm to invoke the configured Ollama judge)"
+            )
+            judge = NoOpJudge()
+
+        results = judge_pairs(pairs, judge=judge)
+        n_written = write_audit_rows(index.db, results)
+        typer.echo(f"\nhygiene dedup-judge: wrote {n_written} audit row(s).")
+        for result in results:
+            typer.echo(
+                f"  {result.verdict.value:<22}  "
+                f"{result.new_id} <-> {result.existing_id}  "
+                f"({result.judge}: {result.rationale})"
+            )
+    finally:
+        index.close()
+
+
 if __name__ == "__main__":
     app()
