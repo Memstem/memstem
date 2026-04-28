@@ -233,6 +233,12 @@ critical path for v0.1 cutover.
 1. **PR-A: importance scoring (heuristic only).** Adds the
    frontmatter field, computes the seed at ingest, plugs it into
    `Search.search`. No query log, no distillations.
+   *Status: shipped (Unreleased, 2026-04-28). Currently the search
+   layer applies `alpha=0.2` to whatever `importance` is on a
+   record's frontmatter. The pipeline doesn't yet seed
+   `importance` from heuristics on ingest — that's the next slice
+   of PR-A. Until then, un-annotated records get the neutral
+   `0.5` default.*
 2. **PR-B: query log + live boost.** Adds the `query_log` table, the
    logging hook in the MCP server, and a periodic boost step.
 3. **PR-C: hygiene worker scaffold + dedup + decay.** Adds the

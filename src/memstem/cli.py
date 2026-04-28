@@ -295,6 +295,7 @@ def search(
             rrf_k=cfg.search.rrf_k,
             bm25_weight=cfg.search.bm25_weight,
             vector_weight=cfg.search.vector_weight,
+            importance_weight=cfg.search.importance_weight,
         )
     finally:
         index.close()

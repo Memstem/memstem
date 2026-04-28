@@ -29,6 +29,7 @@ def _make_memory(
     title: str | None = None,
     tags: list[str] | None = None,
     vault: Vault | None = None,
+    importance: float | None = None,
 ) -> Memory:
     metadata: dict[str, object] = {
         "id": str(uuid4()),
@@ -39,6 +40,8 @@ def _make_memory(
         "title": title or "untitled",
         "tags": tags or [],
     }
+    if importance is not None:
+        metadata["importance"] = importance
     fm: Frontmatter = validate(metadata)
     memory = Memory(
         frontmatter=fm,
@@ -405,3 +408,197 @@ class TestHybridRecallAgainstOllama:
 
         top_ids = [r.memory.id for r in results]
         assert memories["cloudflare_decision"].id in top_ids
+
+
+class TestImportanceRanking:
+    """ADR 0008 Tier 1: ``final = rrf * (1 + alpha * importance)``.
+
+    Importance is a tiebreaker layered on top of RRF. The boost should:
+    1. Re-rank close ties so the higher-importance record wins.
+    2. Never override a substantially-stronger relevance signal.
+    3. Treat unset importance as a neutral 0.5 default (per ADR 0008).
+    4. Default to alpha=0.2 in config but be tunable per-call.
+    """
+
+    def test_high_importance_breaks_close_ties(self, vault: Vault, index: Index) -> None:
+        # Two records that BM25-tie on the query. With alpha > 0 the higher-
+        # importance record must rank first.
+        low = _make_memory(body="alpha topic", title="low", vault=vault, importance=0.2)
+        high = _make_memory(body="alpha topic", title="high", vault=vault, importance=0.9)
+        index.upsert(low)
+        index.upsert(high)
+
+        results = Search(vault=vault, index=index).search("alpha", limit=2, importance_weight=0.2)
+        assert next(iter(r.memory.id for r in results)) == high.id
+
+    def test_alpha_zero_disables_boost(self, vault: Vault, index: Index) -> None:
+        # With alpha=0 the importance field has zero effect. The boost
+        # factor (1 + alpha * importance) collapses to 1.0, so the
+        # final score equals the bare RRF score.
+        memory = _make_memory(body="alpha topic", vault=vault, importance=0.99)
+        index.upsert(memory)
+        results = Search(vault=vault, index=index).search("alpha", limit=1, importance_weight=0.0)
+        # rrf == 1/(60+1), no boost applied → score == 1/61
+        assert results[0].score == pytest.approx(1 / 61)
+
+    def test_unrelated_record_does_not_surface_via_importance(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # Importance is a re-ranker over the candidate pool — it cannot
+        # raise a memory that does NOT match the query at all into the
+        # results. ADR 0008's guarantee that importance is a "tiebreaker,
+        # not a forcing function" rests on this.
+        relevant = _make_memory(body="alpha topic", vault=vault, importance=0.0)
+        unrelated = _make_memory(
+            body="entirely different content with no overlap", vault=vault, importance=1.0
+        )
+        index.upsert(relevant)
+        index.upsert(unrelated)
+
+        results = Search(vault=vault, index=index).search("alpha", limit=10, importance_weight=1.0)
+        ids = {r.memory.id for r in results}
+        assert relevant.id in ids
+        assert unrelated.id not in ids
+
+    def test_far_rank_gap_dominates_importance_boost(self, vault: Vault, index: Index) -> None:
+        # Once the BM25 rank gap is large enough, no realistic importance
+        # value can flip the order. With alpha=0.2 and the maximum
+        # importance=1.0 (boost factor 1.2), a rank-1 record's
+        # 1/(60+1)=0.0164 score outranks a rank-N record's
+        # 1.2/(60+N) once N > 13.
+        #
+        # We seed 30 decoys (all with importance=0.0 to keep them out
+        # of contention) plus a weak match (importance=1.0) past that
+        # threshold. The strong record (importance=0.0) at rank 1 must
+        # still win.
+        strong = _make_memory(
+            body=" ".join(["alphaword"] * 8),
+            vault=vault,
+            importance=0.0,
+        )
+        index.upsert(strong)
+        for _ in range(30):
+            decoy = _make_memory(body="alphaword decoy filler", vault=vault, importance=0.0)
+            index.upsert(decoy)
+        weak = _make_memory(body="alphaword brief mention", vault=vault, importance=1.0)
+        index.upsert(weak)
+
+        results = Search(vault=vault, index=index).search(
+            "alphaword", limit=3, importance_weight=0.2
+        )
+        # The strong-relevance record should rank first; importance=1.0
+        # on the weak match can't catch up across this rank gap at
+        # alpha=0.2 because the multiplicative boost is bounded at 1.2x
+        # while the rank-position gap drives the score difference past
+        # that.
+        assert results[0].memory.id == strong.id
+
+    def test_missing_importance_treated_as_neutral_default(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # A record without an explicit ``importance`` field should be
+        # scored as 0.5 (DEFAULT_IMPORTANCE), not 0.0. That way
+        # un-annotated records aren't penalized for being un-annotated.
+        unset = _make_memory(body="alpha topic", title="unset", vault=vault, importance=None)
+        explicit_low = _make_memory(
+            body="alpha topic", title="explicit-low", vault=vault, importance=0.1
+        )
+        index.upsert(unset)
+        index.upsert(explicit_low)
+
+        results = Search(vault=vault, index=index).search("alpha", limit=2, importance_weight=0.5)
+        ids = [r.memory.id for r in results]
+        assert ids[0] == unset.id
+        assert ids[1] == explicit_low.id
+
+    def test_importance_value_does_not_crash_on_none(self, vault: Vault, index: Index) -> None:
+        # Sanity: a record with importance=None must not produce NaN /
+        # raise / sort weirdly. It just gets the default 0.5 boost.
+        from memstem.core.search import DEFAULT_IMPORTANCE, DEFAULT_IMPORTANCE_WEIGHT
+
+        memory = _make_memory(body="alpha topic", title="t", vault=vault, importance=None)
+        index.upsert(memory)
+        results = Search(vault=vault, index=index).search("alpha", limit=1)
+        assert len(results) == 1
+        # The score should reflect the default boost: rrf * (1 + alpha * 0.5).
+        # With one BM25 hit and no vec, rrf == 1/(60+1) == 1/61.
+        expected = (1 / 61) * (1.0 + DEFAULT_IMPORTANCE_WEIGHT * DEFAULT_IMPORTANCE)
+        assert results[0].score == pytest.approx(expected)
+
+    def test_default_importance_weight_is_safe(self, vault: Vault, index: Index) -> None:
+        # Calling Search.search() without an explicit importance_weight
+        # uses DEFAULT_IMPORTANCE_WEIGHT (0.2) — a safe non-zero default
+        # that doesn't break the v0.1 contract for un-annotated vaults.
+        from memstem.core.search import DEFAULT_IMPORTANCE_WEIGHT
+
+        memory = _make_memory(body="alpha topic", vault=vault, importance=1.0)
+        index.upsert(memory)
+        results = Search(vault=vault, index=index).search("alpha", limit=1)
+        # rrf == 1/61, importance == 1.0 → expected = (1/61) * (1 + 0.2*1.0) = 1.2/61
+        expected = (1 / 61) * (1.0 + DEFAULT_IMPORTANCE_WEIGHT * 1.0)
+        assert results[0].score == pytest.approx(expected)
+
+    def test_expired_records_still_excluded_with_importance(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # The valid_to filter must not be circumvented by a high
+        # importance value. ADR 0011 PR-B + ADR 0008 cooperate.
+        from datetime import timedelta
+
+        past = datetime.now(tz=UTC) - timedelta(days=1)
+        live = _make_memory(body="alpha live", vault=vault, importance=0.0)
+        index.upsert(live)
+
+        # Hand-build an expired record with importance=1.0
+        meta = {
+            "id": str(uuid4()),
+            "type": "memory",
+            "created": "2026-04-25T15:00:00+00:00",
+            "updated": "2026-04-25T15:00:00+00:00",
+            "source": "human",
+            "title": "expired",
+            "tags": [],
+            "valid_to": past.isoformat(),
+            "importance": 1.0,
+        }
+        fm = validate(meta)
+        expired = Memory(frontmatter=fm, body="alpha expired", path=Path(f"memories/{fm.id}.md"))
+        vault.write(expired)
+        index.upsert(expired)
+
+        results = Search(vault=vault, index=index).search("alpha", limit=10, importance_weight=0.5)
+        ids = {r.memory.id for r in results}
+        assert live.id in ids
+        assert expired.id not in ids
+
+    def test_importance_boost_is_multiplicative(self, vault: Vault, index: Index) -> None:
+        # Concretely verify the formula: final = rrf * (1 + alpha * importance).
+        # A record with importance=1.0 and alpha=0.2 should score exactly
+        # 1.2x its bare RRF score.
+        memory = _make_memory(body="alpha topic", vault=vault, importance=1.0)
+        index.upsert(memory)
+        results = Search(vault=vault, index=index).search("alpha", limit=1, importance_weight=0.2)
+        expected = (1 / 61) * (1.0 + 0.2 * 1.0)
+        assert results[0].score == pytest.approx(expected)
+
+
+class TestSearchConfigImportance:
+    """SearchConfig.importance_weight defaults and threading."""
+
+    def test_default_importance_weight_is_0_2(self) -> None:
+        # The documented ADR 0008 alpha is 0.2. Don't change this default
+        # without intent — it's the contract every shipped vault relies on.
+        from memstem.config import SearchConfig
+
+        cfg = SearchConfig()
+        assert cfg.importance_weight == pytest.approx(0.2)
+
+    def test_importance_weight_round_trips_through_config(self) -> None:
+        # The config field should serialize and deserialize cleanly so
+        # users can persist a custom alpha in `_meta/config.yaml`.
+        from memstem.config import SearchConfig
+
+        cfg = SearchConfig(importance_weight=0.5)
+        dumped = cfg.model_dump(mode="json")
+        loaded = SearchConfig.model_validate(dumped)
+        assert loaded.importance_weight == pytest.approx(0.5)

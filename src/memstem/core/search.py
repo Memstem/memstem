@@ -7,6 +7,13 @@ distance scores directly.
 
 For each candidate memory, the materialized `Result` carries the per-source
 rank so callers can debug ranking decisions.
+
+The final score is optionally boosted by ``importance`` (ADR 0008 Tier 1):
+``final = rrf * (1 + alpha * importance)`` where ``alpha`` is the
+``importance_weight`` config knob. With ``alpha = 0.0`` the RRF order is
+preserved exactly (v0.1 behavior); with the default ``alpha = 0.2`` an
+importance of ``1.0`` raises a record's score by 20% — enough to break
+close ties without overwhelming relevance.
 """
 
 from __future__ import annotations
@@ -23,6 +30,14 @@ from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 logger = logging.getLogger(__name__)
 
 DEFAULT_RRF_K = 60
+DEFAULT_IMPORTANCE_WEIGHT = 0.2
+"""ADR 0008 alpha. ``final = rrf * (1 + alpha * importance)``."""
+DEFAULT_IMPORTANCE = 0.5
+"""Per ADR 0008: a record without an explicit ``importance`` is treated as
+neutral (0.5) rather than 0.0. This keeps un-scored records on a level
+playing field with explicitly-mid-importance records, and prevents the
+boost from making un-scored records *worse* than they would have been
+without a boost at all."""
 OVERFETCH_MULTIPLIER = 5
 _FTS_SPECIAL_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
@@ -165,6 +180,7 @@ class Search:
         rrf_k: int = DEFAULT_RRF_K,
         bm25_weight: float = 1.0,
         vector_weight: float = 1.0,
+        importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         include_expired: bool = False,
     ) -> list[Result]:
         """Run hybrid search and materialize the top `limit` results from the vault.
@@ -176,6 +192,14 @@ class Search:
         ``rrf_k``, ``bm25_weight``, and ``vector_weight`` control the fusion —
         the CLI and MCP server thread the configured ``SearchConfig`` values
         through here so users can tune ranking from ``_meta/config.yaml``.
+
+        ``importance_weight`` (ADR 0008 Tier 1 alpha) post-multiplies each
+        hit's RRF score by ``(1 + alpha * importance)``. ``0.0`` disables
+        the boost entirely (RRF order is final). The default ``0.2`` lets
+        importance act as a tiebreaker without overwhelming relevance.
+        Records without an explicit ``importance`` get the neutral default
+        (``0.5``) so un-scored records don't lose ranking just because no
+        one annotated them.
 
         Records whose ``valid_to`` has elapsed are filtered out by default
         (ADR 0011 PR-B). Pass ``include_expired=True`` to surface them
@@ -203,18 +227,38 @@ class Search:
             bm25_weight=bm25_weight,
             vector_weight=vector_weight,
         )
-        return self._materialize(fused, limit=limit, include_expired=include_expired)
+        return self._materialize(
+            fused,
+            limit=limit,
+            importance_weight=importance_weight,
+            include_expired=include_expired,
+        )
 
     def _materialize(
         self,
         hits: list[FusedHit],
         limit: int,
+        importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         include_expired: bool = False,
     ) -> list[Result]:
+        """Read each fused hit's `Memory` from the vault, optionally re-score, sort, truncate.
+
+        When ``importance_weight == 0`` the loop short-circuits as soon as
+        ``limit`` results accumulate — RRF order is final and we don't
+        need to materialize anything further. When the importance boost
+        is active (the default), the boost can re-order results, so we
+        materialize a wider pool (capped at ``limit * OVERFETCH_MULTIPLIER``)
+        before sorting by the boosted score. The materialization cost is
+        bounded; the cost is one extra Memory.read() per pool entry that
+        wouldn't have been read in the short-circuit path.
+        """
         now = datetime.now(tz=UTC)
-        results: list[Result] = []
+        boost_active = importance_weight != 0.0
+        pool_target = max(limit * OVERFETCH_MULTIPLIER, limit) if boost_active else limit
+
+        pool: list[Result] = []
         for hit in hits:
-            if len(results) >= limit:
+            if len(pool) >= pool_target:
                 break
             row = self.index.db.execute(
                 "SELECT path FROM memories WHERE id = ?",
@@ -234,15 +278,39 @@ class Search:
                 continue
             if not include_expired and self._is_expired(memory, now):
                 continue
-            results.append(
+            score = self._apply_importance(hit.score, memory, importance_weight)
+            pool.append(
                 Result(
                     memory=memory,
-                    score=hit.score,
+                    score=score,
                     bm25_rank=hit.bm25_rank,
                     vec_rank=hit.vec_rank,
                 )
             )
-        return results
+
+        if boost_active:
+            pool.sort(key=lambda r: r.score, reverse=True)
+        return pool[:limit]
+
+    @staticmethod
+    def _apply_importance(
+        rrf_score: float,
+        memory: Memory,
+        importance_weight: float,
+    ) -> float:
+        """Apply ADR 0008's importance multiplier to an RRF score.
+
+        Returns ``rrf_score`` unchanged when ``importance_weight == 0``.
+        Otherwise: ``rrf_score * (1 + importance_weight * effective_importance)``,
+        where ``effective_importance`` is the frontmatter value or
+        :data:`DEFAULT_IMPORTANCE` if unset.
+        """
+        if importance_weight == 0.0:
+            return rrf_score
+        importance = memory.frontmatter.importance
+        if importance is None:
+            importance = DEFAULT_IMPORTANCE
+        return rrf_score * (1.0 + importance_weight * importance)
 
     @staticmethod
     def _is_expired(memory: Memory, now: datetime) -> bool:
@@ -251,6 +319,8 @@ class Search:
 
 
 __all__ = [
+    "DEFAULT_IMPORTANCE",
+    "DEFAULT_IMPORTANCE_WEIGHT",
     "DEFAULT_RRF_K",
     "FusedHit",
     "Result",

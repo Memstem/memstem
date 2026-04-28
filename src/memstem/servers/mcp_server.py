@@ -313,9 +313,9 @@ def build_server(
       server is still opening a large index.
 
     ``search_config`` lets the caller thread the user's configured RRF
-    parameters (``rrf_k``, ``bm25_weight``, ``vector_weight``) through
-    to every ``memstem_search`` call. Defaults to ``SearchConfig()``
-    when omitted, which matches the legacy 60/1.0/1.0 behavior.
+    + importance parameters (``rrf_k``, ``bm25_weight``, ``vector_weight``,
+    ``importance_weight``) through to every ``memstem_search`` call.
+    Defaults to ``SearchConfig()`` when omitted.
 
     ``idle_timeout_seconds`` enables MCP-process self-termination after
     the configured idle period. Each Claude Code session spawns its
@@ -357,6 +357,7 @@ def build_server(
             rrf_k=sc.rrf_k,
             bm25_weight=sc.bm25_weight,
             vector_weight=sc.vector_weight,
+            importance_weight=sc.importance_weight,
         )
         return [_serialize_result(r) for r in results]
 
