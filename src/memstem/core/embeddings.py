@@ -184,6 +184,14 @@ class OpenAIEmbedder(Embedder):
     DEFAULT_BASE_URL = "https://api.openai.com/v1"
     DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 
+    # OpenAI's `/embeddings` endpoint accepts up to 2048 inputs per call,
+    # but the per-request token cap (~300k) is the real constraint for
+    # large records. A single 1.5 MB memory chunked at 2048 chars yields
+    # ~750 chunks ≈ 380k tokens — over the cap. Splitting into batches
+    # of 100 keeps every request well under both limits and matches the
+    # Gemini embedder's batching.
+    MAX_BATCH_SIZE = 100
+
     def __init__(
         self,
         model: str,
@@ -208,12 +216,25 @@ class OpenAIEmbedder(Embedder):
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        results: list[list[float]] = []
+        for start in range(0, len(texts), self.MAX_BATCH_SIZE):
+            sub = texts[start : start + self.MAX_BATCH_SIZE]
+            results.extend(self._embed_one_batch(sub))
+        return results
+
+    def _embed_one_batch(self, texts: list[str]) -> list[list[float]]:
         try:
             response = self._client.post(
                 "/embeddings",
                 json={"model": self.model, "input": texts, "encoding_format": "float"},
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Bubble the response body up — OpenAI's 400s carry useful
+            # detail (oversize input, invalid token, etc.) that the bare
+            # HTTP status line hides.
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise EmbeddingError(f"OpenAI request failed: {exc} — body: {detail}") from exc
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"OpenAI request failed: {exc}") from exc
 
@@ -401,15 +422,29 @@ class VoyageEmbedder(Embedder):
             },
         )
 
+    # Voyage's `/embeddings` accepts up to 128 inputs per call (per
+    # docs); chunk-heavy records can exceed that, so we batch.
+    MAX_BATCH_SIZE = 128
+
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        results: list[list[float]] = []
+        for start in range(0, len(texts), self.MAX_BATCH_SIZE):
+            sub = texts[start : start + self.MAX_BATCH_SIZE]
+            results.extend(self._embed_one_batch(sub))
+        return results
+
+    def _embed_one_batch(self, texts: list[str]) -> list[list[float]]:
         try:
             response = self._client.post(
                 "/embeddings",
                 json={"model": self.model, "input": texts, "input_type": "document"},
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise EmbeddingError(f"Voyage request failed: {exc} — body: {detail}") from exc
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"Voyage request failed: {exc}") from exc
 
