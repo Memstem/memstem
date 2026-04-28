@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — distillation candidate report (ADR 0008 Tier 2, PR-D first slice)
+
+- **New `memstem hygiene distill` subcommand** lists clusters of
+  memories that *could* be summarized into a digest record. Read-only
+  in this slice — no LLM calls, no vault mutation, no distillation
+  records created. The LLM-driven distiller that consumes this
+  report is a later PR behind an explicit config flag.
+- **Two clustering strategies** ship in this slice:
+  1. **Topic clusters** — memories sharing a tag of the form
+     `topic:*` are grouped. `agent:*` tags are deliberately excluded
+     (they'd produce one giant cluster per agent).
+  2. **Daily-week clusters** — `type=daily` records from the same
+     `agent:<x>` workspace within the same ISO calendar week.
+- **Threshold:** `--min-cluster-size` (default 5, per ADR 0008 Tier 2).
+- **Idempotent re-runs:** clusters whose every member is already
+  linked from an existing `type=distillation` memory are filtered
+  out so the report stays fresh.
+- **`MemoryType.DISTILLATION` enum value** added so future PRs can
+  validate distillation records without a schema change.
+- 19 new tests in `tests/test_hygiene_distillation.py` covering empty
+  vault, single-topic clustering above/below threshold, the no-cluster
+  rule for `agent:*` tags, multi-topic vaults, daily-week clustering
+  including the cross-week split case and the cross-agent split,
+  the "already distilled" filter (full coverage skips, partial
+  coverage keeps), the `skip_already_distilled=False` override, the
+  read-only contract on the vault, candidate shape parity, ordering
+  by size, and the CLI subcommand's banners and `--min-cluster-size`
+  flag.
+
 ### Added — deterministic hygiene importance bumps (ADR 0008 Tier 1, PR-C)
 
 - **New `memstem hygiene importance` subcommand** consumes the

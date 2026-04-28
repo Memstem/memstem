@@ -257,6 +257,12 @@ critical path for v0.1 cutover.
    here.*
 4. **PR-D: session distillation.** First LLM-driven distillation
    flavor, gated behind a config flag.
+   *Status: candidate report shipped (Unreleased, 2026-04-28).
+   `memstem hygiene distill` walks the vault, clusters memories by
+   shared `topic:*` tags or by daily-log + ISO-week, and reports
+   anything above the size threshold. Read-only, no LLM calls. The
+   LLM-driven writer that consumes this report is the next slice of
+   this PR.*
 5. **PR-E: topic distillation + clustering.** Second flavor; reuses
    the LLM client from PR-D.
 6. **PR-F: bi-temporal validity + supersedes.** Last because it
