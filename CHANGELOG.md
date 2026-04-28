@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `memstem auth` for persistent embedder API keys (#41)
+
+- **New command group `memstem auth set/show/remove`** persists API keys
+  to `~/.config/memstem/secrets.yaml` (mode 0600, gitignore-irrelevant
+  because it lives outside any vault). When the corresponding env var is
+  not exported in the current shell, the embedder factory falls back to
+  this file — so cron jobs, PM2 ecosystems, systemd units, and headless
+  servers all work without each one needing its own export.
+- **Resolution order:** the explicitly configured `embedding.api_key_env`
+  wins; if unset, the provider's default (`OPENAI_API_KEY`,
+  `GEMINI_API_KEY`, `VOYAGE_API_KEY`); if still empty, the secrets file.
+- **Why this matters:** previously, `memstem search` from a regular shell
+  silently degraded to lexical-only when the env var was missing — same
+  vault, same config, but worse results, with no obvious signal. The MCP
+  server worked fine because Claude Code passed the key via its own env
+  block. Issue #41 has the full reproduction; tactical CLI now lets users
+  set the key once per machine instead of per-shell.
+- **Test override:** `MEMSTEM_SECRETS_FILE` env var redirects the file
+  path (used by the test suite for hermetic isolation; the global pytest
+  fixture in `tests/conftest.py` points every test at a tmp path).
+- 49 new tests — `tests/test_auth.py` (32 covering the module),
+  `tests/test_cli.py::TestAuth` (12 covering the CLI), and
+  `tests/test_embeddings.py::TestSecretsFileFallback` (5 covering the
+  embedder fallback path).
+
 ### Added — Claude Code / OpenClaw search skill
 
 - **First-party `memstem-search` skill** under `clients/skills/memstem-search/`.

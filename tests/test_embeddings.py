@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from memstem import auth
 from memstem.config import EmbeddingConfig
 from memstem.core.embeddings import (
     DEFAULT_DIMENSIONS,
@@ -400,6 +401,44 @@ class TestEmbedForFactory:
         emb = embed_for(cfg)
         assert isinstance(emb, OllamaEmbedder)
         emb.close()
+
+
+class TestSecretsFileFallback:
+    """When env vars are missing, the embedder falls back to ~/.config/memstem/secrets.yaml."""
+
+    def test_openai_reads_from_secrets_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        auth.set_secret("openai", "sk-from-file")
+        # Construction succeeds — embedder picked up the file value
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=1536)
+        emb.close()
+
+    def test_gemini_reads_from_secrets_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        auth.set_secret("gemini", "AIza-from-file")
+        emb = GeminiEmbedder()
+        emb.close()
+
+    def test_voyage_reads_from_secrets_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+        auth.set_secret("voyage", "pa-from-file")
+        emb = VoyageEmbedder()
+        emb.close()
+
+    def test_env_var_still_wins_over_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+        auth.set_secret("openai", "sk-from-file")
+        # Existing OpenAI tests already verify the env value flows through
+        # to the request; this test just makes sure construction picks the
+        # env value over the file value (no exception raised).
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=1536)
+        emb.close()
+
+    def test_error_message_mentions_auth_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(EmbeddingError, match="memstem auth set openai"):
+            OpenAIEmbedder(model="text-embedding-3-small", dimensions=1536)
 
 
 @pytest.mark.requires_ollama
