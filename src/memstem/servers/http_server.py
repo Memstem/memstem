@@ -1,9 +1,9 @@
 """Local HTTP API exposing Memstem search and read endpoints.
 
-Co-hosted in `memstem daemon` so first-party clients (the Obsidian
-plugin, future VS Code/web clients) can call into the same `Search` /
-`Vault` / `Index` instances the watch loop and embed worker already use,
-without spawning a `memstem search` subprocess per query.
+Co-hosted in `memstem daemon` so first-party clients (CLI tools, future
+editor extensions, internal automation) can call into the same `Search`
+/ `Vault` / `Index` instances the watch loop and embed worker already
+use, without spawning a `memstem search` subprocess per query.
 
 Loopback-only by design. No auth in v0.1 — the design assumption is
 that anything able to reach `127.0.0.1:7821` already has filesystem
@@ -21,7 +21,7 @@ stay in lockstep:
 | `GET  /memory/{id_or_path}` | `memstem_get`        |
 
 Future endpoints (`POST /upsert`, `GET /skills`, websocket for live
-ingestion events) are deliberately deferred until a plugin feature
+ingestion events) are deliberately deferred until a client feature
 needs them — adding to a stable surface is easy; removing isn't.
 """
 
@@ -136,12 +136,12 @@ def build_app(
         description="Local HTTP API over Memstem's vault + index.",
     )
 
-    # CORS so an Obsidian plugin (which runs in a renderer) can call us.
-    # Loopback-only so this is safe; plugin requests look like
-    # cross-origin to the browser even on localhost.
+    # CORS for renderer-based clients on loopback (browser tabs, future
+    # Electron-style extensions). Loopback-only deployment makes this safe;
+    # cross-origin restrictions still apply to anything off the loopback.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["app://obsidian.md", "capacitor://localhost", "http://localhost"],
+        allow_origins=["http://localhost", "http://127.0.0.1"],
         allow_credentials=False,
         allow_methods=["GET", "POST"],
         allow_headers=["*"],

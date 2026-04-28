@@ -71,7 +71,7 @@
     └── config.yaml
 ```
 
-Every file has YAML frontmatter (see [frontmatter-spec.md](./docs/frontmatter-spec.md)). Files survive any version of any tool, are diffable, git-friendly, and openable in Obsidian.
+Every file has YAML frontmatter (see [frontmatter-spec.md](./docs/frontmatter-spec.md)). Files survive any version of any tool, are diffable, git-friendly, and openable in any markdown editor.
 
 ### Index: SQLite with FTS5 + sqlite-vec
 
@@ -141,6 +141,6 @@ A single `~/memstem-vault/_meta/config.yaml` file controls the daemon. See [docs
 - Not a chat memory layer (that's mem0's space)
 - Not a graph database (Graphiti, Letta)
 - Not a managed cloud service (yet — see [ROADMAP.md](./ROADMAP.md))
-- Not a wiki engine or note-taking app (Obsidian, Logseq)
+- Not a wiki engine or note-taking app
 
 Memstem is **infrastructure for AI agents to share knowledge without coupling to each other**.

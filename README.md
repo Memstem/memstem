@@ -39,7 +39,7 @@ multi-agent OpenClaw + Claude Code in real time. Shipping:
   markdown-canonical vault. Index is rebuildable from the files.
 - **Five MCP tools** (`memstem_search`, `_get`, `_list_skills`, `_get_skill`,
   `_upsert`) plus a co-hosted local HTTP API on `127.0.0.1:7821` for
-  Obsidian and other first-party clients.
+  first-party clients (CLI tools, future editor extensions).
 - **Four pluggable embedders** — Ollama (local default), OpenAI, Gemini,
   Voyage — selectable via `_meta/config.yaml`. Always-on embed queue
   with retry/backoff and idle-timeout self-exit.

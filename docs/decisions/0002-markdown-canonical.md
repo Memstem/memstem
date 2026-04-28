@@ -20,12 +20,12 @@ Markdown files in a structured directory tree are the canonical layer. A SQLite 
 
 1. **Durability across tool churn.** If the Memstem binary disappears tomorrow, every memory is still grep-able and human-readable. No proprietary format to lose.
 2. **Diffable, git-friendly.** Memory state can be version-controlled and reviewed.
-3. **Tool ecosystem.** Markdown + frontmatter is supported by Obsidian, Logseq, vim, every editor, every renderer. Free human view.
+3. **Tool ecosystem.** Markdown + frontmatter is supported by vim, every IDE, every renderer. Free human view.
 4. **Indexes can be regenerated.** A corrupt or incompatible index is a 5-minute `memstem reindex` away from healthy.
 5. **Karpathy convergence.** The 2026 consensus pattern (Karpathy LLM Wiki, basic-memory, memweave) is markdown-canonical.
 
 ## Consequences
 
-**Pros:** durability, portability, human-inspectability, Obsidian compatibility comes free.
+**Pros:** durability, portability, human-inspectability.
 
 **Cons:** writes touch the filesystem and the index (slightly slower than DB-only). Mitigated by async writes and batched index updates.

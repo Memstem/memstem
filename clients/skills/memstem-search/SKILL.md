@@ -28,7 +28,7 @@ Any retrieval-style question — past decisions, project status, skills lookup, 
 - "what's the status of Y"
 - "do we have a skill for Z"
 - "what did Claude Code work on yesterday"
-- "find the decision about the Obsidian plugin"
+- "find the decision about the embedder migration"
 
 Do **not** grep on a single workspace before trying this. grep can't see other agents' memories or Claude Code session captures, and most of what you're looking for is already indexed in MemStem.
 

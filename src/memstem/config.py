@@ -114,8 +114,8 @@ class HttpServerConfig(BaseModel):
     """Local HTTP server configuration.
 
     The daemon co-hosts a small HTTP API on loopback so first-party clients
-    (the Obsidian plugin, future VS Code/web clients) can call into the
-    same `Search` / `Vault` / `Index` instances the watch loop uses,
+    (CLI tools, editor extensions, future first-party UIs) can call into
+    the same `Search` / `Vault` / `Index` instances the watch loop uses,
     without spawning a per-query subprocess.
 
     Loopback-only by design — there's no auth surface in v0.1.
