@@ -57,6 +57,7 @@ class SearchRequest(BaseModel):
     rrf_k: int | None = None
     bm25_weight: float | None = None
     vector_weight: float | None = None
+    importance_weight: float | None = None
 
 
 class SearchHit(BaseModel):
@@ -175,6 +176,9 @@ def build_app(
             bm25_weight=(req.bm25_weight if req.bm25_weight is not None else sc.bm25_weight),
             vector_weight=(
                 req.vector_weight if req.vector_weight is not None else sc.vector_weight
+            ),
+            importance_weight=(
+                req.importance_weight if req.importance_weight is not None else sc.importance_weight
             ),
         )
         return [_serialize_result(r) for r in results]

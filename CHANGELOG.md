@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — importance-aware ranking (ADR 0008 Tier 1, PR-A)
+
+- **Search now applies a small importance boost on top of RRF.** The
+  formula is `final = rrf * (1 + alpha * importance)`, where `alpha`
+  is the new `search.importance_weight` config knob (default `0.2`,
+  per ADR 0008). Records without an explicit `importance` field are
+  treated as a neutral `0.5` so un-annotated memories aren't penalized.
+- **Why:** before this, every record competed on raw retrieval
+  relevance only. A skill the user pinned at `importance=1.0` ranked
+  the same as a one-off session note. With `alpha=0.2` the boost is a
+  tiebreaker — close ranks can be flipped, but a strong relevance gap
+  still wins. Tunable per-call (Search API), per-vault
+  (`_meta/config.yaml`), or per-request (HTTP `POST /search`).
+- **What it doesn't do:** it doesn't surface records that don't match
+  the query at all (importance is a re-ranker, not a forcing
+  function). It doesn't override the `valid_to` expiration filter
+  (ADR 0011 PR-B). And `alpha=0.0` cleanly disables the feature,
+  preserving the v0.1 RRF-only ordering.
+- 11 new tests in `tests/test_search.py::TestImportanceRanking` and
+  `TestSearchConfigImportance` cover the close-tie boost, the
+  rank-gap dominance threshold, the unset-importance default, the
+  `alpha=0` short-circuit, the multiplicative formula, and the
+  config round-trip.
+
 ## [0.6.2] — 2026-04-28
 
 ### Fixed — installer now persists standard provider API env vars

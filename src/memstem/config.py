@@ -100,6 +100,16 @@ class SearchConfig(BaseModel):
     bm25_weight: float = 1.0
     vector_weight: float = 1.0
     default_limit: int = 10
+    importance_weight: float = 0.2
+    """ADR 0008 Tier 1 alpha. ``final = rrf * (1 + alpha * importance)``.
+
+    ``0.0`` disables the boost entirely (RRF order is final, matching v0.1
+    behavior). ``0.2`` is the default — importance acts as a tiebreaker
+    rather than a forcing function. Crank it higher (e.g. ``0.5``) to make
+    pinned/curated memories outrank conversational noise more aggressively;
+    drop it (``0.05``) to keep raw retrieval relevance dominant. The
+    documented bound is ``0.0`` to ``1.0``; values outside cause a noisy
+    boost without a clear meaning."""
 
 
 class HygieneConfig(BaseModel):
