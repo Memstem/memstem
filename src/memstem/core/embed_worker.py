@@ -157,13 +157,11 @@ class EmbedWorker:
         Returns ``(body, chunks)`` so the caller can hash the body for
         ``embed_state`` while still using ``chunks`` for embedding.
         """
-        row = self.index.db.execute(
-            "SELECT path FROM memories WHERE id = ?", (memory_id,)
-        ).fetchone()
-        if row is None:
+        path = self.index.get_path(memory_id)
+        if path is None:
             raise _RecordMissingError(memory_id)
         try:
-            memory = self.vault.read(row["path"])
+            memory = self.vault.read(path)
         except MemoryNotFoundError as exc:
             raise _RecordMissingError(memory_id) from exc
         return memory.body, chunk_text(memory.body)
