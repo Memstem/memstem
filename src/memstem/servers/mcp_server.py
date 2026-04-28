@@ -3,7 +3,16 @@
 Built on `FastMCP` from the official `mcp` Python SDK. Tools match the
 contract in `docs/mcp-api.md`. The server is a pure factory — the daemon
 (or test harness) constructs `Vault`, `Index`, and an optional embedder
-and passes them to `build_server()`.
+and passes them to `build_server()`, either as already-initialized
+objects or as factory callables that build them on first tool use.
+
+Lazy resource initialization keeps the MCP handshake (``initialize`` +
+``tools/list``) fast even when the underlying index is large. MCP clients
+typically apply a connection timeout (OpenClaw's bundle-mcp defaults to
+30s) that fires during the handshake; opening a multi-hundred-MB SQLite
++ ``sqlite-vec`` index synchronously at server start can blow past it.
+With lazy init, the handshake completes in milliseconds and the load
+cost lands on the first ``memstem_search`` (or other tool) call instead.
 """
 
 from __future__ import annotations
@@ -103,6 +112,136 @@ def _start_idle_watcher(
     return thread
 
 
+class _Resources:
+    """Holds the heavy resources (vault, index, embedder, search) for the MCP server.
+
+    Construct with :meth:`eager` when you already have initialized objects
+    (test harness, daemon embed) or with :meth:`lazy` when you want to
+    defer the load until the first tool call (the production CLI path).
+
+    Access is thread-safe: a lock guards each lazy initialization so
+    concurrent tool calls during the first-call window don't double-init.
+    Initialization is one-shot — once a property has been resolved, it's
+    cached for the lifetime of the holder.
+    """
+
+    __slots__ = (
+        "_build_embedder",
+        "_build_index",
+        "_build_vault",
+        "_embedder",
+        "_embedder_resolved",
+        "_index",
+        "_lock",
+        "_search",
+        "_vault",
+    )
+
+    def __init__(
+        self,
+        *,
+        build_vault: Callable[[], Vault],
+        build_index: Callable[[], Index],
+        build_embedder: Callable[[], Embedder | None],
+    ) -> None:
+        self._build_vault = build_vault
+        self._build_index = build_index
+        self._build_embedder = build_embedder
+        self._vault: Vault | None = None
+        self._index: Index | None = None
+        self._embedder: Embedder | None = None
+        self._embedder_resolved = False
+        self._search: Search | None = None
+        # Use an RLock because `search` composes the cached vault/index/embedder
+        # via their properties while holding the same guard. A plain Lock would
+        # self-deadlock on first `res.search` access in lazy mode.
+        self._lock = threading.RLock()
+
+    @classmethod
+    def eager(
+        cls,
+        vault: Vault,
+        index: Index,
+        embedder: Embedder | None = None,
+    ) -> _Resources:
+        """Wrap already-initialized resources. Used by tests and any caller
+        that constructs the heavy objects itself.
+        """
+        instance = cls(
+            build_vault=lambda: vault,
+            build_index=lambda: index,
+            build_embedder=lambda: embedder,
+        )
+        # Pre-resolve so callers that own the index lifecycle externally
+        # (test fixtures, daemon embed) don't see surprise factory invocations.
+        instance._vault = vault
+        instance._index = index
+        instance._embedder = embedder
+        instance._embedder_resolved = True
+        return instance
+
+    @classmethod
+    def lazy(
+        cls,
+        *,
+        build_vault: Callable[[], Vault],
+        build_index: Callable[[], Index],
+        build_embedder: Callable[[], Embedder | None],
+    ) -> _Resources:
+        """Defer construction until first access. The CLI's ``mcp`` command
+        uses this so the MCP handshake is fast even with a multi-hundred-MB
+        on-disk index.
+        """
+        return cls(
+            build_vault=build_vault,
+            build_index=build_index,
+            build_embedder=build_embedder,
+        )
+
+    @property
+    def vault(self) -> Vault:
+        if self._vault is None:
+            with self._lock:
+                if self._vault is None:
+                    self._vault = self._build_vault()
+        return self._vault
+
+    @property
+    def index(self) -> Index:
+        if self._index is None:
+            with self._lock:
+                if self._index is None:
+                    self._index = self._build_index()
+        return self._index
+
+    @property
+    def embedder(self) -> Embedder | None:
+        if not self._embedder_resolved:
+            with self._lock:
+                if not self._embedder_resolved:
+                    self._embedder = self._build_embedder()
+                    self._embedder_resolved = True
+        return self._embedder
+
+    @property
+    def search(self) -> Search:
+        if self._search is None:
+            with self._lock:
+                if self._search is None:
+                    self._search = Search(
+                        vault=self.vault,
+                        index=self.index,
+                        embedder=self.embedder,
+                    )
+        return self._search
+
+    @property
+    def index_initialized(self) -> bool:
+        """True iff the index factory has been invoked. Lets callers (e.g.
+        the CLI) close the index only when it was actually opened."""
+        return self._index is not None
+
+
 def _snippet(body: str, length: int = SNIPPET_CHARS) -> str:
     text = " ".join(body.split())
     if len(text) <= length:
@@ -149,15 +288,29 @@ def _auto_path(fm: Frontmatter) -> Path:
 
 
 def build_server(
-    vault: Vault,
-    index: Index,
+    vault: Vault | None = None,
+    index: Index | None = None,
     embedder: Embedder | None = None,
     *,
+    resources: _Resources | None = None,
     name: str = "memstem",
     search_config: SearchConfig | None = None,
     idle_timeout_seconds: int = 0,
 ) -> FastMCP:
-    """Construct a FastMCP server bound to the given vault/index/embedder.
+    """Construct a FastMCP server bound to the given resources.
+
+    Two construction paths:
+
+    - **Eager (backward-compatible):** pass ``vault`` and ``index`` (and
+      optionally ``embedder``). Resources are already loaded; tool calls
+      use them directly. This is what test fixtures and the daemon's
+      in-process embed do.
+    - **Lazy:** pass ``resources`` constructed via
+      :meth:`_Resources.lazy`, leaving ``vault`` and ``index`` ``None``.
+      Tool calls resolve resources on first access; the MCP handshake
+      does not touch them. Used by the ``memstem mcp`` CLI command so
+      OpenClaw's 30-second connection timeout doesn't fire while the
+      server is still opening a large index.
 
     ``search_config`` lets the caller thread the user's configured RRF
     parameters (``rrf_k``, ``bm25_weight``, ``vector_weight``) through
@@ -172,8 +325,18 @@ def build_server(
     for the factory) disables auto-exit; the CLI's ``memstem mcp``
     command threads ``cfg.mcp.idle_timeout_seconds`` here.
     """
+    if resources is not None:
+        if vault is not None or index is not None or embedder is not None:
+            raise ValueError(
+                "build_server: pass either resources= or (vault, index, embedder), not both"
+            )
+        res = resources
+    else:
+        if vault is None or index is None:
+            raise ValueError("build_server: provide vault and index, or resources= for lazy init")
+        res = _Resources.eager(vault, index, embedder)
+
     mcp = FastMCP(name)
-    search = Search(vault=vault, index=index, embedder=embedder)
     sc = search_config or SearchConfig()
     activity = _ActivityTracker()
     if idle_timeout_seconds > 0:
@@ -187,7 +350,7 @@ def build_server(
     ) -> list[dict[str, Any]]:
         """Hybrid keyword + semantic search across memories and skills."""
         activity.touch()
-        results = search.search(
+        results = res.search.search(
             query=query,
             limit=limit,
             types=types,
@@ -203,14 +366,16 @@ def build_server(
         activity.touch()
         # Try path first (most common); fall back to id lookup via the index.
         try:
-            memory = vault.read(id_or_path)
+            memory = res.vault.read(id_or_path)
             return _serialize_memory(memory)
         except MemoryNotFoundError:
             pass
-        row = index.db.execute("SELECT path FROM memories WHERE id = ?", (id_or_path,)).fetchone()
+        row = res.index.db.execute(
+            "SELECT path FROM memories WHERE id = ?", (id_or_path,)
+        ).fetchone()
         if row is None:
             raise ValueError(f"no memory found for {id_or_path!r}")
-        memory = vault.read(row["path"])
+        memory = res.vault.read(row["path"])
         return _serialize_memory(memory)
 
     @mcp.tool()
@@ -219,13 +384,13 @@ def build_server(
     ) -> list[dict[str, Any]]:
         """List available skills, optionally filtered by scope."""
         activity.touch()
-        rows = index.db.execute(
+        rows = res.index.db.execute(
             "SELECT id, path FROM memories WHERE type = ?", ("skill",)
         ).fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
             try:
-                memory = vault.read(row["path"])
+                memory = res.vault.read(row["path"])
             except MemoryNotFoundError:
                 continue
             fm = memory.frontmatter
@@ -245,13 +410,13 @@ def build_server(
     async def memstem_get_skill(name: str) -> dict[str, Any]:
         """Retrieve a skill by exact title match."""
         activity.touch()
-        rows = index.db.execute(
+        rows = res.index.db.execute(
             "SELECT path FROM memories WHERE type = ? AND title = ?",
             ("skill", name),
         ).fetchall()
         if not rows:
             raise ValueError(f"no skill named {name!r}")
-        return _serialize_memory(vault.read(rows[0]["path"]))
+        return _serialize_memory(res.vault.read(rows[0]["path"]))
 
     @mcp.tool()
     async def memstem_upsert(
@@ -268,8 +433,8 @@ def build_server(
         fm = validate(frontmatter)
         target_path = Path(path) if path else _auto_path(fm)
         memory = Memory(frontmatter=fm, body=body, path=target_path)
-        vault.write(memory)
-        index.upsert(memory)
+        res.vault.write(memory)
+        res.index.upsert(memory)
         return {
             "id": str(fm.id),
             "path": str(target_path),

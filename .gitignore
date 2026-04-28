@@ -51,6 +51,7 @@ cover/
 .ruff_cache/
 .pyre/
 .pytype/
+.claude/
 
 # Memstem-specific
 *.db

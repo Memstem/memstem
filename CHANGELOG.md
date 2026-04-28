@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-04-28
+
+### Fixed — `memstem mcp` cold-start exceeded MCP client connection timeout
+
+- **`memstem mcp` now resolves vault/index/embedder lazily**, on the first
+  tool call instead of at server start. The MCP handshake (`initialize` +
+  `tools/list`) used to wait for the SQLite + `sqlite-vec` index open,
+  embedder initialisation, and vault scan before answering — for a vault
+  with ~1k memories and a 250 MB+ index that can take ~32 s, just past
+  OpenClaw's bundle-mcp `connectionTimeoutMs` default of 30 s. The
+  symptom was `bundle-mcp: failed to start server "memstem" (memstem
+  mcp): Error: MCP server connection timed out after 30000ms` repeating
+  in the host gateway's logs and zero MemStem MCP tools available to
+  the agent.
+- **What changed:** `build_server()` accepts a new `resources=` kwarg
+  pointing at a `_Resources` holder. The CLI's `mcp` command constructs
+  a lazy holder (`_Resources.lazy(...)`) so the heavy work — index
+  open, embedder bring-up, search composition — fires on the first
+  `memstem_search` (or any tool) call. Subsequent calls reuse the
+  cached resources. The eager `build_server(vault, index, embedder)`
+  signature is unchanged; existing tests and the daemon's in-process
+  embed continue to work without modification.
+- **Trade-off:** the first tool call after spawning a fresh MCP
+  subprocess pays the load cost (~30 s on Brad's vault), where it used
+  to be paid up-front. After that, queries are fast and the
+  subprocess stays warm until `cfg.mcp.idle_timeout_seconds` elapses.
+  Net effect: the connection timeout class of failure goes away
+  entirely, with no change to steady-state query latency.
+- **Thread-safety:** `_Resources` uses double-checked locking so that
+  two FastMCP worker threads racing on the very first tool call
+  initialise each resource exactly once, not twice.
+
 ### Removed — Obsidian plugin scaffold
 
 - **`clients/obsidian/`** (TypeScript scaffold) and **ADR 0010** are
