@@ -32,7 +32,36 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.3.0 — feature-complete and live.** Shipping: multi-agent OpenClaw + Claude Code adapters, hybrid search (FTS5 + sqlite-vec, RRF-merged), an MCP server with five tools, four pluggable embedder backends (Ollama / OpenAI / Gemini / Voyage), an always-on embed queue with retry/backoff, a one-line installer, `memstem doctor` for health checks, and an idempotent client-wiring command (`memstem connect-clients`) that registers Memstem MCP in `~/.claude.json` *and* in each configured OpenClaw agent's `openclaw.json`, cleans up legacy `~/.claude/settings.json` entries, and patches every relevant CLAUDE.md with the directive block. Cross-platform CI covers Linux, macOS, and Windows. The repo stays private during the live soak; flips public when the v0.x line stabilizes.
+**v0.6.0 — public-ready.** Live on the maintainer's box; ingesting from
+multi-agent OpenClaw + Claude Code in real time. Shipping:
+
+- **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
+  markdown-canonical vault. Index is rebuildable from the files.
+- **Five MCP tools** (`memstem_search`, `_get`, `_list_skills`, `_get_skill`,
+  `_upsert`) plus a co-hosted local HTTP API on `127.0.0.1:7821` for
+  Obsidian and other first-party clients.
+- **Four pluggable embedders** — Ollama (local default), OpenAI, Gemini,
+  Voyage — selectable via `_meta/config.yaml`. Always-on embed queue
+  with retry/backoff and idle-timeout self-exit.
+- **Quality pipeline** — write-time noise filter, exact-body hash dedup
+  (Layer 1), TTL tagging for transient kinds, boot-echo hash filter —
+  keeps the vault from being polluted by AI-session firehose.
+- **`memstem auth`** for persistent embedder API keys
+  (`~/.config/memstem/secrets.yaml`, mode 0600), so cron, PM2, systemd,
+  and headless servers don't need per-shell exports.
+- **Operational tooling** — `memstem init`, `doctor`, `connect-clients`
+  (idempotent wiring into `~/.claude.json` and each OpenClaw agent's
+  `openclaw.json`), `migrate` (FlipClaw → Memstem one-shot), a
+  one-line `install.sh`, and a 15-second e2e smoke test
+  (`scripts/e2e-smoke.sh`).
+
+Cross-platform CI runs Linux (gating) plus macOS and Windows
+(experimental, `continue-on-error: true` — sqlite-vec needs
+`enable_load_extension`, which `actions/setup-python`'s macOS build
+doesn't ship; native Windows is WSL2-only by design for v0.x).
+617 tests, 88% coverage. See [CHANGELOG.md](./CHANGELOG.md) for the
+release-by-release history and [ROADMAP.md](./ROADMAP.md) for what's
+next.
 
 ## Quickstart
 

@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — `memstem auth` for persistent embedder API keys (#41)
+## [0.6.0] — 2026-04-28
+
+Twelve PRs that together make the v0.x line ready for a public flip:
+the **quality pipeline** (ADRs 0011 + 0012) — write-time noise filter,
+exact-body dedup, TTL tagging, boot-echo hash filter — keeps the vault
+from being polluted by the firehose of low-signal AI-session memories.
+The **operational layer** — idle-timeout self-exit, Index locking with
+WAL, OpenAI/Voyage batch chunking — kept the live daemon stable through
+a Gemini → OpenAI embedder migration of ~1,085 records. The
+**developer-facing layer** — first-party HTTP API + Obsidian plugin
+scaffold, `memstem-search` skill for Claude Code/OpenClaw, `memstem
+auth` for persistent API keys, and a 15-second e2e smoke test —
+removes the friction that was blocking external use.
+
+### Added — `memstem auth` for persistent embedder API keys (#54, closes #41)
 
 - **New command group `memstem auth set/show/remove`** persists API keys
   to `~/.config/memstem/secrets.yaml` (mode 0600, gitignore-irrelevant
@@ -31,6 +45,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/test_cli.py::TestAuth` (12 covering the CLI), and
   `tests/test_embeddings.py::TestSecretsFileFallback` (5 covering the
   embedder fallback path).
+
+### Added — end-to-end smoke test for the installed binary (#53)
+
+- **`scripts/e2e-smoke.sh`** exercises the full happy path against a
+  throwaway vault using the installed `memstem` binary: init, doctor,
+  reindex, search, MCP stdio handshake (`initialize` + `tools/list` +
+  `memstem_search` `tools/call`), and `connect-clients --dry-run`.
+  Runs in ~15s, no network, no API keys.
+- Pairs with `pytest` (component-level): this is the integration layer
+  that catches binary-vs-source drift, schema regressions, and broken
+  end-to-end wiring that unit tests miss.
+- Designed to run before tagging a release, flipping the repo public,
+  or accepting a meaningful PR. Suitable to wire into CI as a separate
+  `e2e` job after `lint` / `test` pass.
+
+### Added — idle-timeout self-exit for `memstem mcp` (#50, closes #40)
+
+- **`memstem mcp` subprocesses now exit themselves after `idle_timeout`
+  seconds with no tool calls** (default 1800 = 30 min, configurable via
+  `mcp.idle_timeout_seconds` in `_meta/config.yaml`; `0` disables).
+  Activity is tracked monotonically; a daemon thread polls every
+  `timeout/10` seconds (clamped to 5–60s) and sends SIGTERM when idle
+  exceeds the threshold. Claude Code transparently respawns on the
+  next request — users never see the interruption.
+- **Why it matters:** without this, every Claude Code session left an
+  orphan `memstem mcp` behind; on a dev box that meant 5–13 stale
+  processes by end of day, each holding its own SQLite connection.
+  Lock contention between them was the primary trigger for the
+  `database is locked` cascade fixed in #48 and #52.
+
+### Added — boot-echo hash filter (#47)
+
+- **A second-pass hash filter compares the SHA-256 of each session's
+  first 1024 bytes against a curated set** of "I am Claude / I'm an AI
+  assistant" boot-echo openings. Sessions whose head hashes into the
+  set are dropped at the noise filter stage. The walker that builds
+  the set lives in `core/extraction.py::build_boot_echo_hashes`, with
+  skip-dirs and a max-depth cap (the speedup in #49 brought this from
+  ~3.6s to ~20ms on the live vault).
+- Implements ADR 0011 PR-C. With #44 (write-time noise filter) and
+  #46 (TTL tagging), this completes the noise-filter trio.
+
+### Added — TTL tagging for transient memory kinds (#46)
+
+- **Memories whose `type` is in the transient set** (`session`, `daily`,
+  `boot_echo`, …) now get a default `valid_to` set to
+  `created + ttl_days` so the hygiene worker can age them out without
+  needing a per-record decision. TTL values are configured per-kind in
+  `hygiene.ttl_days` in `_meta/config.yaml`.
+- Implements ADR 0011 PR-B. This unlocks the v0.2 hygiene worker
+  (Phase 2) by giving it deterministic decay rules.
+
+### Added — exact-body hash dedup, Layer 1 (#45)
+
+- **The pipeline now suppresses any incoming record whose body has a
+  hash collision** with an existing vault memory. Hashing is over a
+  *normalized* body — whitespace runs collapsed, lowercased, stripped —
+  so trivial formatting differences don't bypass the check. SHA-256
+  hashes are stored in a `body_hash_index` table; an incoming write
+  that hashes to an existing row increments a `seen_count` counter
+  instead of creating a duplicate.
+- Implements ADR 0012 Layer 1. ADR 0012's mem0 audit reference: one
+  hallucinated fact re-entered the mem0 memory 808 times via the
+  recall feedback loop. A single SHA-256 check collapses all 808 to
+  one row with `seen_count = 808`. Layers 2 (embedding similarity) and
+  3 (LLM-as-judge) ship in later PRs.
+
+### Added — write-time noise filter (#44)
+
+- **A heuristic noise filter runs in the pipeline before write-time**
+  and drops session chunks whose content is below a length+entropy
+  threshold or matches one of the boot-echo / system-message regex
+  families. Keep / drop decisions are logged at INFO so a vault owner
+  can audit what's being filtered.
+- Implements ADR 0011 PR-A. Without this, the firehose of AI-session
+  ingestion was producing several hundred low-signal memories per day,
+  drowning the high-signal ones in search.
 
 ### Added — Claude Code / OpenClaw search skill
 
@@ -93,6 +184,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't raise, plus a source-level guard that asserts the SQL
   literally contains `INSERT OR IGNORE` so a future refactor cannot
   silently reintroduce the race.
+
+### Fixed — serialize Index reads through lock + WAL/busy_timeout (#52)
+
+- **`EmbedWorker._read_for_embed` now goes through `Index.get_path()`
+  instead of `self.index.db.execute(...)`** — the unprotected direct
+  call was racing the shared connection state under load and
+  intermittently raising `sqlite3.InterfaceError: bad parameter or
+  other API misuse`, which manifested as a "worker N crashed" cycle
+  in the daemon.
+- **The Index connection now opens with `journal_mode = WAL` and
+  `busy_timeout = 5000`** so a CLI invocation (`memstem reindex`,
+  `memstem embed`) opening its own connection no longer fails with
+  `database is locked` while the daemon is writing.
+
+### Fixed — chunk-batch OpenAI/Voyage requests + surface API errors (#51)
+
+- **OpenAI `embed_batch` paginates inputs at `MAX_BATCH_SIZE = 100`**
+  (Voyage at 128) so a single large record chunked at 2048 chars no
+  longer hits the per-request token cap. Without this, the live
+  Gemini → OpenAI migration hit `400 Bad Request` on the first
+  ~1.5 MB record (≈ 750 chunks ≈ 380k tokens).
+- **`httpx.HTTPStatusError` now surfaces the response body** for
+  OpenAI/Voyage so oversized-batch and validation failures are
+  diagnosable from the daemon log instead of just the bare status
+  line.
+
+### Fixed — speed up boot-echo walk with skip-dirs + max-depth pruning (#49)
+
+- **The boot-echo discovery walk now skips `__pycache__`, `.git`,
+  `node_modules`, `.venv`, etc., and prunes at `max_depth = 8`**.
+  On a vault with the live Ari + Claude Code corpus the walk dropped
+  from ~3.6s to ~20ms — about 180× faster — which kept the noise
+  filter from being the long pole on daemon boot.
+
+### Fixed — hold Index lock around pipeline-side write transactions (#48)
+
+- **The `Pipeline.process()` write path now acquires the same
+  `Index._lock` the Index methods use**, so a concurrent embed worker
+  doesn't see a half-committed write or trip
+  `database table is locked` mid-transaction. Surfaced together
+  with #50 during the orphan-MCP cascade investigation.
+
+### Docs — ADR 0011 + 0012, the quality pipeline (#43)
+
+- **ADR 0011 — write-time noise filter and fact extraction.** Lays
+  out the three-stage pipeline (heuristic filter, TTL tagging,
+  boot-echo hash filter) implemented in #44, #46, and #47.
+- **ADR 0012 — LLM-judge dedup, Layers 1–3.** Specifies exact-body
+  hash dedup (Layer 1, #45), near-duplicate detection via embedding
+  cosine (Layer 2, future), and LLM-as-judge for the remainder
+  (Layer 3, future). Layer 1 ships now; 2 and 3 land in v0.7+.
 
 ## [0.5.0] — 2026-04-27
 
