@@ -112,6 +112,109 @@ class TestInit:
         assert result.exit_code == 0
         assert "custom: marker" not in cfg_path.read_text()
 
+    def test_provider_openai_uses_known_good_defaults(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        vault_path = tmp_path / "fresh"
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "-y",
+                "--home",
+                str(_empty_home(tmp_path)),
+                "--provider",
+                "openai",
+                str(vault_path),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert cfg["embedding"]["provider"] == "openai"
+        assert cfg["embedding"]["model"] == "text-embedding-3-large"
+        assert cfg["embedding"]["dimensions"] == 3072
+        assert cfg["embedding"]["api_key_env"] == "OPENAI_API_KEY"
+        # The init output guides the user toward `memstem auth set`
+        assert "memstem auth set openai" in result.output
+
+    def test_provider_gemini(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault_path = tmp_path / "fresh"
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "-y",
+                "--home",
+                str(_empty_home(tmp_path)),
+                "--provider",
+                "gemini",
+                str(vault_path),
+            ],
+        )
+        assert result.exit_code == 0
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert cfg["embedding"]["provider"] == "gemini"
+        assert cfg["embedding"]["api_key_env"] == "GEMINI_API_KEY"
+
+    def test_provider_voyage(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault_path = tmp_path / "fresh"
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "-y",
+                "--home",
+                str(_empty_home(tmp_path)),
+                "--provider",
+                "voyage",
+                str(vault_path),
+            ],
+        )
+        assert result.exit_code == 0
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert cfg["embedding"]["provider"] == "voyage"
+        assert cfg["embedding"]["model"] == "voyage-3"
+        assert cfg["embedding"]["dimensions"] == 1024
+
+    def test_provider_ollama_explicit_matches_default(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        vault_path = tmp_path / "fresh"
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "-y",
+                "--home",
+                str(_empty_home(tmp_path)),
+                "--provider",
+                "ollama",
+                str(vault_path),
+            ],
+        )
+        assert result.exit_code == 0
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        assert cfg["embedding"]["provider"] == "ollama"
+        # Ollama doesn't need an API key
+        assert cfg["embedding"]["api_key_env"] is None
+
+    def test_provider_unknown_exits_2(self, tmp_path: Path, runner: CliRunner) -> None:
+        vault_path = tmp_path / "fresh"
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "-y",
+                "--home",
+                str(_empty_home(tmp_path)),
+                "--provider",
+                "bogus",
+                str(vault_path),
+            ],
+        )
+        assert result.exit_code == 2
+        assert "unknown embedder provider" in (result.output + (result.stderr or ""))
+
 
 class TestInitWizard:
     def _seed_agent(self, home: Path, name: str, *, with_content: bool) -> Path:

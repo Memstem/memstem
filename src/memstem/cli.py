@@ -18,9 +18,11 @@ from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
 from memstem.config import (
+    PROVIDER_PROFILES,
     AdaptersConfig,
     ClaudeCodeAdapterConfig,
     Config,
+    EmbeddingConfig,
     OpenClawAdapterConfig,
     OpenClawWorkspace,
 )
@@ -207,6 +209,19 @@ def init(
         str | None,
         typer.Option(help="Home directory to scan for agents (default: $HOME)"),
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help=(
+                "Embedder provider to pre-populate the config with. "
+                f"Known: {', '.join(sorted(PROVIDER_PROFILES))}. "
+                "Default: ollama (local, no API key). For cloud "
+                "providers also run `memstem auth set <provider> <key>` "
+                "after init."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Initialize a new Memstem vault, with an optional setup wizard."""
     path = Path(vault_path).expanduser().resolve()
@@ -216,6 +231,15 @@ def init(
     if cfg_path.exists() and not force:
         typer.echo(f"config.yaml exists at {cfg_path}; use --force to overwrite")
         raise typer.Exit(0)
+
+    if provider is not None:
+        try:
+            embedding_cfg = EmbeddingConfig.for_provider(provider)
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+    else:
+        embedding_cfg = EmbeddingConfig()
 
     home_path = Path(home).expanduser() if home else Path.home()
     if non_interactive:
@@ -228,13 +252,20 @@ def init(
     else:
         adapters = _run_init_wizard(home_path)
 
-    cfg = Config(vault_path=path, adapters=adapters)
+    cfg = Config(vault_path=path, adapters=adapters, embedding=embedding_cfg)
     cfg_path.write_text(
         yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False),
         encoding="utf-8",
     )
     typer.echo(f"\ninitialized vault at {path}")
     typer.echo(f"config:  {cfg_path}")
+    typer.echo(f"embedder: {embedding_cfg.provider} ({embedding_cfg.model})")
+    if embedding_cfg.api_key_env:
+        typer.echo(
+            f"NOTE: {embedding_cfg.provider} needs an API key. "
+            f"Run `memstem auth set {embedding_cfg.provider} <key>` "
+            f"or export ${embedding_cfg.api_key_env}."
+        )
     typer.echo(f"Run `memstem doctor --vault {path}` to verify.")
 
 

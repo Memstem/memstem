@@ -44,6 +44,11 @@ RUN_MIGRATE=false
 MIGRATE_DAYS=30
 MIGRATE_NO_EMBED=false
 START_DAEMON=false
+EMBEDDER="ollama"
+EMBEDDER_EXPLICIT=false
+OPENAI_KEY="${MEMSTEM_OPENAI_KEY:-}"
+GEMINI_KEY="${MEMSTEM_GEMINI_KEY:-}"
+VOYAGE_KEY="${MEMSTEM_VOYAGE_KEY:-}"
 VAULT_PATH="${MEMSTEM_VAULT:-$HOME/memstem-vault}"
 SOURCE="${MEMSTEM_INSTALL_SOURCE:-pypi}"
 
@@ -54,6 +59,10 @@ while [[ $# -gt 0 ]]; do
     --no-model) PULL_MODEL=false; shift ;;
     --vault) VAULT_PATH="$2"; shift 2 ;;
     --from-git) SOURCE=git; shift ;;
+    --embedder) EMBEDDER="$2"; EMBEDDER_EXPLICIT=true; shift 2 ;;
+    --openai-key) OPENAI_KEY="$2"; shift 2 ;;
+    --gemini-key) GEMINI_KEY="$2"; shift 2 ;;
+    --voyage-key) VOYAGE_KEY="$2"; shift 2 ;;
     --connect-clients) CONNECT_CLIENTS=true; shift ;;
     --remove-flipclaw) REMOVE_FLIPCLAW=true; shift ;;
     --migrate) RUN_MIGRATE=true; shift ;;
@@ -73,6 +82,18 @@ Options:
   --no-model          Don't pull the embedding model (assume it's already there).
   --vault PATH        Vault location (default: ~/memstem-vault).
   --from-git          Install from the GitHub source instead of PyPI.
+  --embedder NAME     Embedder provider: ollama (default), openai, gemini,
+                      voyage. Picking a non-ollama provider implies
+                      --no-ollama and --no-model unless you explicitly
+                      passed them. The `memstem init` step writes a
+                      config pre-populated with the provider's known-good
+                      model + dimensions + api_key_env defaults.
+  --openai-key KEY    Store an OpenAI API key via `memstem auth set openai`
+                      after init. Required for unattended installs that
+                      use --embedder openai. Can also be set via the
+                      MEMSTEM_OPENAI_KEY env var.
+  --gemini-key KEY    Same, for Gemini (env: MEMSTEM_GEMINI_KEY).
+  --voyage-key KEY    Same, for Voyage (env: MEMSTEM_VOYAGE_KEY).
   --connect-clients   After install, run `memstem connect-clients` to wire
                       Claude Code (settings.json + CLAUDE.md) and every
                       OpenClaw workspace's CLAUDE.md. Prints a unified
@@ -97,12 +118,34 @@ Options:
 Environment:
   MEMSTEM_INSTALL_SOURCE=git|pypi   Equivalent to --from-git when set to git.
   MEMSTEM_VAULT=/path/to/vault      Default vault path.
+  MEMSTEM_OPENAI_KEY=sk-...         OpenAI key for --embedder openai
+                                    (alternative to --openai-key).
+  MEMSTEM_GEMINI_KEY=...            Gemini key (alternative to --gemini-key).
+  MEMSTEM_VOYAGE_KEY=pa-...         Voyage key (alternative to --voyage-key).
 EOF
       exit 0
       ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# --- Embedder validation ----------------------------------------------------
+case "$EMBEDDER" in
+  ollama|openai|gemini|voyage) ;;
+  *)
+    echo "Unknown --embedder: $EMBEDDER. Known: ollama, openai, gemini, voyage." >&2
+    exit 2
+    ;;
+esac
+
+# Cloud providers don't need a local Ollama. Skip the install + model pull
+# unless the user *explicitly* asked for them via --no-ollama=false (which
+# would have flipped INSTALL_OLLAMA to false anyway). Net: switching to
+# cloud is one flag, not three.
+if [ "$EMBEDDER" != "ollama" ]; then
+  INSTALL_OLLAMA=false
+  PULL_MODEL=false
+fi
 
 # --- Output helpers ---------------------------------------------------------
 say()  { printf '\033[1;36m▶\033[0m %s\n' "$*"; }
@@ -219,12 +262,40 @@ fi
 # --- Vault -------------------------------------------------------------------
 if [ -d "$VAULT_PATH/_meta" ] && [ -f "$VAULT_PATH/_meta/config.yaml" ]; then
   ok "Vault already initialized at $VAULT_PATH"
+  if $EMBEDDER_EXPLICIT; then
+    warn "Vault config already exists; --embedder $EMBEDDER ignored. Edit $VAULT_PATH/_meta/config.yaml or re-run with a fresh --vault path."
+  fi
 else
-  say "Initializing vault at $VAULT_PATH..."
-  INIT_ARGS=()
+  say "Initializing vault at $VAULT_PATH (embedder=$EMBEDDER)..."
+  INIT_ARGS=(--provider "$EMBEDDER")
   if $YES_FLAG; then INIT_ARGS+=(-y); fi
   memstem init "${INIT_ARGS[@]}" "$VAULT_PATH"
   ok "Vault ready at $VAULT_PATH"
+fi
+
+# --- Auth keys (cloud providers) --------------------------------------------
+# `memstem auth set` writes ~/.config/memstem/secrets.yaml so the same key
+# is reachable from cron, PM2, fresh shells, and headless servers without
+# a per-context export. The fallback layered into the embedder factory
+# means env vars still win if the operator prefers that style.
+auth_set_if() {
+  local provider="$1" key="$2"
+  if [ -n "$key" ]; then
+    say "Storing $provider API key via memstem auth set..."
+    if printf '%s' "$key" | memstem auth set "$provider" >/dev/null; then
+      ok "$provider key stored"
+    else
+      warn "$provider auth set failed — set the env var manually or re-run \`memstem auth set $provider\`"
+    fi
+  fi
+}
+auth_set_if openai "$OPENAI_KEY"
+auth_set_if gemini "$GEMINI_KEY"
+auth_set_if voyage "$VOYAGE_KEY"
+
+if [ "$EMBEDDER" != "ollama" ] && [ -z "$OPENAI_KEY$GEMINI_KEY$VOYAGE_KEY" ] \
+   && [ -z "${OPENAI_API_KEY:-}${GEMINI_API_KEY:-}${VOYAGE_API_KEY:-}" ]; then
+  warn "No API key provided for $EMBEDDER. Embedding will fail until you run \`memstem auth set $EMBEDDER <key>\` (or export ${EMBEDDER^^}_API_KEY)."
 fi
 
 # --- Migrate (optional) -----------------------------------------------------

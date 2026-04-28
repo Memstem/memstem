@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — embedder selection at install time
+
+- **`memstem init` now accepts `--provider <name>`** to write a config
+  pre-populated with sensible defaults for the chosen backend
+  (model, dimensions, `api_key_env`). Known providers: `ollama`
+  (default), `openai` (`text-embedding-3-large` @ 3072 dims),
+  `gemini` (`gemini-embedding-2-preview` @ 768 dims), `voyage`
+  (`voyage-3` @ 1024 dims).
+- **`scripts/install.sh` now accepts `--embedder <name>` and
+  `--openai-key` / `--gemini-key` / `--voyage-key`** so a single
+  `curl … | bash` invocation can land MemStem with a cloud embedder
+  configured and authenticated. Picking a non-Ollama embedder
+  implies `--no-ollama` and `--no-model`. Keys are also pickable up
+  from `MEMSTEM_OPENAI_KEY` / `MEMSTEM_GEMINI_KEY` /
+  `MEMSTEM_VOYAGE_KEY` env vars (cleaner for unattended installs
+  that want to keep keys off the command line). After install, the
+  key is stored via `memstem auth set` so every subsequent `memstem`
+  invocation on the box picks it up.
+- 17 new tests — `tests/test_embeddings.py::TestForProviderFactory`
+  (7 covering the factory), `tests/test_cli.py::TestInit` (5 covering
+  the new `--provider` flag), `tests/test_install_sh.py::TestEmbedderValidation`
+  (5 covering install.sh's embedder-name validation).
+
 ## [0.6.0] — 2026-04-28
 
 Twelve PRs that together make the v0.x line ready for a public flip:
