@@ -256,6 +256,13 @@ are trivial — single SQLite file).
    pipeline upsert. Cheapest possible win; reverts cleanly. ~150 LOC.
 2. **PR-B: Layer 2 candidate query.** Reuse existing vec_search
    plumbing. Pure read path. ~100 LOC.
+   *Status: shipped (Unreleased, 2026-04-28).
+   `memstem hygiene dedup-candidates` walks the vector index, finds
+   memory pairs whose first-chunk embeddings cross a cosine
+   threshold (default 0.85), and reports them. Read-only —
+   no mutations. Skill-vs-anything pairs are flagged for the
+   operator to be cautious during manual review until Layer 3
+   lands.*
 3. **PR-C: Layer 3 judge + audit log.** Includes prompt loader,
    Ollama call, JSON parser, audit writes. ~300 LOC.
 4. **PR-D: Resolution actions for memories.** `deprecated_by`,

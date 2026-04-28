@@ -1259,5 +1259,74 @@ def hygiene_distill(
         typer.echo("")
 
 
+@hygiene_app.command("dedup-candidates")
+def hygiene_dedup_candidates(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    min_cosine: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Cosine similarity threshold for candidate pairs. "
+                "ADR 0012 Layer 2 default is 0.85 — deliberately "
+                "permissive so the LLM judge sees plausible candidates."
+            ),
+        ),
+    ] = 0.85,
+    neighbors: Annotated[
+        int,
+        typer.Option(
+            help="How many vec-nearest-neighbors to consider per memory.",
+        ),
+    ] = 5,
+    limit: Annotated[
+        int | None,
+        typer.Option(help="Cap the report to the top-N strongest pairs."),
+    ] = None,
+) -> None:
+    """List near-duplicate candidate pairs by vec similarity.
+
+    First slice of ADR 0012 Layer 2: walks the index's stored chunk
+    embeddings, finds memory pairs whose first chunks are within a
+    cosine threshold, and reports them. **Read-only.** Does not
+    delete, merge, mark, or write anything; the operator reviews the
+    report and decides manually until Layer 3 (the LLM judge) lands.
+
+    Pairs where either side is a skill are flagged with `[skill]` so
+    the operator can be extra-careful — ADR 0012 routes skill
+    candidates through a human review queue rather than auto-merging.
+    """
+    from memstem.hygiene.dedup_candidates import find_dedup_candidate_pairs
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+    try:
+        pairs = find_dedup_candidate_pairs(
+            vault_obj,
+            index,
+            min_cosine=min_cosine,
+            neighbors_per_memory=neighbors,
+            limit=limit,
+        )
+    finally:
+        index.close()
+
+    if not pairs:
+        typer.echo(f"hygiene dedup-candidates: no pairs above cosine {min_cosine}.")
+        return
+
+    typer.echo(
+        f"hygiene dedup-candidates: {len(pairs)} candidate pair(s) (min cosine = {min_cosine}):\n"
+    )
+    for pair in pairs:
+        skill_marker = " [skill]" if pair.involves_skill else ""
+        typer.echo(
+            f"  cos={pair.cosine:.3f}{skill_marker}  "
+            f"{pair.a_title or pair.a_id}  ↔  {pair.b_title or pair.b_id}"
+        )
+        typer.echo(f"    a: {pair.a_path}  ({pair.a_id})")
+        typer.echo(f"    b: {pair.b_path}  ({pair.b_id})")
+
+
 if __name__ == "__main__":
     app()
