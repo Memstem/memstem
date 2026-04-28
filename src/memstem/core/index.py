@@ -25,7 +25,7 @@ import sqlite_vec
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -194,6 +194,22 @@ MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(ts);
         CREATE INDEX IF NOT EXISTS idx_query_log_memory_id ON query_log(memory_id);
         CREATE INDEX IF NOT EXISTS idx_query_log_kind ON query_log(kind);
+    """,
+    6: """
+        -- Hygiene worker scratchpad (ADR 0008 Tier 1 PR-C). Stores small
+        -- key/value state the worker needs across runs — currently just
+        -- the last-processed `query_log.id` so the importance bump pass
+        -- is idempotent across reruns.
+        --
+        -- Non-canonical: losing this table just means the next hygiene
+        -- run re-scans log rows it already processed, which is bounded
+        -- by the per-run bump cap. The whole table is one or two rows in
+        -- normal operation — schema is overkill but consistent with how
+        -- the rest of the index stores derived state.
+        CREATE TABLE IF NOT EXISTS hygiene_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
     """,
 }
 

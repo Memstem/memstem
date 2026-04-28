@@ -248,6 +248,13 @@ critical path for v0.1 cutover.
    boost step is the next slice — see PR-C.*
 3. **PR-C: hygiene worker scaffold + dedup + decay.** Adds the
    nightly job, the `deprecated_by` redirect, the decay update.
+   *Status: importance bump pass shipped (Unreleased, 2026-04-28).
+   `memstem hygiene importance` (with `--dry-run` default and
+   `--apply`) reads `query_log` and conservatively bumps importance
+   on retrieved records. Idempotent via a cursor in
+   `hygiene_state`. The dedup and decay slices are still pending —
+   ADR 0012's pipeline picks up dedup; decay is the next slice
+   here.*
 4. **PR-D: session distillation.** First LLM-driven distillation
    flavor, gated behind a config flag.
 5. **PR-E: topic distillation + clustering.** Second flavor; reuses

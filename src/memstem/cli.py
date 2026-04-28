@@ -83,6 +83,13 @@ auth_app = typer.Typer(
 )
 app.add_typer(auth_app)
 
+hygiene_app = typer.Typer(
+    name="hygiene",
+    help="Run vault hygiene tasks (importance bumps, dedup audits, etc.).",
+    no_args_is_help=True,
+)
+app.add_typer(hygiene_app)
+
 
 def _resolve_vault_path(override: str | None = None) -> Path:
     if override:
@@ -1131,6 +1138,70 @@ def auth_remove(
     else:
         typer.echo(f"{provider_lc} was not stored", err=True)
         raise typer.Exit(1)
+
+
+@hygiene_app.command("importance")
+def hygiene_importance(
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply/--dry-run",
+            help=(
+                "Apply the importance bumps. Default is --dry-run, which "
+                "prints the proposed changes without mutating the vault "
+                "or advancing the hygiene cursor."
+            ),
+        ),
+    ] = False,
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+) -> None:
+    """Bump importance on memories that recently appeared in retrievals.
+
+    Reads the bounded ``query_log`` written by search/get and proposes
+    conservative bumps weighted by rank, recency, and exposure kind.
+    Defaults to ``--dry-run`` so the first run is always reviewable;
+    pass ``--apply`` to persist.
+
+    Skip rules: records whose ``valid_to`` is in the past or whose
+    ``deprecated_by`` is set are not bumped. The cursor in
+    ``hygiene_state`` advances only on apply, so re-running is
+    idempotent.
+    """
+    from memstem.hygiene.importance import (
+        apply_importance_updates,
+        compute_importance_updates,
+    )
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+    try:
+        plan = compute_importance_updates(vault_obj, index)
+        if not plan.updates:
+            typer.echo("hygiene importance: no bumps proposed.")
+            if apply:
+                # Still advance the cursor so the next run starts from a
+                # fresh window — otherwise empty sweeps re-scan stale
+                # rows forever.
+                apply_importance_updates(vault_obj, index, plan)
+            return
+        mode = "applying" if apply else "dry-run"
+        typer.echo(f"hygiene importance ({mode}): {len(plan.updates)} bump(s) proposed")
+        for update in plan.updates:
+            delta = update.proposed - update.current
+            reasons = "; ".join(update.reasons) if update.reasons else "—"
+            typer.echo(
+                f"  {update.memory_id}  "
+                f"{update.current:.3f} → {update.proposed:.3f}  (+{delta:.3f})  "
+                f"[{reasons}]"
+            )
+        if apply:
+            n = apply_importance_updates(vault_obj, index, plan)
+            typer.echo(f"\nhygiene importance: applied {n} bump(s).")
+        else:
+            typer.echo("\nhygiene importance: dry-run; re-run with --apply to persist these bumps.")
+    finally:
+        index.close()
 
 
 if __name__ == "__main__":
