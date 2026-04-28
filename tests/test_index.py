@@ -97,8 +97,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 4 in ADR 0012 PR-A (body_hash_index table).
-        assert version == 4
+        # Bumped to 5 in ADR 0008 PR-B (query_log table).
+        assert version == 5
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -115,7 +115,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [4]
+            assert [r["version"] for r in rows] == [5]
         finally:
             idx.close()
 

@@ -296,6 +296,8 @@ def search(
             bm25_weight=cfg.search.bm25_weight,
             vector_weight=cfg.search.vector_weight,
             importance_weight=cfg.search.importance_weight,
+            log_client="cli" if cfg.hygiene.query_log_enabled else None,
+            log_max_rows=cfg.hygiene.query_log_max_rows,
         )
     finally:
         index.close()
@@ -492,6 +494,7 @@ def mcp(
     server = build_server(
         resources=resources,
         search_config=cfg.search,
+        hygiene_config=cfg.hygiene,
         idle_timeout_seconds=cfg.mcp.idle_timeout_seconds,
     )
     try:
@@ -689,6 +692,7 @@ async def _run_daemon(
     embedding_signature: str = "",
     http_config: Any = None,
     search_config: Any = None,
+    hygiene_config: Any = None,
 ) -> None:
     # Build the boot-echo hash set up front: walk every watched workspace +
     # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
@@ -755,6 +759,7 @@ async def _run_daemon(
                     index,
                     embedder,
                     search_config=search_config,
+                    hygiene_config=hygiene_config,
                 )
             )
         )
@@ -1010,6 +1015,7 @@ def daemon(
                 embedding_signature=_embedding_signature(cfg),
                 http_config=cfg.http,
                 search_config=cfg.search,
+                hygiene_config=cfg.hygiene,
             )
         )
     except KeyboardInterrupt:

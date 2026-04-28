@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — retrieval feedback logging (ADR 0008 Tier 1, PR-B)
+
+- **Search now records per-hit exposure into a bounded `query_log`
+  table** in `_meta/index.db` (schema migration v5). Each row carries
+  `ts`, `kind` (`search` | `get`), `query`, `client` (`cli` | `mcp` |
+  `http`), `memory_id`, `rank`, and `score`. The hygiene worker (next
+  PR) reads this table to bump `importance` on memories the user
+  actually retrieved.
+- **Logging is opt-in per call site:** `Search.search(log_client=...)`
+  enables it; the v0.6.x callers that don't pass `log_client` write
+  nothing, so test fixtures and one-off internal calls are
+  blast-radius-zero. The CLI / MCP / HTTP servers all opt in
+  automatically when `hygiene.query_log_enabled = True` (default).
+- **Logging never breaks search.** Every entry point is wrapped in
+  `try/except` that downgrades errors to one warning and continues —
+  a corrupt log table or schema-version drift will not silently mute
+  `memstem_search`.
+- **Boundedness:** the table caps at `hygiene.query_log_max_rows`
+  (default 100k). When exceeded, the oldest rows are FIFO-pruned by
+  `id` to ~90% of the cap, giving headroom for subsequent writes.
+- 21 new tests in `tests/test_retrieval_log.py` covering the schema
+  migration, per-hit row writes, get-row writes, FIFO pruning, the
+  `max_rows=0` "never prune" sentinel, the swallow-all-failures
+  contract, the score-after-importance contract, and the
+  default-off behavior for un-instrumented callers.
+
 ### Added — importance-aware ranking (ADR 0008 Tier 1, PR-A)
 
 - **Search now applies a small importance boost on top of RRF.** The

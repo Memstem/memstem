@@ -118,6 +118,22 @@ class HygieneConfig(BaseModel):
     dedup_threshold: float = 0.95
     decay_half_life_days: int = 90
     skill_extraction_enabled: bool = True
+    query_log_enabled: bool = True
+    """ADR 0008 Tier 1 query log (search/get exposure log).
+
+    Records every search-result exposure and every ``memstem_get`` open
+    into the bounded ``query_log`` table inside ``_meta/index.db``. The
+    hygiene worker reads this log to bump ``importance`` on records the
+    user actually retrieved. Set to ``False`` to disable logging
+    entirely — useful for shared-host setups where the query text is
+    sensitive."""
+
+    query_log_max_rows: int = 100_000
+    """Row cap for the ``query_log`` table. When exceeded, the oldest
+    rows are pruned by id to keep the table bounded between hygiene
+    sweeps. 100k is roughly 30 days at 100 queries/day with 30 hits
+    each. Lower this on storage-constrained hosts; raise it for vaults
+    that run hygiene infrequently."""
 
 
 class HttpServerConfig(BaseModel):

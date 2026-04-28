@@ -36,9 +36,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import memstem
-from memstem.config import HttpServerConfig, SearchConfig
+from memstem.config import HttpServerConfig, HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.index import Index
+from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
@@ -124,12 +125,17 @@ def build_app(
     embedder: Embedder | None = None,
     *,
     search_config: SearchConfig | None = None,
+    hygiene_config: HygieneConfig | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app bound to the given vault/index/embedder.
 
     ``search_config`` defaults to ``SearchConfig()``; supply the loaded
     config so the daemon's RRF tuning is the same on both the MCP and
     HTTP surfaces.
+
+    ``hygiene_config`` defaults to ``HygieneConfig()``; threading the
+    loaded config keeps the ADR 0008 query-log enabled/disabled state
+    consistent with the daemon-side hygiene worker.
     """
     app = FastAPI(
         title="Memstem",
@@ -150,6 +156,8 @@ def build_app(
 
     search = Search(vault=vault, index=index, embedder=embedder)
     sc = search_config or SearchConfig()
+    hc = hygiene_config or HygieneConfig()
+    log_client = "http" if hc.query_log_enabled else None
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -180,6 +188,8 @@ def build_app(
             importance_weight=(
                 req.importance_weight if req.importance_weight is not None else sc.importance_weight
             ),
+            log_client=log_client,
+            log_max_rows=hc.query_log_max_rows,
         )
         return [_serialize_result(r) for r in results]
 
@@ -188,6 +198,13 @@ def build_app(
         """Retrieve a single memory by vault-relative path or by id."""
         try:
             memory = vault.read(id_or_path)
+            if log_client is not None:
+                log_get(
+                    index.db,
+                    memory_id=str(memory.id),
+                    client=f"{log_client}:get",
+                    max_rows=hc.query_log_max_rows,
+                )
             return _serialize_memory(memory)
         except MemoryNotFoundError:
             pass
@@ -195,6 +212,13 @@ def build_app(
         if row is None:
             raise HTTPException(status_code=404, detail=f"no memory for {id_or_path!r}")
         memory = vault.read(row["path"])
+        if log_client is not None:
+            log_get(
+                index.db,
+                memory_id=str(memory.id),
+                client=f"{log_client}:get",
+                max_rows=hc.query_log_max_rows,
+            )
         return _serialize_memory(memory)
 
     return app
@@ -207,6 +231,7 @@ async def serve(
     embedder: Embedder | None = None,
     *,
     search_config: SearchConfig | None = None,
+    hygiene_config: HygieneConfig | None = None,
 ) -> None:
     """Run the HTTP server forever. Cancel-safe.
 
@@ -229,7 +254,13 @@ async def serve(
     # never starts the server) don't pay the import cost.
     import uvicorn
 
-    app = build_app(vault, index, embedder, search_config=search_config)
+    app = build_app(
+        vault,
+        index,
+        embedder,
+        search_config=search_config,
+        hygiene_config=hygiene_config,
+    )
     server_config = uvicorn.Config(
         app=app,
         host=config.host,

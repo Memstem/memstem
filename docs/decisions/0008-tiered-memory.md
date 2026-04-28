@@ -241,6 +241,11 @@ critical path for v0.1 cutover.
    `0.5` default.*
 2. **PR-B: query log + live boost.** Adds the `query_log` table, the
    logging hook in the MCP server, and a periodic boost step.
+   *Status: query log shipped (Unreleased, 2026-04-28). Search and
+   `memstem_get` write `query_log` rows tagged with the call site
+   (`cli` / `mcp` / `http`). The `hygiene.query_log_enabled` config
+   knob and 100k-row cap with FIFO prune are in place. The periodic
+   boost step is the next slice — see PR-C.*
 3. **PR-C: hygiene worker scaffold + dedup + decay.** Adds the
    nightly job, the `deprecated_by` redirect, the decay update.
 4. **PR-D: session distillation.** First LLM-driven distillation
