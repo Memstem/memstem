@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — near-duplicate candidate report (ADR 0012 Layer 2)
+
+- **New `memstem hygiene dedup-candidates` subcommand** scans the
+  vector index for memory pairs whose first chunk embeddings are
+  cosine-similar above a threshold (default `0.85`, per ADR 0012)
+  and prints them as an audit report. Read-only — does not delete,
+  merge, mark, or write anything. The LLM-as-judge that turns
+  candidates into definitive verdicts is Layer 3 / a future PR.
+- **Pair canonicalization** so a→b and b→a collapse into one entry
+  (`a_id < b_id` lexicographically); each pair appears exactly once
+  with its true cosine computed from raw embeddings.
+- **Skill safety flag** marks pairs where either side is a `skill`
+  record so the operator can be extra-careful — ADR 0012 routes
+  skill-vs-anything candidates through human review.
+- 17 new tests in `tests/test_hygiene_dedup_candidates.py` covering
+  empty state, near-identical vectors clustering, unrelated vectors
+  filtered, threshold tightening/loosening, self-pair exclusion, the
+  a/b canonicalization, the skill flag, sort-by-cosine-descending,
+  the `--limit` truncation, the read-only contract, dataclass
+  immutability, the documented default cosine threshold, and three
+  CLI smoke tests.
+
 ### Added — distillation candidate report (ADR 0008 Tier 2, PR-D first slice)
 
 - **New `memstem hygiene distill` subcommand** lists clusters of
