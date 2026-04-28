@@ -720,3 +720,113 @@ class TestConnectClients:
         # Rich may wrap or style flag names depending on terminal width, so we
         # only assert on the stable docstring text.
         assert "wire memstem" in result.output.lower()
+
+
+class TestAuth:
+    """Tests for `memstem auth set/show/remove`."""
+
+    def _clear_provider_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from memstem.auth import PROVIDERS
+
+        for var in PROVIDERS.values():
+            monkeypatch.delenv(var, raising=False)
+
+    def test_set_stores_key(self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._clear_provider_env(monkeypatch)
+        result = runner.invoke(app, ["auth", "set", "openai", "sk-proj-12345abcde"])
+        assert result.exit_code == 0, result.output
+        assert "stored openai" in result.output
+        # Read it back
+        from memstem.auth import get_secret
+
+        assert get_secret("openai") == "sk-proj-12345abcde"
+
+    def test_set_unknown_provider_exits_2(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["auth", "set", "bogus", "key"])
+        assert result.exit_code == 2
+        assert "unknown provider" in result.output
+
+    def test_set_empty_key_exits_2(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_provider_env(monkeypatch)
+        result = runner.invoke(app, ["auth", "set", "openai", "   "])
+        assert result.exit_code == 2
+
+    def test_set_reads_from_stdin_when_key_omitted(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_provider_env(monkeypatch)
+        result = runner.invoke(app, ["auth", "set", "voyage"], input="pa-stdin-key\n")
+        assert result.exit_code == 0, result.output
+        from memstem.auth import get_secret
+
+        assert get_secret("voyage") == "pa-stdin-key"
+
+    def test_show_one_provider_from_file(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_provider_env(monkeypatch)
+        from memstem.auth import set_secret
+
+        set_secret("openai", "sk-proj-abcdef1234567890")
+        result = runner.invoke(app, ["auth", "show", "openai"])
+        assert result.exit_code == 0
+        assert "openai:" in result.output
+        assert "(file)" in result.output
+        # Mask is in effect: full key not present
+        assert "sk-proj-abcdef1234567890" not in result.output
+
+    def test_show_one_provider_from_env(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_provider_env(monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env-1234567890")
+        result = runner.invoke(app, ["auth", "show", "openai"])
+        assert result.exit_code == 0
+        assert "(env: OPENAI_API_KEY)" in result.output
+
+    def test_show_all_providers(self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._clear_provider_env(monkeypatch)
+        from memstem.auth import set_secret
+
+        set_secret("openai", "sk-openai-1234567890")
+        set_secret("voyage", "voyage-key-1234567890")
+        result = runner.invoke(app, ["auth", "show"])
+        assert result.exit_code == 0
+        assert "openai" in result.output
+        assert "voyage" in result.output
+
+    def test_show_when_nothing_stored(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_provider_env(monkeypatch)
+        result = runner.invoke(app, ["auth", "show"])
+        # Exit 0 — listing nothing isn't an error, but the message must guide
+        assert result.exit_code == 0
+        assert "memstem auth set" in result.output
+
+    def test_show_unknown_provider_exits_2(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["auth", "show", "bogus"])
+        assert result.exit_code == 2
+
+    def test_remove_drops_secret(self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._clear_provider_env(monkeypatch)
+        from memstem.auth import get_secret, set_secret
+
+        set_secret("openai", "sk-test")
+        result = runner.invoke(app, ["auth", "remove", "openai"])
+        assert result.exit_code == 0
+        assert "removed openai" in result.output
+        assert get_secret("openai") is None
+
+    def test_remove_when_not_stored_exits_1(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_provider_env(monkeypatch)
+        result = runner.invoke(app, ["auth", "remove", "openai"])
+        assert result.exit_code == 1
+
+    def test_remove_unknown_provider_exits_2(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["auth", "remove", "bogus"])
+        assert result.exit_code == 2

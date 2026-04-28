@@ -25,7 +25,6 @@ match a query that touches only one of its sections.
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self
@@ -88,12 +87,18 @@ def chunk_text(text: str, max_chars: int = DEFAULT_CHUNK_CHARS) -> list[str]:
 
 
 def _read_api_key(env_var: str, provider: str) -> str:
-    key = os.environ.get(env_var, "").strip()
+    # Env var first, then ~/.config/memstem/secrets.yaml so cron, PM2, and
+    # headless shells don't need their own export. The auth module owns
+    # both lookups.
+    from memstem.auth import get_secret
+
+    key = get_secret(provider.lower(), env_var=env_var)
     if not key:
         raise EmbeddingError(
-            f"{provider} embedder needs an API key in ${env_var}. "
-            f"Either export {env_var} or change `embedding.provider` in "
-            f"_meta/config.yaml."
+            f"{provider} embedder needs an API key. "
+            f"Either export ${env_var}, run "
+            f"`memstem auth set {provider.lower()} <key>`, or change "
+            f"`embedding.provider` in _meta/config.yaml."
         )
     return key
 

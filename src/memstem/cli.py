@@ -74,6 +74,13 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+auth_app = typer.Typer(
+    name="auth",
+    help="Manage stored API keys for embedder providers.",
+    no_args_is_help=True,
+)
+app.add_typer(auth_app)
+
 
 def _resolve_vault_path(override: str | None = None) -> Path:
     if override:
@@ -964,6 +971,115 @@ def daemon(
         typer.echo("daemon: stopped")
     finally:
         index.close()
+
+
+@auth_app.command("set")
+def auth_set(
+    provider: Annotated[
+        str,
+        typer.Argument(help="Provider name: openai, gemini, voyage."),
+    ],
+    key: Annotated[
+        str | None,
+        typer.Argument(help="API key. Omit to read from stdin (or be prompted)."),
+    ] = None,
+) -> None:
+    """Store an API key in ``~/.config/memstem/secrets.yaml`` (mode 0600).
+
+    Used as a fallback when the corresponding env var (e.g. ``OPENAI_API_KEY``)
+    is not set in the shell — so cron, PM2, and headless servers don't need
+    their own export.
+    """
+    from memstem.auth import PROVIDERS, mask, set_secret
+
+    provider_lc = provider.lower()
+    if provider_lc not in PROVIDERS:
+        typer.echo(
+            f"unknown provider {provider!r}. Known: {', '.join(sorted(PROVIDERS))}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if key is None:
+        if sys.stdin.isatty():
+            key = typer.prompt("API key", hide_input=True)
+        else:
+            key = sys.stdin.read().strip()
+
+    if not key or not key.strip():
+        typer.echo("error: empty key", err=True)
+        raise typer.Exit(2)
+
+    set_secret(provider_lc, key)
+    typer.echo(f"stored {provider_lc}: {mask(key)}")
+
+
+@auth_app.command("show")
+def auth_show(
+    provider: Annotated[
+        str | None,
+        typer.Argument(help="Show one provider, or all known providers if omitted."),
+    ] = None,
+) -> None:
+    """Show stored secrets (masked) and where they came from (env vs file)."""
+    from memstem.auth import PROVIDERS, list_secrets, mask
+
+    if provider:
+        targets = [provider.lower()]
+        if targets[0] not in PROVIDERS:
+            typer.echo(
+                f"unknown provider {provider!r}. Known: {', '.join(sorted(PROVIDERS))}",
+                err=True,
+            )
+            raise typer.Exit(2)
+    else:
+        targets = sorted(PROVIDERS)
+
+    file_secrets = list_secrets()
+    found = False
+    for p in targets:
+        env_name = PROVIDERS[p]
+        env_val = os.environ.get(env_name, "").strip()
+        file_val = file_secrets.get(p, "")
+        if env_val:
+            typer.echo(f"{p}: {mask(env_val)}  (env: {env_name})")
+            found = True
+        elif file_val:
+            typer.echo(f"{p}: {file_val}  (file)")
+            found = True
+        elif provider:
+            typer.echo(f"{p}: not set", err=True)
+
+    if not found and not provider:
+        typer.echo(
+            "no secrets stored. Try: memstem auth set <provider> <key>",
+            err=True,
+        )
+
+
+@auth_app.command("remove")
+def auth_remove(
+    provider: Annotated[
+        str,
+        typer.Argument(help="Provider name to remove."),
+    ],
+) -> None:
+    """Remove a stored secret from ``~/.config/memstem/secrets.yaml``."""
+    from memstem.auth import PROVIDERS, remove_secret
+
+    provider_lc = provider.lower()
+    if provider_lc not in PROVIDERS:
+        typer.echo(
+            f"unknown provider {provider!r}. Known: {', '.join(sorted(PROVIDERS))}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if remove_secret(provider_lc):
+        typer.echo(f"removed {provider_lc}")
+    else:
+        typer.echo(f"{provider_lc} was not stored", err=True)
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
