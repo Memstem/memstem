@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embed worker no longer crashes when the parent memory is deleted
+  mid-embed.** The race: the worker pops a `memory_id` off
+  `embed_queue`, takes seconds to round-trip the embedder, and during
+  that window the pipeline can delete the parent (path displacement
+  during reconcile, or an explicit removal of the source file). When
+  the worker came back and called `record_embed_state`, the FK on
+  `embed_state.memory_id` rejected the INSERT with
+  `sqlite3.IntegrityError: FOREIGN KEY constraint failed`, crashing
+  the worker iteration. Surfaced on the busiest vault (Ari, 1.3 GB
+  index) during the v0.7 → v0.8 embedder migration; never observed
+  on smaller vaults (Ultra, 79 MB) where the race window almost
+  never opens. `Index.record_embed_state` now treats the FK
+  violation as a normal outcome — the cascade has already cleaned
+  `embed_queue` / `embed_state`, so there's nothing to record — and
+  also cleans any orphan `memories_vec` rows the worker may have
+  written for the now-deleted parent (vec0 doesn't enforce FK and
+  would otherwise leak orphans until the next reconcile pass that
+  touches the same path). Worker advances cleanly. Logged at INFO,
+  not WARNING — the race is expected, not an error.
+
 ## [0.8.0] — 2026-04-29
 
 The "operability" release. Seven PRs merged off `main` (#68–#76) that
