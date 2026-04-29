@@ -8,6 +8,7 @@ agent-agnostic rules files (HARD-RULES.md) exist.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,34 @@ from memstem.config import (
     ClaudeCodeAdapterConfig,
     OpenClawAdapterConfig,
 )
+
+# Top-level files the adapter already handles via dedicated layout fields
+# or the agent-agnostic shared_files path. Excluded from extras discovery
+# so we don't double-count them.
+_EXTRA_FILES_DEDICATED = frozenset(
+    {
+        "MEMORY.md",  # layout.memory_md
+        "CLAUDE.md",  # layout.claude_md
+        "HARD-RULES.md",  # adapters.openclaw.shared_files
+    }
+)
+
+# Filename patterns for files that are *.md but aren't stable system
+# references — dated snapshots, one-off incidents, recovery docs. Operators
+# can still add them by hand if they want them indexed.
+_EXTRA_FILES_NOISY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^.*_FULL_\d{4}-\d{2}-\d{2}\.md$"),
+    re.compile(r"^.*_REFERENCE_\d{4}-\d{2}-\d{2}\.md$"),
+    re.compile(r"^.*-status-report-\d{4}-\d{2}-\d{2}\.md$"),
+    re.compile(r"^INCIDENT-\d{4}-\d{2}-\d{2}\.md$"),
+    re.compile(r"^RECOVERY-.+\.md$"),
+)
+
+# Files larger than this are presumed to be append-only logs (e.g. Ari's
+# ``DREAMS.md`` at 286 KB, ``MAINTENANCE.md`` at 35 KB). Indexing them
+# churns embeddings on every edit and produces coarse search hits.
+# Operators who actually want them indexed can add them manually.
+EXTRA_FILES_SIZE_CAP_BYTES = 50_000
 
 
 @dataclass(frozen=True)
@@ -104,6 +133,46 @@ def discover_shared_files(home: Path | None = None) -> list[Path]:
     return found
 
 
+def discover_workspace_extras(workspace: Path) -> list[str]:
+    """Return curated workspace-relative top-level ``.md`` filenames
+    suitable for ``OpenClawLayout.extra_files``.
+
+    Walks the immediate workspace directory only; subdirectories
+    (``memory/``, ``skills/``, etc.) are handled by their own layout
+    fields. Filters out:
+
+    - Files already covered by dedicated layout / shared paths
+      (``MEMORY.md``, ``CLAUDE.md``, ``HARD-RULES.md``).
+    - Dated snapshots and one-off incident / recovery docs (see
+      :data:`_EXTRA_FILES_NOISY_PATTERNS`).
+    - Files larger than :data:`EXTRA_FILES_SIZE_CAP_BYTES` (presumed
+      append-only logs).
+
+    Returns alphabetically sorted filenames so wizard output is
+    deterministic.
+    """
+    if not workspace.is_dir():
+        return []
+    extras: list[str] = []
+    for entry in sorted(workspace.iterdir()):
+        if not entry.is_file():
+            continue
+        if entry.suffix != ".md":
+            continue
+        name = entry.name
+        if name in _EXTRA_FILES_DEDICATED:
+            continue
+        if any(p.match(name) for p in _EXTRA_FILES_NOISY_PATTERNS):
+            continue
+        try:
+            if entry.stat().st_size > EXTRA_FILES_SIZE_CAP_BYTES:
+                continue
+        except OSError:
+            continue
+        extras.append(name)
+    return extras
+
+
 def discover_claude_code_root(home: Path | None = None) -> Path | None:
     """Return `~/.claude/projects` if it exists, else None."""
     root = home or Path.home()
@@ -147,10 +216,12 @@ def build_default_adapters_config(home: Path | None = None) -> AdaptersConfig:
 
 
 __all__ = [
+    "EXTRA_FILES_SIZE_CAP_BYTES",
     "OpenClawCandidate",
     "build_default_adapters_config",
     "discover_claude_code_extras",
     "discover_claude_code_root",
     "discover_openclaw_candidates",
     "discover_shared_files",
+    "discover_workspace_extras",
 ]

@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from memstem.discovery import (
+    EXTRA_FILES_SIZE_CAP_BYTES,
     OpenClawCandidate,
     build_default_adapters_config,
     discover_claude_code_extras,
     discover_claude_code_root,
     discover_openclaw_candidates,
     discover_shared_files,
+    discover_workspace_extras,
 )
 
 
@@ -154,3 +156,93 @@ class TestOpenClawCandidate:
             skill_files=0,
         )
         assert cand.has_content is False
+
+
+class TestDiscoverWorkspaceExtras:
+    def _seed(self, ws: Path, files: dict[str, str | int]) -> None:
+        ws.mkdir(parents=True, exist_ok=True)
+        for name, content in files.items():
+            path = ws / name
+            if isinstance(content, int):
+                # Integer => write a file of that many bytes (sized log).
+                path.write_bytes(b"x" * content)
+            else:
+                path.write_text(content, encoding="utf-8")
+
+    def test_returns_curated_top_level_md(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        self._seed(
+            ws,
+            {
+                "MEMORY.md": "# core",
+                "CLAUDE.md": "# rules",
+                "HARD-RULES.md": "# shared",
+                "SOUL.md": "# soul",
+                "USER.md": "# user",
+                "AGENTS.md": "# agents",
+            },
+        )
+        extras = discover_workspace_extras(ws)
+        assert extras == ["AGENTS.md", "SOUL.md", "USER.md"]
+
+    def test_skips_dated_snapshots(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        self._seed(
+            ws,
+            {
+                "AGENTS_FULL_2026-03-11.md": "# snapshot",
+                "MEMORY_FULL_2026-03-11.md": "# snapshot",
+                "TOOLS_REFERENCE_2026-03-11.md": "# snapshot",
+                "ari-status-report-2026-03-11.md": "# status",
+                "INCIDENT-2026-02-23.md": "# incident",
+                "RECOVERY-OPENCLAW-UPDATE.md": "# recovery",
+                "SOUL.md": "# keep",
+            },
+        )
+        assert discover_workspace_extras(ws) == ["SOUL.md"]
+
+    def test_skips_oversize_logs(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        self._seed(
+            ws,
+            {
+                "DREAMS.md": EXTRA_FILES_SIZE_CAP_BYTES + 1,
+                "MAINTENANCE.md": EXTRA_FILES_SIZE_CAP_BYTES + 1,
+                "SOUL.md": "# small enough",
+            },
+        )
+        assert discover_workspace_extras(ws) == ["SOUL.md"]
+
+    def test_at_size_cap_included(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        self._seed(
+            ws,
+            {
+                "BIG_BUT_OK.md": EXTRA_FILES_SIZE_CAP_BYTES,
+                "JUST_OVER.md": EXTRA_FILES_SIZE_CAP_BYTES + 1,
+            },
+        )
+        assert discover_workspace_extras(ws) == ["BIG_BUT_OK.md"]
+
+    def test_ignores_non_md_and_subdirs(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        self._seed(ws, {"SOUL.md": "# soul", "openclaw.json": "{}", "README.txt": "x"})
+        # A subdirectory with a markdown file should NOT be picked up.
+        (ws / "memory").mkdir()
+        (ws / "memory" / "people.md").write_text("# people")
+        assert discover_workspace_extras(ws) == ["SOUL.md"]
+
+    def test_returns_empty_for_missing_workspace(self, tmp_path: Path) -> None:
+        assert discover_workspace_extras(tmp_path / "nonexistent") == []
+
+    def test_returns_empty_for_workspace_with_only_skipped_files(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ari"
+        self._seed(
+            ws,
+            {
+                "MEMORY.md": "# core",
+                "CLAUDE.md": "# rules",
+                "HARD-RULES.md": "# shared",
+            },
+        )
+        assert discover_workspace_extras(ws) == []

@@ -32,6 +32,7 @@ from memstem.config import (
     Config,
     EmbeddingConfig,
     OpenClawAdapterConfig,
+    OpenClawLayout,
     OpenClawWorkspace,
 )
 from memstem.core.embed_worker import drain_once, run_workers
@@ -50,6 +51,7 @@ from memstem.discovery import (
     discover_claude_code_root,
     discover_openclaw_candidates,
     discover_shared_files,
+    discover_workspace_extras,
 )
 from memstem.integration import (
     Change,
@@ -170,8 +172,18 @@ def _run_init_wizard(home: Path) -> AdaptersConfig:
         typer.echo("")
         for cand in candidates:
             include = typer.confirm(f"Include {cand.tag}?", default=False)
-            if include:
-                workspaces.append(OpenClawWorkspace(path=cand.workspace, tag=cand.tag))
+            if not include:
+                continue
+            extras = discover_workspace_extras(cand.workspace)
+            layout = OpenClawLayout()
+            if extras:
+                listing = ", ".join(extras)
+                if typer.confirm(
+                    f"  Index {len(extras)} top-level system file(s) ({listing})?",
+                    default=True,
+                ):
+                    layout = OpenClawLayout(extra_files=list(extras))
+            workspaces.append(OpenClawWorkspace(path=cand.workspace, tag=cand.tag, layout=layout))
     else:
         typer.echo("\nNo OpenClaw agents found.")
 
