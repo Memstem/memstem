@@ -368,6 +368,9 @@ Verify it's working:
 
 Vault:  $VAULT_PATH
 Config: $VAULT_PATH/_meta/config.yaml
+
+If memstem helps you, please star the repo — it's how I gauge whether to keep building.
+  ⭐  https://github.com/Memstem/memstem
 EOF
 elif $CONNECT_CLIENTS; then
   cat <<EOF
@@ -385,6 +388,9 @@ Next steps:
 
 Vault:  $VAULT_PATH
 Config: $VAULT_PATH/_meta/config.yaml
+
+If memstem helps you, please star the repo — it's how I gauge whether to keep building.
+  ⭐  https://github.com/Memstem/memstem
 EOF
 else
   cat <<EOF
@@ -406,5 +412,8 @@ Next steps:
 
 Vault:  $VAULT_PATH
 Config: $VAULT_PATH/_meta/config.yaml
+
+If memstem helps you, please star the repo — it's how I gauge whether to keep building.
+  ⭐  https://github.com/Memstem/memstem
 EOF
 fi

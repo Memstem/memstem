@@ -1,10 +1,16 @@
 # Memstem
 
+[![Stars](https://img.shields.io/github/stars/Memstem/memstem?style=social)](https://github.com/Memstem/memstem/stargazers)
+[![CI](https://github.com/Memstem/memstem/actions/workflows/ci.yml/badge.svg)](https://github.com/Memstem/memstem/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 Unified memory and skill infrastructure for AI agents. One canonical knowledge store. Many AI clients. No version-fragility.
 
 > A central memory with stems reaching out to other systems, drawing their memories in.
 
 ![Memstem — one memory layer for every AI agent](./docs/images/hero.png)
+
+**If memstem helps you, please ⭐ [the repo](https://github.com/Memstem/memstem) — stars are how I gauge whether to keep building this in the open.**
 
 ## What it is
 
@@ -32,7 +38,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.6.0 — public-ready.** Live on the maintainer's box; ingesting from
+**v0.7.0 — public release.** Live on the maintainer's box; ingesting from
 multi-agent OpenClaw + Claude Code in real time. Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
@@ -59,7 +65,7 @@ Cross-platform CI runs Linux (gating) plus macOS and Windows
 (experimental, `continue-on-error: true` — sqlite-vec needs
 `enable_load_extension`, which `actions/setup-python`'s macOS build
 doesn't ship; native Windows is WSL2-only by design for v0.x).
-617 tests, 88% coverage. See [CHANGELOG.md](./CHANGELOG.md) for the
+737 tests, 88% coverage. See [CHANGELOG.md](./CHANGELOG.md) for the
 release-by-release history and [ROADMAP.md](./ROADMAP.md) for what's
 next.
 
@@ -259,6 +265,12 @@ All checks passed.
 - [MCP API](./docs/mcp-api.md) — tool definitions
 - [Decisions](./docs/decisions/) — Architecture Decision Records
 - [Plan](./PLAN.md) — current work breakdown
+
+## Why star this repo
+
+Memstem is a solo, open-source project shipped under MIT. There's no telemetry, no analytics, no auth-walled "free tier" — so I have no idea who's using it unless you tell me. Stars are the only honest signal I have for whether to keep investing time in this. If memstem makes your AI workflow better, a star takes two seconds and directly shapes what gets built next.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Memstem/memstem&type=Date)](https://star-history.com/#Memstem/memstem&Date)
 
 ## License
 

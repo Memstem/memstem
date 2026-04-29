@@ -55,6 +55,7 @@ from memstem.integration import (
     remove_legacy_mcp_server,
 )
 from memstem.servers.mcp_server import _Resources, build_server
+from memstem.star_nudge import maybe_print as _maybe_print_star_nudge
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ def init(
             f"or export ${embedding_cfg.api_key_env}."
         )
     typer.echo(f"Run `memstem doctor --vault {path}` to verify.")
+    _maybe_print_star_nudge(typer.echo)
 
 
 @app.command()
@@ -622,6 +624,7 @@ def doctor(
         typer.echo(f"{failures} issue(s). Run with --vault to point at a different vault.")
         raise typer.Exit(1)
     typer.echo("All checks passed.")
+    _maybe_print_star_nudge(typer.echo)
 
 
 async def _drain_into_pipeline(
@@ -1282,6 +1285,20 @@ def hygiene_dedup_candidates(
         int | None,
         typer.Option(help="Cap the report to the top-N strongest pairs."),
     ] = None,
+    max_memories: Annotated[
+        int | None,
+        typer.Option(
+            "--max-memories",
+            help=(
+                "Bounded preview: only consider the first N indexed "
+                "memories (sorted by id) as the outer loop. A full scan "
+                "issues one vec query per memory — quadratic in vault "
+                "size, several tens of seconds on a ~1k-memory vault — "
+                "so this flag is the right knob for a smoke test or a "
+                "quick spot check. Default is unbounded (full scan)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """List near-duplicate candidate pairs by vec similarity.
 
@@ -1294,6 +1311,10 @@ def hygiene_dedup_candidates(
     Pairs where either side is a skill are flagged with `[skill]` so
     the operator can be extra-careful — ADR 0012 routes skill
     candidates through a human review queue rather than auto-merging.
+
+    Note on cost: a full scan is roughly O(N²) in indexed memories,
+    not bounded by `--limit` (which only caps the *report*). For a
+    bounded preview, pass `--max-memories N`.
     """
     from memstem.hygiene.dedup_candidates import find_dedup_candidate_pairs
 
@@ -1307,6 +1328,7 @@ def hygiene_dedup_candidates(
             min_cosine=min_cosine,
             neighbors_per_memory=neighbors,
             limit=limit,
+            max_memories=max_memories,
         )
     finally:
         index.close()
@@ -1347,6 +1369,17 @@ def hygiene_dedup_judge(
     limit: Annotated[
         int | None,
         typer.Option(help="Cap pairs evaluated by the judge."),
+    ] = None,
+    max_memories: Annotated[
+        int | None,
+        typer.Option(
+            "--max-memories",
+            help=(
+                "Bounded preview: only consider the first N indexed "
+                "memories as the outer loop for candidate generation. "
+                "Same semantics as `dedup-candidates --max-memories`."
+            ),
+        ),
     ] = None,
     enable_llm: Annotated[
         bool,
@@ -1404,6 +1437,7 @@ def hygiene_dedup_judge(
             min_cosine=min_cosine,
             neighbors_per_memory=neighbors,
             limit=limit,
+            max_memories=max_memories,
         )
         if not pairs:
             typer.echo("hygiene dedup-judge: no candidate pairs to judge.")

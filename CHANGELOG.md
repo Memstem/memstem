@@ -7,6 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Once-per-machine star nudge.** After a successful `memstem init` or
+  `memstem doctor`, the CLI prints a single line asking the user to star
+  the repo on GitHub if memstem helps them. The same line appears at
+  the end of `install.sh`. Suppressed when stdout is not a TTY (so
+  scripts and CI stay clean), when `MEMSTEM_NO_NUDGE` is set in the
+  env, or when `~/.config/memstem/.star-shown` already exists.
+- **README badges** — stars (Shields), CI status, MIT license; star
+  history chart in a new "Why star this repo" section.
+
+## [0.7.0] — 2026-04-28
+
+The "memory quality" release. Six PRs merged off `main` (#61–#66) that
+together close the v0.x retrieval-quality loop end-to-end: importance
+boosts on top of RRF, a bounded retrieval feedback log that powers
+deterministic hygiene bumps, a distillation candidate report, a
+near-duplicate candidate report, and an LLM-judge + audit-log
+scaffold that lets a future PR write resolutions back to the vault
+without surprising anyone today. None of this is destructive on
+its own — every new sweep ships either dry-run or read-only by
+default.
+
+Stages shipped:
+
+1. **Importance-aware ranking (ADR 0008 Tier 1, PR-A, #61).**
+   Search applies `final = rrf * (1 + alpha * importance)` on top of
+   RRF, with `alpha = search.importance_weight` (default `0.2`) and
+   un-annotated memories defaulting to `importance = 0.5` so they
+   aren't penalized. Tunable per-call, per-vault, and per-request.
+2. **Retrieval feedback logging (ADR 0008 Tier 1, PR-B, #62).**
+   Search and `memstem_get` write per-hit exposure to a bounded
+   `query_log` table (schema v5). Bounded at
+   `hygiene.query_log_max_rows` (default 100k); every entry point is
+   wrapped in `try/except` so a corrupt log can never silently mute
+   search. Default-on; disable with `hygiene.query_log_enabled = false`.
+3. **Deterministic hygiene importance bumps (ADR 0008 Tier 1, PR-C,
+   #63).** New `memstem hygiene importance` subcommand consumes the
+   `query_log` and proposes conservative bumps (`0.05` per get,
+   `0.01 / rank` per search hit, half-weighted at 30+ days, capped at
+   `0.1` per sweep and `1.0` overall). Default is `--dry-run`; the
+   cursor in `hygiene_state` (schema v6) only advances on `--apply`,
+   so re-running is idempotent.
+4. **Distillation candidate report (ADR 0008 Tier 2, PR-D first slice,
+   #64).** New `memstem hygiene distill` subcommand lists clusters
+   that *could* be distilled — topic-tag clusters and same-agent
+   ISO-week daily-log clusters, both above `--min-cluster-size`
+   (default 5). Read-only; the LLM distiller that turns a cluster
+   into a `type=distillation` memory is a later PR behind an
+   explicit flag.
+5. **Near-duplicate candidate report (ADR 0012 Layer 2, #65).**
+   New `memstem hygiene dedup-candidates` subcommand reports memory
+   pairs whose first-chunk embeddings are above a cosine threshold
+   (default `0.85`, ADR 0012). Read-only; no auto-merge. Skill-side
+   pairs are flagged so the operator can route them through human
+   review.
+6. **LLM-judge scaffolding + audit log (ADR 0012 Layer 3, #66).**
+   New `memstem hygiene dedup-judge` subcommand judges each candidate
+   pair and writes one row per result to a `dedup_audit` table
+   (schema v7) with `applied = 0`. Default judge is `NoOpJudge`
+   (verdict `UNRELATED` for every pair) — opt into the real Ollama
+   judge with `--enable-llm`. **No vault frontmatter is written from
+   this PR.** A future resolution PR will read `applied = 0` rows and
+   write `deprecated_by` / `valid_to` / `supersedes` / `links` for
+   safe verdicts.
+
+### Added — bounded preview mode for `dedup-candidates`
+
+- **`memstem hygiene dedup-candidates --max-memories N`** caps the
+  outer loop at the first N indexed memory ids (sorted by id), so
+  the sweep finishes in O(M·N) instead of O(N²) and is bounded by a
+  smoke-test timeout. The default behavior is unchanged: omitting
+  the flag still runs a full scan. Same flag is plumbed through
+  `dedup-judge` for consistency. The function-level
+  `find_dedup_candidate_pairs(..., max_memories=...)` parameter is
+  the supported way to call this from Python.
+- **Why:** the function issues one `query_vec` per indexed memory,
+  and `query_vec` is a vec0 k-NN MATCH that scans all of
+  `memories_vec`. On a ~1k-memory vault that's ~30s; on Brad's
+  production vault that exceeded a 45-second smoke timeout even with
+  `--neighbors 1 --limit 1`. `--limit` only caps the *report*, not
+  the work; the new flag caps the *work*.
+- **Small efficiency win:** the per-memory metadata fetch is now
+  one bulk query instead of N. Negligible on small vaults, a
+  measurable win at production scale.
+- 3 new tests in `TestMaxMemories` (cap bounds the outer loop,
+  `max_memories=0` returns empty, `max_memories=None` matches the
+  default full scan).
+
+### Added — operational smoke test
+
+- **`scripts/smoke_0_7_0.sh`** — read-only / dry-run production
+  smoke test. Defaults: takes a `VAULT=/path/to/vault` env var,
+  runs each new-in-0.7.0 sweep in its safest mode, never invokes
+  the live Ollama judge, never applies importance bumps, and
+  bounds `dedup-candidates` to a small `--max-memories` so it
+  always returns inside the timeout. The only writes it can cause
+  are the unavoidable `query_log` rows from a single search, which
+  the hygiene config can disable per-vault if even that is too
+  much. See `docs/operations.md` for the full procedure.
+
+### Docs — `docs/operations.md`
+
+- New "0.7.0 production smoke test" section with the six-step
+  ladder (health, HTTP search, query_log / importance dry-run,
+  distill, dedup-candidates bounded, dedup-judge warning), what
+  each step asserts, and the explicit warning that
+  `dedup-judge` writes to `dedup_audit` even with `NoOpJudge` —
+  rows are always inserted; only the verdict differs.
+
 ### Added — LLM-judge scaffolding + audit log (ADR 0012 Layer 3)
 
 - **New `memstem hygiene dedup-judge` subcommand** runs each candidate

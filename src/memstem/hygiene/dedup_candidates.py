@@ -152,6 +152,7 @@ def find_dedup_candidate_pairs(
     min_cosine: float = DEFAULT_MIN_COSINE,
     neighbors_per_memory: int = DEFAULT_NEIGHBORS_PER_MEMORY,
     limit: int | None = None,
+    max_memories: int | None = None,
 ) -> list[DedupCandidatePair]:
     """Walk the vault and report memory pairs whose first chunks are similar.
 
@@ -170,6 +171,17 @@ def find_dedup_candidate_pairs(
     ``limit`` is set, only the top ``limit`` pairs are returned —
     handy for "show me the top 20 candidates" CLI use.
 
+    **Cost.** ``limit`` only caps the *output*; the loop still issues
+    one ``query_vec`` per memory in the index. ``query_vec`` is a vec0
+    k-NN MATCH that scans the full ``memories_vec`` table, so the total
+    work scales roughly as O(N²) in vault size — on a ~1k-memory vault
+    this is several tens of seconds, on a 5k-memory vault it's minutes.
+    For a bounded "preview" run, set ``max_memories`` to cap the outer
+    loop at the first M memory ids (sorted lexicographically); the
+    sweep then runs in O(M·N) and finishes in a few seconds. Production
+    full scans should run async, not inside a smoke test with a 45-second
+    timeout.
+
     The function is read-only on both vault and index. Failures to
     read individual memories are logged and skipped; the sweep does
     not abort on a single missing file.
@@ -184,21 +196,26 @@ def find_dedup_candidate_pairs(
         ).fetchall()
     memory_ids = [r["memory_id"] for r in rows]
 
-    # Cache type/title/path per memory_id to avoid repeated index reads.
+    # Outer-loop cap: lets the CLI ship a "preview / smoke" mode that
+    # finishes in bounded time. The lexicographic sort above means the
+    # subset is stable across runs.
+    if max_memories is not None and max_memories >= 0:
+        memory_ids = memory_ids[:max_memories]
+
+    # Cache type/title/path for *all* indexed memories in one SQL — we
+    # need the metadata for both the outer loop's memory_id and any
+    # neighbors that come back from query_vec (those neighbors aren't
+    # capped by max_memories). One query is cheap; N queries against
+    # the metadata table dominate small vaults.
     metadata: dict[str, dict[str, str | None]] = {}
     with index._lock:
-        for memory_id in memory_ids:
-            row = index.db.execute(
-                "SELECT title, path, type FROM memories WHERE id = ?",
-                (memory_id,),
-            ).fetchone()
-            if row is None:
-                continue
-            metadata[memory_id] = {
-                "title": row["title"],
-                "path": row["path"],
-                "type": row["type"],
-            }
+        meta_rows = index.db.execute("SELECT id, title, path, type FROM memories").fetchall()
+    for row in meta_rows:
+        metadata[row["id"]] = {
+            "title": row["title"],
+            "path": row["path"],
+            "type": row["type"],
+        }
 
     seen_pairs: dict[tuple[str, str], DedupCandidatePair] = {}
     for memory_id in memory_ids:
