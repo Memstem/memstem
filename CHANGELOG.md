@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-04-29
+
+The "operability" release. Seven PRs merged off `main` (#68–#76) that
+together close two operability gaps: the CLI hung on every shell
+invocation against a populated index, and OpenClaw workspaces with
+foundational system files beyond `MEMORY.md` / `CLAUDE.md` had no
+clean way into the vault. ADR 0014 frames the CLI work as both a bug
+fix and an architectural shift — the CLI is now a thin client over
+the daemon when one is reachable, falling back to direct DB only when
+no daemon is running. ADR 0013 frames the workspace work as a
+per-workspace `extra_files` list with end-to-end CLI visibility (init
+wizard discovery, doctor checks, daemon banner).
+
+Schema migration: 7 → 8 (one-shot `embed_state` backfill marker, runs
+microseconds on already-stamped vaults).
+
 ### Fixed
 
 - **`Index.connect()` no longer scans the full vec0 table on every
