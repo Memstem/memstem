@@ -208,6 +208,15 @@ class OpenClawLayout(BaseModel):
     record containing the chronological transcript of user prompts and
     assistant responses."""
 
+    extra_files: list[str] = Field(default_factory=list)
+    """Additional top-level files (relative to workspace root) to ingest
+    as memory records. Each gets the workspace's ``agent:<tag>`` tag,
+    same as ``MEMORY.md``/``CLAUDE.md``. Use this for per-agent system
+    files beyond the two-file convention — e.g. ``SOUL.md``, ``USER.md``,
+    ``AGENTS.md``. Auto-discovery is intentionally NOT done: workspaces
+    often hold dated snapshots and append-only logs that would churn
+    the index, so the operator enumerates what's worth indexing."""
+
 
 class OpenClawWorkspace(BaseModel):
     """One OpenClaw agent workspace and its display tag.
