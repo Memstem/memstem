@@ -25,7 +25,7 @@ import sqlite_vec
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -237,6 +237,16 @@ MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_dedup_audit_existing_id ON dedup_audit(existing_id);
         CREATE INDEX IF NOT EXISTS idx_dedup_audit_verdict ON dedup_audit(verdict);
     """,
+    8: """
+        -- ADR 0014: marker version for "legacy embed_state backfill has run".
+        -- The backfill itself is a Python step in `_migrate()` gated on the
+        -- pre-migration `schema_version`; this entry exists so the loop
+        -- bumps the recorded version to 8 alongside fresh-install + legacy
+        -- upgrade paths. Pre-fix, the backfill ran on every connect and
+        -- did a full vec0 scan that scaled O(memories x chunks) -- 35 s on
+        -- a 1+ GB index. See ADR 0014 for context.
+        SELECT 1;
+    """,
 }
 
 
@@ -325,6 +335,11 @@ class Index:
         except sqlite3.OperationalError:
             current = 0
 
+        # Capture the pre-migration version so we can run one-shot
+        # Python-side backfill steps exactly when the schema crosses the
+        # boundary that introduces them. ADR 0014.
+        old_current = current
+
         for version in sorted(MIGRATIONS):
             if version <= current:
                 continue
@@ -336,16 +351,34 @@ class Index:
             self.db.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
 
         self._ensure_vec_table()
-        self._backfill_embed_state()
+        # Pre-ADR-0014 this ran on every connect and was the dominant
+        # cost of opening a populated index (~35 s on a 1 GB vec0). Now
+        # it runs at most once: when an install crosses v8, either via
+        # the migration loop above (fresh installs) or on the first
+        # open after upgrade (legacy v3..v7 installs). The function
+        # itself keeps a defensive fast-path so calling it on a fully-
+        # backfilled vault is microseconds, not seconds.
+        if old_current < 8:
+            self._backfill_embed_state()
         self.db.commit()
 
     def _backfill_embed_state(self) -> None:
         """Populate `embed_state` for memories that already have vectors.
 
-        Runs every time the index opens; idempotent. The expected
-        workload is the v3 upgrade, where it stamps every previously-
-        embedded memory in one pass so the daemon's next reconcile
-        doesn't re-enqueue them. Subsequent boots are a no-op.
+        Called once when an install crosses schema v8 (fresh installs
+        via the migration loop, legacy installs on first open after
+        upgrade). Pre-ADR-0014 this ran on every connect, which made
+        the heavy SELECT below — a vec0 scan per memory — the dominant
+        cost of opening a populated index. ADR 0014 moved the call
+        site into the migration step so it never runs against an
+        already-backfilled vault.
+
+        The fast-path pre-check below is defensive belt-and-suspenders:
+        it keeps the function safe to call from tests or future code
+        paths without re-introducing the slow scan when there is in
+        fact nothing to backfill. The pre-check is a single
+        ``embed_state`` PK index lookup (microseconds), not a vec0
+        scan.
 
         Uses ``INSERT OR IGNORE`` so the helper survives the race
         where two connections (e.g. an MCP child and a CLI invocation)
@@ -362,6 +395,21 @@ class Index:
         until the body changes (which re-embeds and stamps the real
         signature) or until the user runs ``memstem reindex``.
         """
+        # Fast-path: if every memory already has an embed_state row,
+        # there is nothing to backfill and we must not touch vec0. The
+        # PK index on embed_state.memory_id makes this microseconds
+        # even on large vaults; the heavy SELECT below scales with the
+        # vec0 table size, which on a 1 GB index is 30+ seconds.
+        needs_backfill = self.db.execute(
+            """
+            SELECT 1 FROM memories m
+            WHERE NOT EXISTS (SELECT 1 FROM embed_state s WHERE s.memory_id = m.id)
+            LIMIT 1
+            """
+        ).fetchone()
+        if needs_backfill is None:
+            return
+
         rows = self.db.execute(
             """
             SELECT m.id AS id, m.body AS body

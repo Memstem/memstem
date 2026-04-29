@@ -97,8 +97,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 7 in ADR 0012 PR-C (dedup_audit table).
-        assert version == 7
+        # Bumped to 8 in ADR 0014 (one-shot embed_state backfill marker).
+        assert version == 8
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -115,7 +115,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [7]
+            assert [r["version"] for r in rows] == [8]
         finally:
             idx.close()
 
@@ -379,7 +379,31 @@ class TestEmbedState:
 class TestBackfillEmbedState:
     """On schema v3 upgrade, memories that already have vectors should
     get `embed_state` rows written so the daemon doesn't re-enqueue
-    everything on first start."""
+    everything on first start.
+
+    ADR 0014 moved the call site from "every connect" to "exactly once
+    when the recorded schema_version crosses v8". The v3-upgrade
+    behavior is unchanged for legacy installs; the difference is that
+    a vault already at v8 will not re-run the backfill on reopen. The
+    setup helper below simulates a pre-v8 install by stamping
+    `schema_version = 7` so the migration loop bumps it to 8 and runs
+    the backfill exactly the way it would on a real upgrade.
+    """
+
+    @staticmethod
+    def _stamp_pre_v8(db_path: Path) -> None:
+        """Force schema_version back to 7 on disk so the next open
+        triggers the v8 boundary backfill — the legacy-upgrade path
+        ADR 0014 specifies."""
+        import sqlite3
+
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version(version) VALUES (7)")
+            conn.commit()
+        finally:
+            conn.close()
 
     def test_backfill_populates_state_for_vectorized_memories(self, tmp_path: Path) -> None:
         db_path = tmp_path / "index.db"
@@ -395,8 +419,9 @@ class TestBackfillEmbedState:
             idx.db.commit()
         finally:
             idx.close()
+        self._stamp_pre_v8(db_path)
 
-        # Reopen — backfill runs in `_migrate`.
+        # Reopen — backfill runs in `_migrate` because old_current < 8.
         idx2 = Index(db_path, dimensions=8)
         idx2.connect()
         try:
@@ -424,6 +449,7 @@ class TestBackfillEmbedState:
             idx.db.commit()
         finally:
             idx.close()
+        self._stamp_pre_v8(db_path)
 
         idx2 = Index(db_path, dimensions=8)
         idx2.connect()
@@ -449,6 +475,7 @@ class TestBackfillEmbedState:
             idx.record_embed_state(str(memory.id), body_hash("x"), "real:sig:8")
         finally:
             idx.close()
+        self._stamp_pre_v8(db_path)
 
         idx2 = Index(db_path, dimensions=8)
         idx2.connect()
@@ -461,6 +488,71 @@ class TestBackfillEmbedState:
             assert row["embed_signature"] == "real:sig:8"
         finally:
             idx2.close()
+
+    def test_backfill_does_not_run_on_already_migrated_db(self, tmp_path: Path) -> None:
+        """ADR 0014 regression: a v8+ install must not re-run the
+        backfill SELECT on reopen. Pre-fix this query did a vec0 scan
+        per memory; on a 1+ GB index that's 30+ seconds of CPU on every
+        CLI invocation. We assert the function isn't called by patching
+        it and checking call count.
+        """
+        from unittest.mock import patch
+
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="already-backfilled")
+            idx.upsert(memory)
+            idx.upsert_vectors(str(memory.id), ["already-backfilled"], [[0.1] * 8])
+        finally:
+            idx.close()
+
+        # First connect bumped to v8. Reopen and verify the backfill
+        # function is NOT called.
+        idx2 = Index(db_path, dimensions=8)
+        with patch.object(Index, "_backfill_embed_state", autospec=True) as mocked_backfill:
+            idx2.connect()
+            try:
+                assert mocked_backfill.call_count == 0
+            finally:
+                idx2.close()
+
+    def test_backfill_fast_path_skips_vec0_when_state_is_full(self, tmp_path: Path) -> None:
+        """Defensive fast-path: even if `_backfill_embed_state` is
+        called directly (bypassing the migration gate), it must not
+        touch the vec0 table when every memory already has an
+        embed_state row. The pre-check uses the embed_state PK index
+        only, so the heavy SELECT against vec0 is never issued.
+
+        We capture executed SQL via SQLite's trace callback and verify
+        that no statement against `memories_vec` runs after the
+        pre-check returns "nothing to backfill".
+        """
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="fully-stamped")
+            idx.upsert(memory)
+            idx.upsert_vectors(str(memory.id), ["fully-stamped"], [[0.1] * 8])
+            idx.record_embed_state(str(memory.id), body_hash("fully-stamped"), "sig:8")
+
+            executed: list[str] = []
+            idx.db.set_trace_callback(executed.append)
+            try:
+                idx._backfill_embed_state()
+            finally:
+                idx.db.set_trace_callback(None)
+
+            # The pre-check SELECT runs (and returns None). The heavy
+            # SELECT that references memories_vec must not run.
+            assert any("NOT EXISTS" in sql and "embed_state" in sql for sql in executed)
+            assert not any("memories_vec" in sql for sql in executed), (
+                f"vec0 was queried despite empty backfill set: {executed!r}"
+            )
+        finally:
+            idx.close()
 
     def test_backfill_survives_duplicate_insert(self, tmp_path: Path) -> None:
         """Regression: the helper's INSERT must use `INSERT OR IGNORE`

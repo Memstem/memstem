@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Index.connect()` no longer scans the full vec0 table on every
+  open** (ADR 0014). The legacy `embed_state` backfill ran on every
+  connect and issued a SELECT that scaled `O(memories x chunks)` —
+  on a 1+ GB index that was 35 seconds of CPU per CLI invocation,
+  while the long-running daemon paid the cost only once at startup.
+  The backfill is now gated on the pre-migration `schema_version`
+  and runs at most once per install (when crossing v8); fresh
+  installs hit it via the migration loop, legacy v3..v7 installs hit
+  it on first open after upgrade, and v8+ opens skip it entirely.
+  `_backfill_embed_state` keeps a defensive fast-path so calling it
+  on an already-stamped vault is microseconds, not seconds. Schema
+  version bumped 7 → 8.
+
 ### Added
 
 - **Once-per-machine star nudge.** After a successful `memstem init` or
@@ -17,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   env, or when `~/.config/memstem/.star-shown` already exists.
 - **README badges** — stars (Shields), CI status, MIT license; star
   history chart in a new "Why star this repo" section.
+- **ADR 0014: CLI daemon delegation + one-shot migration discipline**
+  — locks two architectural decisions for the v0.7.x stabilization:
+  (1) backfills are part of the migration step that introduces them,
+  not on every connect, and (2) the CLI delegates read paths to the
+  daemon when one is reachable. Lands as three sequential PRs.
 
 ## [0.7.0] — 2026-04-28
 
