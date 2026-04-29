@@ -288,6 +288,11 @@ def _iter_workspace_files(ws: OpenClawWorkspace) -> Iterator[tuple[Path, list[st
         if claude_md.is_file():
             yield (claude_md, ["instructions"])
 
+    for rel_path in layout.extra_files:
+        extra = base / rel_path
+        if extra.is_file():
+            yield (extra, [])
+
     for rel_dir in layout.memory_dirs:
         memory_dir = base / rel_dir
         if memory_dir.is_dir():
@@ -344,6 +349,13 @@ def _classify_workspace_path(path: Path, ws: OpenClawWorkspace) -> tuple[bool, l
         return (True, ["core"])
     if layout.claude_md is not None and path == (base / layout.claude_md).resolve():
         return (True, ["instructions"])
+
+    for rel_path in layout.extra_files:
+        try:
+            if path == (base / rel_path).resolve():
+                return (True, [])
+        except OSError:
+            continue
 
     if path.suffix == ".md":
         for rel_dir in layout.memory_dirs:

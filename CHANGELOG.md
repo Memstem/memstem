@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timings`), so future regressions of the embed_state-backfill
   shape become visible in-band. New module:
   `src/memstem/progress.py` (reusable `phase()` context manager).
+- **`OpenClawLayout.extra_files`** — workspace-relative top-level files
+  beyond `MEMORY.md` / `CLAUDE.md` that the OpenClaw adapter ingests
+  with the workspace's `agent:<tag>` tag. Closes a coverage gap on
+  agents like Ari with foundational system files (`SOUL.md`,
+  `USER.md`, `AGENTS.md`, `IDENTITY.md`, `TOOLS.md`, etc.) that
+  previously needed to be added to `shared_files` (wrong tag) or stay
+  unindexed. See ADR 0013.
 - **Once-per-machine star nudge.** After a successful `memstem init` or
   `memstem doctor`, the CLI prints a single line asking the user to star
   the repo on GitHub if memstem helps them. The same line appears at

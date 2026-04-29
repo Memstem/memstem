@@ -205,6 +205,31 @@ class TestClassifyWorkspacePath:
         interesting, _ = _classify_workspace_path(tmp_path / "ari" / "openclaw.json", ws)
         assert interesting is False
 
+    def test_extra_files_recognized(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(
+            path=tmp_path / "ari",
+            tag="ari",
+            layout=OpenClawLayout(extra_files=["SOUL.md", "USER.md"]),
+        )
+        (tmp_path / "ari").mkdir()
+        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "SOUL.md", ws)
+        assert interesting is True
+        assert extra == []
+        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "USER.md", ws)
+        assert interesting is True
+        assert extra == []
+
+    def test_extra_files_path_not_listed_ignored(self, tmp_path: Path) -> None:
+        ws = OpenClawWorkspace(
+            path=tmp_path / "ari",
+            tag="ari",
+            layout=OpenClawLayout(extra_files=["SOUL.md"]),
+        )
+        (tmp_path / "ari").mkdir()
+        # AGENTS.md isn't listed → should not be picked up as a top-level extra.
+        interesting, _ = _classify_workspace_path(tmp_path / "ari" / "AGENTS.md", ws)
+        assert interesting is False
+
     def test_path_outside_workspace(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
         (tmp_path / "ari").mkdir()
@@ -387,6 +412,51 @@ class TestWorkspaceLayout:
         adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="ari")])
         records = await _drain(adapter.reconcile([]))
         assert len(records) == 4
+
+    async def test_extra_files_ingested_with_agent_tag(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "MEMORY.md", "# core")
+        _write(ws_root / "SOUL.md", "# Soul\n\nIdentity content")
+        _write(ws_root / "USER.md", "# User\n\nOperator profile")
+        # Decoy top-level file not listed in extra_files.
+        _write(ws_root / "AGENTS.md", "# Agents\n\nshould not be ingested")
+
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="ari",
+                    layout=OpenClawLayout(extra_files=["SOUL.md", "USER.md"]),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        refs = {r.ref for r in records}
+        assert str(ws_root / "SOUL.md") in refs
+        assert str(ws_root / "USER.md") in refs
+        assert str(ws_root / "AGENTS.md") not in refs
+        # Tagged with the workspace's agent tag, not `shared`.
+        soul = next(r for r in records if r.ref.endswith("SOUL.md"))
+        assert "agent:ari" in soul.tags
+        assert "shared" not in soul.tags
+
+    async def test_extra_files_missing_silently_skipped(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "MEMORY.md", "# core")
+
+        adapter = OpenClawAdapter(
+            workspaces=[
+                OpenClawWorkspace(
+                    path=ws_root,
+                    tag="ari",
+                    layout=OpenClawLayout(extra_files=["NONEXISTENT.md"]),
+                )
+            ]
+        )
+        records = await _drain(adapter.reconcile([]))
+        # MEMORY.md present, NONEXISTENT.md not — no crash, just one record.
+        assert len(records) == 1
+        assert records[0].ref.endswith("MEMORY.md")
 
     def test_classify_path_honors_custom_memory_dir(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(
