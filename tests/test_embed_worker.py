@@ -366,3 +366,68 @@ class TestEmbedStateOnSuccess:
         assert row is not None
         assert row["body_hash"] == body_hash("")
         assert row["embed_signature"] == self.SIG
+
+    def test_worker_advances_when_parent_deleted_mid_embed(
+        self, vault: Vault, index: Index
+    ) -> None:
+        """Regression for the FK race that caused
+        ``sqlite3.IntegrityError: FOREIGN KEY constraint failed`` and
+        crashed the worker on Ari's box during the v0.7 → v0.8
+        embedder migration: the parent ``memories`` row gets deleted
+        while the worker is round-tripping the embedder, then the
+        worker comes back and tries to ``record_embed_state`` for an
+        id whose cascade has already nuked its queue/state rows.
+
+        We simulate the race deterministically by having the embedder
+        delete the parent inside ``embed_batch`` — the call sequence
+        is then:
+          1. ``_read_for_embed``: succeeds (vault file still there)
+          2. ``embedder.embed_batch``: deletes parent as a side effect,
+             returns vectors
+          3. ``upsert_vectors``: succeeds (vec0 doesn't check FK)
+          4. ``record_embed_state``: pre-fix → IntegrityError →
+             worker.tick() crashes; post-fix → silent no-op.
+        """
+
+        class _ParentDeletingEmbedder(_StubEmbedder):
+            def __init__(self, idx: Index, mid: str) -> None:
+                super().__init__()
+                self._idx = idx
+                self._mid = mid
+
+            def embed_batch(self, texts: list[str]) -> list[list[float]]:
+                # Race: delete the parent memory mid-flight, mirroring
+                # what ``Index.upsert``'s path-displacement path does
+                # when a different memory_id claims the same path.
+                self._idx.delete(self._mid)
+                return super().embed_batch(texts)
+
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="will-disappear"))
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=_ParentDeletingEmbedder(index, str(memory.id)),
+            batch_size=1,
+            idle_sleep=0,
+            embedding_signature=self.SIG,
+        )
+
+        # Pre-fix this raises sqlite3.IntegrityError out of `tick()`.
+        # Post-fix it returns cleanly.
+        asyncio.run(worker.tick())
+
+        # No state row (parent is gone), no orphan vec rows
+        # (record_embed_state cleans them in the FK-fail branch).
+        assert (
+            index.db.execute(
+                "SELECT 1 FROM embed_state WHERE memory_id = ?", (str(memory.id),)
+            ).fetchone()
+            is None
+        )
+        assert (
+            index.db.execute(
+                "SELECT 1 FROM memories_vec WHERE memory_id = ?", (str(memory.id),)
+            ).fetchone()
+            is None
+        )

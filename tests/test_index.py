@@ -375,6 +375,100 @@ class TestEmbedState:
         ).fetchone()
         assert row is None
 
+    def test_record_embed_state_survives_parent_deletion_race(self, tmp_path: Path) -> None:
+        """Regression: when the parent ``memories`` row is deleted
+        between ``upsert_vectors`` and ``record_embed_state`` (the
+        race that triggered ``sqlite3.IntegrityError: FOREIGN KEY
+        constraint failed`` on Ari's box during the v0.7 → v0.8
+        embedder migration), the worker must not crash. The cascade
+        has already cleaned ``embed_queue`` / ``embed_state``;
+        ``record_embed_state`` should silently no-op rather than
+        raise. Vec rows the worker wrote pre-race are orphans and
+        get cleaned in the same call to keep vec0 hygienic.
+        """
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="will-be-deleted")
+            idx.upsert(memory)
+            idx.upsert_vectors(str(memory.id), ["chunk"], [[0.1] * 8])
+
+            # Simulate the race: parent gets deleted while the embed
+            # worker is still in flight (e.g., via path displacement
+            # in a concurrent ``upsert``).
+            idx.delete(str(memory.id))
+
+            # Worker comes back from the embedder and tries to record
+            # state. Pre-fix this raised IntegrityError; post-fix it
+            # silently no-ops.
+            idx.record_embed_state(str(memory.id), body_hash("will-be-deleted"), "sig:8")
+
+            # No state row created (parent doesn't exist).
+            state_row = idx.db.execute(
+                "SELECT 1 FROM embed_state WHERE memory_id = ?",
+                (str(memory.id),),
+            ).fetchone()
+            assert state_row is None
+
+            # Orphan vec rows cleaned — vec0 doesn't enforce FK so
+            # without explicit cleanup these would leak.
+            vec_row = idx.db.execute(
+                "SELECT 1 FROM memories_vec WHERE memory_id = ?",
+                (str(memory.id),),
+            ).fetchone()
+            assert vec_row is None, (
+                "orphan vec rows were left behind after FK race — "
+                "next search would surface a memory that doesn't exist"
+            )
+        finally:
+            idx.close()
+
+    def test_record_embed_state_after_late_upsert_vectors(self, tmp_path: Path) -> None:
+        """Tighter race shape: parent deleted, then ``upsert_vectors``
+        runs (vec0 doesn't enforce FK so it succeeds), then
+        ``record_embed_state`` fires the FK. We must still recover
+        cleanly and not leave the orphan vec rows behind."""
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="late-vectors")
+            idx.upsert(memory)
+            idx.delete(str(memory.id))  # parent gone before any vectors written
+
+            # Pretend the embed worker raced past the delete and wrote
+            # vectors anyway (vec0 doesn't check; this is the orphan
+            # producer). Then record_embed_state must clean them up.
+            idx.upsert_vectors(str(memory.id), ["chunk"], [[0.2] * 8])
+            assert (
+                idx.db.execute(
+                    "SELECT 1 FROM memories_vec WHERE memory_id = ?",
+                    (str(memory.id),),
+                ).fetchone()
+                is not None
+            )  # confirm the orphan exists
+
+            idx.record_embed_state(str(memory.id), body_hash("late-vectors"), "sig:8")
+
+            # Both state row absent AND orphan vec rows cleaned.
+            assert (
+                idx.db.execute(
+                    "SELECT 1 FROM embed_state WHERE memory_id = ?",
+                    (str(memory.id),),
+                ).fetchone()
+                is None
+            )
+            assert (
+                idx.db.execute(
+                    "SELECT 1 FROM memories_vec WHERE memory_id = ?",
+                    (str(memory.id),),
+                ).fetchone()
+                is None
+            )
+        finally:
+            idx.close()
+
 
 class TestBackfillEmbedState:
     """On schema v3 upgrade, memories that already have vectors should

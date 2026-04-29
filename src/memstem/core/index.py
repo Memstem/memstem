@@ -10,6 +10,7 @@ append to the `MIGRATIONS` mapping; `connect()` advances the version on open.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sqlite3
 import struct
@@ -24,6 +25,8 @@ import sqlite_vec
 
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 8
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
@@ -617,20 +620,46 @@ class Index:
         Called by the embed worker after a successful vector upsert.
         Idempotent: re-recording the same state is fine (the
         ``embedded_at`` timestamp gets bumped).
+
+        Race handling: if the parent ``memories`` row was deleted while
+        the embed worker was running (path displacement during
+        reconcile, or an explicit delete of the source file), the FK
+        constraint on ``embed_state.memory_id`` rejects this INSERT.
+        That happens because the embed worker pops a ``memory_id`` off
+        ``embed_queue``, takes seconds to round-trip the embedder, and
+        in the meantime the pipeline can clean up the parent. The
+        cascade has already removed our queue/state rows; the
+        in-flight embedding is wasted but the worker should advance,
+        not crash. We also clean any orphan ``memories_vec`` rows the
+        worker may have written for this id — vec0 doesn't enforce FK
+        and would otherwise leak orphans until the next reconcile
+        pass that touches the same path.
         """
         now = datetime.now(tz=UTC).isoformat()
         with self._lock, self.db:
-            self.db.execute(
-                """
-                INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(memory_id) DO UPDATE SET
-                    body_hash = excluded.body_hash,
-                    embed_signature = excluded.embed_signature,
-                    embedded_at = excluded.embedded_at
-                """,
-                (memory_id, content_hash, embed_signature, now),
-            )
+            try:
+                self.db.execute(
+                    """
+                    INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(memory_id) DO UPDATE SET
+                        body_hash = excluded.body_hash,
+                        embed_signature = excluded.embed_signature,
+                        embedded_at = excluded.embedded_at
+                    """,
+                    (memory_id, content_hash, embed_signature, now),
+                )
+            except sqlite3.IntegrityError:
+                self.db.execute(
+                    "DELETE FROM memories_vec WHERE memory_id = ?",
+                    (memory_id,),
+                )
+                logger.info(
+                    "embed_state INSERT skipped for %s: parent memory was "
+                    "deleted during embedding (path displacement or removal). "
+                    "Orphan vec rows cleaned.",
+                    memory_id,
+                )
 
     # ---- Embed queue ------------------------------------------------------
 
