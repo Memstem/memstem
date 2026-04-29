@@ -16,7 +16,6 @@ correctly.
 from __future__ import annotations
 
 import io
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
@@ -122,7 +121,7 @@ class TestNonVerboseMode:
         set_stream(buf)
 
         clock = iter([100.0, 105.0])  # 5 seconds elapsed
-        with patch.object(time, "monotonic", side_effect=lambda: next(clock)):
+        with patch("memstem.progress._monotonic", side_effect=lambda: next(clock)):
             with phase("connect", slow_threshold=2.0):
                 pass
 
@@ -135,7 +134,7 @@ class TestNonVerboseMode:
         set_stream(buf)
 
         clock = iter([100.0, 100.5])  # 0.5 s — under default 2.0 threshold
-        with patch.object(time, "monotonic", side_effect=lambda: next(clock)):
+        with patch("memstem.progress._monotonic", side_effect=lambda: next(clock)):
             with phase("connect"):
                 pass
 
@@ -149,7 +148,7 @@ class TestNonVerboseMode:
         set_stream(buf)
 
         clock = iter([100.0, 100.6])
-        with patch.object(time, "monotonic", side_effect=lambda: next(clock)):
+        with patch("memstem.progress._monotonic", side_effect=lambda: next(clock)):
             with phase("daemon-probe", slow_threshold=0.5):
                 pass
 
@@ -312,36 +311,32 @@ class TestCliConnectSlowOpWarning:
     def test_slow_connect_emits_warning_without_verbose(
         self, initialized_vault: Path, runner: CliRunner
     ) -> None:
-        """Patches `time.monotonic` inside the `progress` module so the
-        connect phase appears to take >2 seconds. The CLI must surface
-        this to stderr even without `-v` — that's how a future
-        connect-cost regression becomes visible to the user."""
-        # Index is opened once for real (fast) by `_open_index`; we just
-        # need the `phase("connect")` block in the CLI to *measure* >2s,
-        # which we do by mocking the clock the progress module uses.
+        """Patches the progress module's clock so the outer `search`
+        phase appears to take >2 seconds. The CLI must surface this to
+        stderr even without `-v` — that's how a future connect-cost
+        regression becomes visible to the user.
 
-        # We need the start call and end call to differ by >2s. The
-        # phase() context manager calls monotonic exactly twice per
-        # block (entry + exit), but other phases also call it. Using a
-        # callable side_effect lets us return a delta on each call.
-        original_monotonic = time.monotonic
+        The patch targets `memstem.progress._monotonic` (the private
+        alias the module imports from `time.monotonic`) rather than
+        `time.monotonic` itself. Patching the global clock would also
+        intercept calls from sqlite/asyncio/watchdog inside the same
+        test process, which under load skews `_monotonic` results
+        unpredictably and produces order-dependent test failures.
+        """
         call_index = [0]
 
         def fake_monotonic() -> float:
             call_index[0] += 1
-            base = original_monotonic()
-            # Inflate the *connect* phase only — make every other phase
-            # short. We can't tell which phase is calling from inside,
-            # so we use a heuristic: every 2nd-and-3rd call is the
-            # connect block (the outer `search` block frames it). To
-            # keep it simple, just ensure the second monotonic() call
-            # is much later than the first — this overshoots and makes
-            # the outer `search` warning fire too, which is fine: any
-            # slow-op warning is sufficient for this test.
-            return base + (5.0 if call_index[0] >= 2 else 0.0)
+            # First call (the outer `search:start` t0) returns 0.
+            # Every subsequent call returns 5 — so the outer phase's
+            # exit measures 5 s elapsed and triggers the warning.
+            # Inner phases enter and exit at the same flat 5, so they
+            # measure ~0 s and don't fire (which keeps the test
+            # asserting the *outer* warning, not arbitrary phases).
+            return 5.0 if call_index[0] >= 2 else 0.0
 
         with (
-            patch("memstem.progress.time.monotonic", side_effect=fake_monotonic),
+            patch("memstem.progress._monotonic", side_effect=fake_monotonic),
             patch("memstem.cli.find_daemon", return_value=None),
         ):
             result = runner.invoke(
