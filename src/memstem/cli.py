@@ -62,6 +62,7 @@ from memstem.integration import (
     remove_flipclaw_hook,
     remove_legacy_mcp_server,
 )
+from memstem.progress import phase, set_verbose
 from memstem.servers.mcp_server import _Resources, build_server
 from memstem.star_nudge import maybe_print as _maybe_print_star_nudge
 
@@ -309,6 +310,17 @@ def search(
             ),
         ),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "-v",
+            "--verbose",
+            help=(
+                "Print phase markers (start/done with elapsed seconds) "
+                "to stderr. Useful for diagnosing slow searches."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """One-shot hybrid search of the vault.
 
@@ -320,31 +332,35 @@ def search(
     CLI opens the index directly and runs `Search` itself. The two
     paths return identical results; only latency differs.
     """
-    cfg = _load_config(_resolve_vault_path(vault))
+    set_verbose(verbose)
+    with phase("search"):
+        cfg = _load_config(_resolve_vault_path(vault))
 
-    if not no_daemon:
-        client = find_daemon(cfg)
-        if client is not None:
-            try:
-                _search_via_daemon(
-                    client,
-                    cfg,
-                    query=query,
-                    limit=limit,
-                    types=list(types) if types else None,
-                )
-                return
-            except DaemonError as exc:
-                logger.warning("daemon /search failed (%s); falling back to direct DB", exc)
-            finally:
-                client.close()
+        if not no_daemon:
+            with phase("daemon-probe") as probe_details:
+                client = find_daemon(cfg)
+                probe_details["found"] = client is not None
+            if client is not None:
+                try:
+                    _search_via_daemon(
+                        client,
+                        cfg,
+                        query=query,
+                        limit=limit,
+                        types=list(types) if types else None,
+                    )
+                    return
+                except DaemonError as exc:
+                    logger.warning("daemon /search failed (%s); falling back to direct DB", exc)
+                finally:
+                    client.close()
 
-    _search_via_direct_db(
-        cfg,
-        query=query,
-        limit=limit,
-        types=list(types) if types else None,
-    )
+        _search_via_direct_db(
+            cfg,
+            query=query,
+            limit=limit,
+            types=list(types) if types else None,
+        )
 
 
 def _search_via_daemon(
@@ -359,15 +375,17 @@ def _search_via_daemon(
     separate from `_search_via_direct_db` so the two transports stay
     symmetrical and easy to reason about — both end in the same
     `_print_search_hits` shape."""
-    hits = client.search(
-        query,
-        limit=limit,
-        types=types,
-        rrf_k=cfg.search.rrf_k,
-        bm25_weight=cfg.search.bm25_weight,
-        vector_weight=cfg.search.vector_weight,
-        importance_weight=cfg.search.importance_weight,
-    )
+    with phase("daemon-search") as details:
+        hits = client.search(
+            query,
+            limit=limit,
+            types=types,
+            rrf_k=cfg.search.rrf_k,
+            bm25_weight=cfg.search.bm25_weight,
+            vector_weight=cfg.search.vector_weight,
+            importance_weight=cfg.search.importance_weight,
+        )
+        details["results"] = len(hits)
     _print_search_hits(hits)
 
 
@@ -381,20 +399,23 @@ def _search_via_direct_db(
     """Open the index directly and run `Search`. Used when no daemon
     is reachable, or when the user passes `--no-daemon`."""
     vault_obj = Vault(cfg.vault_path)
-    index = _open_index(cfg)
+    with phase("connect"):
+        index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)
     try:
-        results = Search(vault_obj, index, embedder).search(
-            query,
-            limit=limit,
-            types=types,
-            rrf_k=cfg.search.rrf_k,
-            bm25_weight=cfg.search.bm25_weight,
-            vector_weight=cfg.search.vector_weight,
-            importance_weight=cfg.search.importance_weight,
-            log_client="cli" if cfg.hygiene.query_log_enabled else None,
-            log_max_rows=cfg.hygiene.query_log_max_rows,
-        )
+        with phase("direct-search") as details:
+            results = Search(vault_obj, index, embedder).search(
+                query,
+                limit=limit,
+                types=types,
+                rrf_k=cfg.search.rrf_k,
+                bm25_weight=cfg.search.bm25_weight,
+                vector_weight=cfg.search.vector_weight,
+                importance_weight=cfg.search.importance_weight,
+                log_client="cli" if cfg.hygiene.query_log_enabled else None,
+                log_max_rows=cfg.hygiene.query_log_max_rows,
+            )
+            details["results"] = len(results)
     finally:
         index.close()
 

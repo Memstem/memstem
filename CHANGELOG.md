@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`memstem search --no-daemon`** flag for forcing the direct-DB
   path during debugging or when troubleshooting daemon
   configuration.
+- **`memstem search -v`/`--verbose`** prints structured phase
+  markers to stderr — `connect`, `daemon-probe`, `daemon-search`,
+  `direct-search` — each with elapsed wall-clock time. Useful for
+  diagnosing slow searches without reaching for `py-spy`. Without
+  `-v`, any phase that exceeds 2 seconds prints a single warning to
+  stderr (`[memstem] connect took 35.3s -- set --verbose for phase
+  timings`), so future regressions of the embed_state-backfill
+  shape become visible in-band. New module:
+  `src/memstem/progress.py` (reusable `phase()` context manager).
 - **Once-per-machine star nudge.** After a successful `memstem init` or
   `memstem doctor`, the CLI prints a single line asking the user to star
   the repo on GitHub if memstem helps them. The same line appears at
