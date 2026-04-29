@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`memstem search` delegates to the local daemon when reachable**
+  (ADR 0014). When a `memstem daemon` is running on loopback and
+  serving the same vault as the CLI is configured for, the CLI now
+  routes search queries through `POST /search` instead of opening
+  the SQLite index in the CLI process. The daemon reuses its hot
+  connection, warm embedder, and cached pages, so search returns in
+  tens of milliseconds regardless of vault size. With no daemon
+  running (or `--no-daemon`), the CLI opens the index directly
+  exactly as before — fallback is transparent. Results are
+  identical between the two paths; only latency differs. New
+  module: `src/memstem/client.py` (`DaemonClient`, `find_daemon`).
+- **`memstem search --no-daemon`** flag for forcing the direct-DB
+  path during debugging or when troubleshooting daemon
+  configuration.
 - **Once-per-machine star nudge.** After a successful `memstem init` or
   `memstem doctor`, the CLI prints a single line asking the user to star
   the repo on GitHub if memstem helps them. The same line appears at
