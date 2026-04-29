@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Once-per-machine star nudge.** After a successful `memstem init` or
+  `memstem doctor`, the CLI prints a single line asking the user to star
+  the repo on GitHub if memstem helps them. The same line appears at
+  the end of `install.sh`. Suppressed when stdout is not a TTY (so
+  scripts and CI stay clean), when `MEMSTEM_NO_NUDGE` is set in the
+  env, or when `~/.config/memstem/.star-shown` already exists.
+- **README badges** — stars (Shields), CI status, MIT license; star
+  history chart in a new "Why star this repo" section.
+
 ## [0.7.0] — 2026-04-28
 
 The "memory quality" release. Six PRs merged off `main` (#61–#66) that

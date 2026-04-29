@@ -55,6 +55,7 @@ from memstem.integration import (
     remove_legacy_mcp_server,
 )
 from memstem.servers.mcp_server import _Resources, build_server
+from memstem.star_nudge import maybe_print as _maybe_print_star_nudge
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ def init(
             f"or export ${embedding_cfg.api_key_env}."
         )
     typer.echo(f"Run `memstem doctor --vault {path}` to verify.")
+    _maybe_print_star_nudge(typer.echo)
 
 
 @app.command()
@@ -622,6 +624,7 @@ def doctor(
         typer.echo(f"{failures} issue(s). Run with --vault to point at a different vault.")
         raise typer.Exit(1)
     typer.echo("All checks passed.")
+    _maybe_print_star_nudge(typer.echo)
 
 
 async def _drain_into_pipeline(
