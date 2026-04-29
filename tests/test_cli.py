@@ -585,6 +585,35 @@ class TestDoctor:
         assert result.exit_code == 1
         assert "directory missing" in result.output
 
+    def test_reports_missing_extra_file(
+        self, initialized_vault: Path, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        ws_root = tmp_path / "agent"
+        ws_root.mkdir()
+        (ws_root / "MEMORY.md").write_text("# core")
+        # Reference an extra that does not exist on disk.
+        cfg_path = initialized_vault / "_meta" / "config.yaml"
+        cfg_path.write_text(
+            "vault_path: " + str(initialized_vault) + "\n"
+            "embedding:\n"
+            "  provider: none\n"
+            "  model: nomic-embed-text\n"
+            "  base_url: http://127.0.0.1:1\n"
+            "  dimensions: 768\n"
+            "adapters:\n"
+            "  openclaw:\n"
+            "    agent_workspaces:\n"
+            "      - path: " + str(ws_root) + "\n"
+            "        tag: agent\n"
+            "        layout:\n"
+            "          extra_files: [SOUL.md]\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
+        assert result.exit_code == 1
+        assert "OpenClaw extra" in result.output
+        assert "file missing" in result.output
+
     def test_doctor_help(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["doctor", "--help"])
         assert result.exit_code == 0

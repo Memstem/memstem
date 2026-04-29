@@ -702,6 +702,14 @@ def _doctor_run(cfg: Config) -> int:
                 "" if ws_path.is_dir() else "directory missing",
             ):
                 failures += 1
+            for rel in ws.layout.extra_files:
+                extra_path = ws_path / rel
+                if not _doctor_check(
+                    f"OpenClaw extra: {extra_path} (tag={ws.tag})",
+                    extra_path.is_file(),
+                    "" if extra_path.is_file() else "file missing",
+                ):
+                    failures += 1
     for shared in oc.shared_files:
         sp = Path(shared).expanduser()
         if not _doctor_check(
@@ -1111,6 +1119,8 @@ def daemon(
     if openclaw_adapter.workspaces:
         for ws in openclaw_adapter.workspaces:
             typer.echo(f"  openclaw workspace: {ws.path}  (tag={ws.tag})")
+            if ws.layout.extra_files:
+                typer.echo(f"    extras: {', '.join(ws.layout.extra_files)}")
     elif openclaw_paths:
         typer.echo(f"  openclaw legacy paths: {', '.join(str(p) for p in openclaw_paths)}")
     if openclaw_adapter.shared_files:
