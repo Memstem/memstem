@@ -54,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `USER.md`, `AGENTS.md`, `IDENTITY.md`, `TOOLS.md`, etc.) that
   previously needed to be added to `shared_files` (wrong tag) or stay
   unindexed. See ADR 0013.
+- **`memstem doctor` and the daemon banner** now surface configured
+  workspace `extra_files` — doctor checks each file exists; the daemon
+  prints them in its startup listing for operator visibility.
+- **`discover_workspace_extras()`** in `memstem.discovery` — scans a
+  workspace's top-level `.md` files and returns a curated list
+  suitable for `OpenClawLayout.extra_files`. Filters out files already
+  handled (`MEMORY.md`, `CLAUDE.md`, `HARD-RULES.md`), dated snapshots
+  (`*_FULL_*`, `INCIDENT-*`, `*-status-report-*`, `RECOVERY-*`), and
+  oversize append-only logs (>50KB). The init wizard uses this to
+  offer a one-prompt opt-in for each workspace's system files.
 - **Once-per-machine star nudge.** After a successful `memstem init` or
   `memstem doctor`, the CLI prints a single line asking the user to star
   the repo on GitHub if memstem helps them. The same line appears at

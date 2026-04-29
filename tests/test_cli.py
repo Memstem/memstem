@@ -312,6 +312,48 @@ class TestInitWizard:
         roots = cfg["adapters"]["claude_code"]["project_roots"]
         assert any("projects" in r for r in roots)
 
+    def test_wizard_offers_extras_when_workspace_has_them(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        ws = self._seed_agent(home, "ari", with_content=False)
+        # Discoverable extras + one item that should be filtered (dated snapshot).
+        (ws / "SOUL.md").write_text("# soul\n")
+        (ws / "USER.md").write_text("# user\n")
+        (ws / "AGENTS_FULL_2026-03-11.md").write_text("# snapshot\n")
+
+        vault_path = tmp_path / "vault"
+        # ari=y, extras prompt=<accept default y>.
+        result = runner.invoke(
+            app,
+            ["init", "--home", str(home), str(vault_path)],
+            input="y\n\n",
+        )
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        ws_cfg = cfg["adapters"]["openclaw"]["agent_workspaces"][0]
+        assert ws_cfg["layout"]["extra_files"] == ["SOUL.md", "USER.md"]
+
+    def test_wizard_can_decline_extras(self, tmp_path: Path, runner: CliRunner) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        ws = self._seed_agent(home, "ari", with_content=False)
+        (ws / "SOUL.md").write_text("# soul\n")
+
+        vault_path = tmp_path / "vault"
+        # ari=y, extras prompt=n.
+        result = runner.invoke(
+            app,
+            ["init", "--home", str(home), str(vault_path)],
+            input="y\nn\n",
+        )
+        assert result.exit_code == 0, result.output
+        cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
+        ws_cfg = cfg["adapters"]["openclaw"]["agent_workspaces"][0]
+        # When declined, layout has no extra_files (default empty list).
+        assert ws_cfg.get("layout", {}).get("extra_files", []) == []
+
 
 class TestSearch:
     def test_no_results(self, initialized_vault: Path, runner: CliRunner) -> None:
