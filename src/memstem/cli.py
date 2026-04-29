@@ -17,6 +17,14 @@ import memstem
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
+from memstem.client import (
+    DaemonClient,
+    DaemonError,
+    find_daemon,
+)
+from memstem.client import (
+    SearchHit as DaemonSearchHit,
+)
 from memstem.config import (
     PROVIDER_PROFILES,
     AdaptersConfig,
@@ -290,9 +298,88 @@ def search(
         str | None,
         typer.Option(help="Vault path override"),
     ] = None,
+    no_daemon: Annotated[
+        bool,
+        typer.Option(
+            "--no-daemon",
+            help=(
+                "Skip the daemon delegation probe and open the SQLite "
+                "index directly. Useful for debugging the direct path; "
+                "normally the CLI auto-detects a running daemon."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """One-shot hybrid search of the vault."""
+    """One-shot hybrid search of the vault.
+
+    When a local daemon is reachable on loopback and is serving the
+    same vault, the CLI delegates to its HTTP `/search` endpoint —
+    that hits the daemon's already-open SQLite connection and warm
+    embedder, returning in tens of milliseconds regardless of vault
+    size. When no daemon is running (or `--no-daemon` is passed), the
+    CLI opens the index directly and runs `Search` itself. The two
+    paths return identical results; only latency differs.
+    """
     cfg = _load_config(_resolve_vault_path(vault))
+
+    if not no_daemon:
+        client = find_daemon(cfg)
+        if client is not None:
+            try:
+                _search_via_daemon(
+                    client,
+                    cfg,
+                    query=query,
+                    limit=limit,
+                    types=list(types) if types else None,
+                )
+                return
+            except DaemonError as exc:
+                logger.warning("daemon /search failed (%s); falling back to direct DB", exc)
+            finally:
+                client.close()
+
+    _search_via_direct_db(
+        cfg,
+        query=query,
+        limit=limit,
+        types=list(types) if types else None,
+    )
+
+
+def _search_via_daemon(
+    client: DaemonClient,
+    cfg: Config,
+    *,
+    query: str,
+    limit: int,
+    types: list[str] | None,
+) -> None:
+    """Render a search result list fetched from the daemon. Kept
+    separate from `_search_via_direct_db` so the two transports stay
+    symmetrical and easy to reason about — both end in the same
+    `_print_search_hits` shape."""
+    hits = client.search(
+        query,
+        limit=limit,
+        types=types,
+        rrf_k=cfg.search.rrf_k,
+        bm25_weight=cfg.search.bm25_weight,
+        vector_weight=cfg.search.vector_weight,
+        importance_weight=cfg.search.importance_weight,
+    )
+    _print_search_hits(hits)
+
+
+def _search_via_direct_db(
+    cfg: Config,
+    *,
+    query: str,
+    limit: int,
+    types: list[str] | None,
+) -> None:
+    """Open the index directly and run `Search`. Used when no daemon
+    is reachable, or when the user passes `--no-daemon`."""
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)
@@ -300,7 +387,7 @@ def search(
         results = Search(vault_obj, index, embedder).search(
             query,
             limit=limit,
-            types=list(types) if types else None,
+            types=types,
             rrf_k=cfg.search.rrf_k,
             bm25_weight=cfg.search.bm25_weight,
             vector_weight=cfg.search.vector_weight,
@@ -317,6 +404,19 @@ def search(
     for r in results:
         title = r.memory.frontmatter.title or "(untitled)"
         typer.echo(f"[{r.score:.4f}] {r.memory.type.value:<8} {title}  ({r.memory.path})")
+
+
+def _print_search_hits(hits: list[DaemonSearchHit]) -> None:
+    """Render daemon SearchHit objects in the same shape the direct-DB
+    path uses. Pulled out so the two code paths produce identical
+    output — anything else is a regression that breaks scripts piping
+    the CLI."""
+    if not hits:
+        typer.echo("(no results)")
+        return
+    for h in hits:
+        title = h.title or "(untitled)"
+        typer.echo(f"[{h.score:.4f}] {h.type:<8} {title}  ({h.path})")
 
 
 @app.command()
