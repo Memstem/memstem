@@ -43,10 +43,16 @@ Slow-op warnings (non-verbose, only when threshold exceeded):
 from __future__ import annotations
 
 import sys
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from time import monotonic as _monotonic
 from typing import IO, Any
+
+# `_monotonic` is imported with a private alias so tests can patch
+# `memstem.progress._monotonic` without globally replacing
+# `time.monotonic` (which is shared with sqlite, asyncio, watchdog,
+# etc., and produces flaky test results under load when those
+# libraries call into the patched clock).
 
 _PREFIX = "[memstem]"
 _DEFAULT_SLOW_THRESHOLD = 2.0
@@ -128,11 +134,11 @@ def phase(
     if verbose:
         print(f"{_PREFIX} {name}:start", file=_resolve_stream(), flush=True)
 
-    t0 = time.monotonic()
+    t0 = _monotonic()
     try:
         yield details
     finally:
-        elapsed = time.monotonic() - t0
+        elapsed = _monotonic() - t0
         if verbose:
             tail_parts = [f"{k}={v}" for k, v in details.items()]
             tail = (" " + " ".join(tail_parts)) if tail_parts else ""
