@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI provider for cross-encoder rerank and HyDE query
+  expansion.** New `OpenAIReranker` (in `core/rerank.py`) and
+  `OpenAIExpander` (in `core/hyde.py`) talk to
+  `{base_url}/chat/completions` with the standard OpenAI shape.
+  API key via the existing `memstem.auth` (env var or
+  `~/.config/memstem/secrets.yaml`); the same Bearer-token pattern
+  the existing `OpenAIEmbedder` uses. `base_url` is configurable
+  for any OpenAI-compatible endpoint (Together, LM Studio, vLLM,
+  …). Default model `gpt-4o-mini` for both. Cache rows are isolated
+  per-judge so swapping providers doesn't serve stale scores from
+  the other one. New `docs/recall-models.md` documents the
+  recommended model for each feature plus an upgrade ladder
+  (`gpt-4o-mini` → `gpt-4.1-mini` → `gpt-4o` → `gpt-4.1`) for
+  results that don't meet the eval bar. Closes the
+  no-OpenAI-option gap on the chat-model side; the existing
+  Ollama variants stay default for local-only setups.
 - **HyDE query expansion scaffolding (ADR 0018, RECALL-PLAN.md W6).**
   New `core/hyde.py` ships a `HydeExpander` ABC plus three
   implementations (`NoOpExpander` default-fallback, `StubExpander`

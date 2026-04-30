@@ -61,6 +61,18 @@ DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 already-pulled model serves both features. Swappable via the
 ``OllamaReranker(model=...)`` kwarg."""
 
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+"""Default OpenAI-compatible base URL. Override the constructor to
+point at any OpenAI-compatible endpoint (Together, LM Studio, etc.)."""
+
+DEFAULT_OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+"""Default env var checked for the OpenAI API key. The auth module
+also falls back to ``~/.config/memstem/secrets.yaml``."""
+
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+"""Default OpenAI model. See ``docs/recall-models.md`` for the
+recommended-models ladder and upgrade path."""
+
 
 @dataclass(frozen=True, slots=True)
 class RerankCandidate:
@@ -420,12 +432,123 @@ class OllamaReranker(Reranker):
         return str(body.get("response", ""))
 
 
+class OpenAIReranker(Reranker):
+    """OpenAI-compatible reranker. Calls the chat-completions endpoint.
+
+    Talks to ``{base_url}/chat/completions`` with the standard OpenAI
+    shape (``model`` + ``messages``). The default ``base_url`` is
+    OpenAI itself, but any compatible provider works — set
+    ``base_url`` to e.g. ``https://api.together.xyz/v1`` for Together,
+    ``http://localhost:1234/v1`` for LM Studio, etc.
+
+    Recommended model: ``gpt-4o-mini``. See
+    ``docs/recall-models.md`` for the full upgrade ladder.
+
+    The API key is read via :mod:`memstem.auth` — env var first,
+    ``~/.config/memstem/secrets.yaml`` second. Failures (auth, HTTP,
+    parse) fall back to ``0.0`` for that candidate; the search path
+    keeps moving.
+    """
+
+    name_prefix = "openai"
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_OPENAI_MODEL,
+        api_key_env: str = DEFAULT_OPENAI_API_KEY_ENV,
+        base_url: str = DEFAULT_OPENAI_BASE_URL,
+        prompt_template: str | None = None,
+        timeout: float = 60.0,
+        client: object = None,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.api_key_env = api_key_env
+        self.timeout = timeout
+        self.prompt_template = prompt_template or _load_rerank_prompt()
+        self._client = client
+        self.name = f"{self.name_prefix}:{model}"
+
+    def _http_client(self) -> object:
+        if self._client is None:
+            # Lazy imports keep the module cheap to load when the
+            # OpenAI variant isn't in use. ``memstem.auth`` is a leaf
+            # module with no project deps, so no cycle risk.
+            import httpx
+
+            from memstem.auth import get_secret
+
+            api_key = get_secret("openai", env_var=self.api_key_env)
+            if not api_key:
+                raise RuntimeError(
+                    f"OpenAIReranker needs an API key. Either export "
+                    f"${self.api_key_env}, run "
+                    f"`memstem auth set openai <key>`, or use "
+                    f"OllamaReranker for local-only setups."
+                )
+            self._client = httpx.Client(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        return self._client
+
+    def score(self, query: str, candidate: RerankCandidate) -> float:
+        prompt = self.prompt_template.format(
+            query=query,
+            title=candidate.title or candidate.memory_id,
+            body=candidate.body,
+        )
+        try:
+            response = self._call_model(prompt)
+        except Exception as exc:
+            logger.warning(
+                "OpenAIReranker: model call failed for %s: %s",
+                candidate.memory_id,
+                exc,
+            )
+            return 0.0
+        return _parse_score(response)
+
+    def _call_model(self, prompt: str) -> str:
+        client = self._http_client()
+        post = client.post  # type: ignore[attr-defined]
+        result = post(
+            "/chat/completions",
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                # Low temperature for scoring stability; ``max_tokens``
+                # is small because we're asking for an integer, not a
+                # paragraph.
+                "temperature": 0.0,
+                "max_tokens": 16,
+            },
+        )
+        result.raise_for_status()
+        body = result.json()
+        choices = body.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        return str(content) if content is not None else ""
+
+
 __all__ = [
     "DEFAULT_OLLAMA_MODEL",
     "DEFAULT_OLLAMA_URL",
+    "DEFAULT_OPENAI_API_KEY_ENV",
+    "DEFAULT_OPENAI_BASE_URL",
+    "DEFAULT_OPENAI_MODEL",
     "DEFAULT_RERANK_TOP_N",
     "NoOpReranker",
     "OllamaReranker",
+    "OpenAIReranker",
     "RerankCandidate",
     "Reranker",
     "StubReranker",
