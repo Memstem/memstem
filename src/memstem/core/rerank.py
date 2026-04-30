@@ -73,6 +73,40 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 """Default OpenAI model. See ``docs/recall-models.md`` for the
 recommended-models ladder and upgrade path."""
 
+MAX_RERANK_BODY_CHARS = 4000
+"""Hard cap on document body characters sent to the rerank LLM.
+
+Cross-encoders judge relevance from the first ~1k tokens of a
+document; sending more wastes tokens and (on small-context models)
+overflows the context window outright. Brad's vault contains
+multi-megabyte ``Infrastructure — Extended Context``-style memories
+that dwarf any model's context window — without truncation those
+candidates uniformly return 400 Bad Request from OpenAI and
+silently fall to the bottom of the rerank order.
+
+4000 chars is roughly 1000 tokens — fits inside every supported
+provider's context with room for the prompt template. Truncated
+bodies get a ``[…document continues for N more chars]`` marker so
+the LLM knows it's looking at a slice, not the whole thing.
+
+This cap is at prompt-build time; the cache key still uses the
+full body's hash so a body edit invalidates the cached score
+correctly."""
+
+
+def _format_body_for_prompt(body: str) -> str:
+    """Truncate a document body for inclusion in a rerank prompt.
+
+    Returns the body unchanged if it's already short enough.
+    Otherwise: returns the leading slice plus a continuation marker
+    so the LLM knows it's seeing a truncated document.
+    """
+    if len(body) <= MAX_RERANK_BODY_CHARS:
+        return body
+    head = body[:MAX_RERANK_BODY_CHARS]
+    remaining = len(body) - MAX_RERANK_BODY_CHARS
+    return f"{head}\n\n[…document continues for {remaining:,} more chars]"
+
 
 @dataclass(frozen=True, slots=True)
 class RerankCandidate:
@@ -399,7 +433,7 @@ class OllamaReranker(Reranker):
         prompt = self.prompt_template.format(
             query=query,
             title=candidate.title or candidate.memory_id,
-            body=candidate.body,
+            body=_format_body_for_prompt(candidate.body),
         )
         try:
             response = self._call_model(prompt)
@@ -501,7 +535,7 @@ class OpenAIReranker(Reranker):
         prompt = self.prompt_template.format(
             query=query,
             title=candidate.title or candidate.memory_id,
-            body=candidate.body,
+            body=_format_body_for_prompt(candidate.body),
         )
         try:
             response = self._call_model(prompt)
@@ -546,6 +580,7 @@ __all__ = [
     "DEFAULT_OPENAI_BASE_URL",
     "DEFAULT_OPENAI_MODEL",
     "DEFAULT_RERANK_TOP_N",
+    "MAX_RERANK_BODY_CHARS",
     "NoOpReranker",
     "OllamaReranker",
     "OpenAIReranker",
