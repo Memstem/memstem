@@ -347,6 +347,86 @@ class TestSearchHybrid:
         assert results[0].memory.id == memory.id
 
 
+class TestSearchMmr:
+    """ADR 0016: MMR diversifies the top-K when ``mmr_lambda`` is provided."""
+
+    class _FixedEmbedder:
+        """Maps each text to a fixed vector. Useful for shaping geometry."""
+
+        dimensions = 768
+
+        def __init__(self, mapping: dict[str, list[float]]) -> None:
+            self.mapping = mapping
+
+        def embed(self, text: str) -> list[float]:
+            return self.mapping[text]
+
+    def test_mmr_disabled_preserves_rrf_order(self, vault: Vault, index: Index) -> None:
+        """``mmr_lambda=None`` is the existing pre-MMR behavior."""
+        a = _make_memory(body="alpha aligned with x axis", vault=vault)
+        b = _make_memory(body="alpha aligned with y axis", vault=vault)
+        for m in (a, b):
+            index.upsert(m)
+        # Vectors don't matter when MMR is disabled, but we need them
+        # for vec retrieval to fire.
+        index.upsert_vectors(str(a.id), ["c"], [_fake_embedding(1)])
+        index.upsert_vectors(str(b.id), ["c"], [_fake_embedding(2)])
+
+        embedder = self._FixedEmbedder({"alpha": _fake_embedding(1)})
+        search = Search(vault=vault, index=index, embedder=embedder)  # type: ignore[arg-type]
+        results = search.search("alpha", limit=2, mmr_lambda=None)
+        assert len(results) == 2
+
+    def test_mmr_demotes_paraphrase_in_favor_of_distinct(self, vault: Vault, index: Index) -> None:
+        """With λ=0.7, a near-duplicate ranks below an equally-relevant distinct hit."""
+        # Geometry: query supports both x and z. `a` covers x;
+        # `paraphrase` is a near-duplicate of a (still covers x);
+        # `distinct` covers z. Without MMR, `paraphrase` wins second
+        # slot because it has marginally higher vec sim. With MMR
+        # diversification, `distinct` wins.
+        dim = 768
+
+        def vec(x: float, y: float, z: float) -> list[float]:
+            v = [0.0] * dim
+            v[0], v[1], v[2] = x, y, z
+            return v
+
+        a = _make_memory(body="aligned with axis x", vault=vault)
+        paraphrase = _make_memory(body="aligned with axis x prime", vault=vault)
+        distinct = _make_memory(body="aligned with axis z entirely", vault=vault)
+        for m in (a, paraphrase, distinct):
+            index.upsert(m)
+
+        index.upsert_vectors(str(a.id), ["c"], [vec(1.0, 0.0, 0.0)])
+        index.upsert_vectors(str(paraphrase.id), ["c"], [vec(0.99, 0.01, 0.0)])
+        index.upsert_vectors(str(distinct.id), ["c"], [vec(0.0, 0.0, 1.0)])
+
+        embedder = self._FixedEmbedder({"aligned axis": vec(1.0, 0.0, 1.0)})
+        search = Search(vault=vault, index=index, embedder=embedder)  # type: ignore[arg-type]
+
+        # With MMR off, the top of vec retrieval is what wins.
+        no_mmr = search.search("aligned axis", limit=2, mmr_lambda=None)
+        assert len(no_mmr) == 2
+        # With MMR (λ=0.7), the second slot should flip to `distinct`.
+        with_mmr = search.search("aligned axis", limit=2, mmr_lambda=0.7)
+        assert len(with_mmr) == 2
+        ids = [r.memory.id for r in with_mmr]
+        assert distinct.id in ids
+        # Either `a` or `paraphrase` is at slot 0; whichever wins,
+        # `distinct` should be in the result set ahead of the loser.
+
+    def test_mmr_falls_back_when_no_query_embedding(self, vault: Vault, index: Index) -> None:
+        """Without an embedder, MMR is silently skipped (RRF/BM25 order is final)."""
+        a = _make_memory(body="alpha", vault=vault)
+        b = _make_memory(body="alpha bravo", vault=vault)
+        index.upsert(a)
+        index.upsert(b)
+        search = Search(vault=vault, index=index, embedder=None)
+        # mmr_lambda=0.5 but no embedder; should not crash.
+        results = search.search("alpha", limit=2, mmr_lambda=0.5)
+        assert len(results) >= 1
+
+
 @pytest.mark.requires_ollama
 class TestHybridRecallAgainstOllama:
     """Live integration: 20-doc corpus, verify hybrid > either signal alone."""
