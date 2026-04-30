@@ -1,0 +1,103 @@
+# Memstem recall-quality eval queries.
+#
+# Hand-curated query set for measuring recall improvements before/after
+# each PR in RECALL-PLAN.md. Run via `scripts/run_eval.py`.
+#
+# Schema (see `src/memstem/eval/harness.py` for the full reference):
+#
+#   queries:
+#     - id: <unique-id>
+#       class: factual | conceptual | procedural | historical
+#       query: <natural-language query>
+#       expect:
+#         title_contains: ["substr1", "substr2", ...]   # logical OR
+#         body_contains:  ["substr1", "substr2", ...]   # logical OR
+#         path_contains:  ["substr1", "substr2", ...]   # logical OR
+#       top_k: 10                                       # optional
+#
+# A result matches if ANY listed substring (case-insensitive) appears in
+# ANY listed field. Substrings are robust to dedup / rephrasing because
+# they don't tie to a specific memory_id.
+#
+# Starter set: 12 queries across 4 classes. Grow this as new failure
+# modes surface. Edit freely — this is a working eval set, not a
+# regression-test contract.
+
+queries:
+  # ─── FACTUAL ──────────────────────────────────────────────────────────
+  - id: factual_ari_port
+    class: factual
+    query: what gateway port does Ari run on
+    expect:
+      body_contains: ["18789"]
+
+  - id: factual_brad_phone
+    class: factual
+    query: what is Brad's phone number
+    expect:
+      body_contains: ["561) 206-4382", "561-206-4382"]
+
+  - id: factual_re_shared_folder
+    class: factual
+    query: shared drive folder ID for final deliverables
+    expect:
+      body_contains: ["1_aZnqkKQ-dxYNz8Nx3uFCiI-xpzxzge5", "RE-Shared"]
+
+  - id: factual_techpro_ssh
+    class: factual
+    query: SSH host for the TechPro Security site
+    expect:
+      body_contains: ["techpro-web", "ultraweb-clients"]
+
+  # ─── CONCEPTUAL ──────────────────────────────────────────────────────
+  - id: conceptual_memory_architecture
+    class: conceptual
+    query: Ari memory architecture overview
+    expect:
+      title_contains: ["Memory Architecture"]
+      path_contains: ["memory-architecture"]
+
+  - id: conceptual_dedup_pipeline
+    class: conceptual
+    query: how does Memstem dedup work
+    expect:
+      title_contains: ["dedup", "LLM-as-judge", "duplication"]
+      path_contains: ["0012-llm-judge-dedup", "dedup"]
+
+  - id: conceptual_dreaming_phases
+    class: conceptual
+    query: OpenClaw Dreaming light deep REM phases
+    expect:
+      body_contains: ["Light phase", "Deep phase", "REM phase", "Dreaming"]
+
+  # ─── PROCEDURAL ──────────────────────────────────────────────────────
+  - id: procedural_send_telegram
+    class: procedural
+    query: how do I send a Telegram message to Brad
+    expect:
+      body_contains: ["tg-send", "scripts/tg-send"]
+
+  - id: procedural_deploy_techpro
+    class: procedural
+    query: how do I deploy the TechPro Security site
+    expect:
+      body_contains: ["techpro-site/deploy.sh", "deploy.sh"]
+
+  - id: procedural_send_email
+    class: procedural
+    query: how do I send an email as Ari
+    expect:
+      body_contains: ["gws-wrapper", "gmail users messages send", "EmailMessage"]
+
+  # ─── HISTORICAL ──────────────────────────────────────────────────────
+  - id: historical_dreaming_migration
+    class: historical
+    query: when was the OpenClaw Dreaming migration
+    expect:
+      body_contains: ["2026-04-09", "Dreaming + Memory Wiki"]
+
+  - id: historical_qdrant_backfill
+    class: historical
+    query: when was the Qdrant memory backfill done
+    expect:
+      body_contains: ["2026-03-14", "Qdrant Memory Backfill", "10,313"]
