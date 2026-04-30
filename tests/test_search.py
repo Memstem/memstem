@@ -527,6 +527,142 @@ class TestSearchRerank:
         assert [r.memory.id for r in with_zero] == [r.memory.id for r in without]
 
 
+class TestSearchHyde:
+    """ADR 0018: HyDE expands the query into a hypothetical passage for vec retrieval."""
+
+    class _RecordingEmbedder:
+        """Captures every text passed to ``embed()`` so tests can verify
+        whether the HyDE expansion landed."""
+
+        dimensions = 768
+
+        def __init__(self) -> None:
+            self.embedded: list[str] = []
+
+        def embed(self, text: str) -> list[float]:
+            self.embedded.append(text)
+            return _fake_embedding(hash(text) % 10000)
+
+    def test_hyde_disabled_uses_original_query_for_embedding(
+        self, vault: Vault, index: Index
+    ) -> None:
+        from memstem.core.hyde import StubExpander
+
+        a = _make_memory(body="alpha topic", vault=vault)
+        index.upsert(a)
+        index.upsert_vectors(str(a.id), ["c"], [_fake_embedding(1)])
+
+        embedder = self._RecordingEmbedder()
+        stub = StubExpander()
+        stub.set_hypothesis("alpha topic question", "DIFFERENT KEYWORDS HERE")
+        search = Search(
+            vault=vault,
+            index=index,
+            embedder=embedder,  # type: ignore[arg-type]
+            hyde=stub,
+        )
+
+        search.search("alpha topic question", limit=1, use_hyde=False)
+        # Embedder must see the original query, not the stub's hypothesis.
+        assert embedder.embedded == ["alpha topic question"]
+
+    def test_hyde_enabled_uses_hypothesis_for_embedding(self, vault: Vault, index: Index) -> None:
+        from memstem.core.hyde import StubExpander
+
+        a = _make_memory(body="alpha topic", vault=vault)
+        index.upsert(a)
+        index.upsert_vectors(str(a.id), ["c"], [_fake_embedding(1)])
+
+        embedder = self._RecordingEmbedder()
+        stub = StubExpander()
+        # Real-shaped: query is procedural, hypothesis names the
+        # commands/files the user would expect.
+        stub.set_hypothesis(
+            "how do I send a Telegram message",
+            "Use bash ~/scripts/tg-send 'message' to send via the relay bot.",
+        )
+        search = Search(
+            vault=vault,
+            index=index,
+            embedder=embedder,  # type: ignore[arg-type]
+            hyde=stub,
+        )
+
+        search.search("how do I send a Telegram message", limit=1, use_hyde=True)
+        # The hypothesis is what gets embedded for vec retrieval.
+        assert embedder.embedded == [
+            "Use bash ~/scripts/tg-send 'message' to send via the relay bot."
+        ]
+
+    def test_hyde_skips_when_should_expand_rejects(self, vault: Vault, index: Index) -> None:
+        """Short query → ``should_expand`` returns False → original used."""
+        from memstem.core.hyde import StubExpander
+
+        a = _make_memory(body="alpha", vault=vault)
+        index.upsert(a)
+        index.upsert_vectors(str(a.id), ["c"], [_fake_embedding(1)])
+
+        embedder = self._RecordingEmbedder()
+        stub = StubExpander()
+        stub.set_default("MUST NOT BE USED")
+        search = Search(
+            vault=vault,
+            index=index,
+            embedder=embedder,  # type: ignore[arg-type]
+            hyde=stub,
+        )
+
+        # Query has 2 tokens — under MIN_QUERY_TOKENS (3).
+        search.search("alpha topic", limit=1, use_hyde=True)
+        assert embedder.embedded == ["alpha topic"]
+
+    def test_hyde_no_embedder_silently_skipped(self, vault: Vault, index: Index) -> None:
+        """Without an embedder, HyDE has nothing to expand and never fires."""
+        from memstem.core.hyde import StubExpander
+
+        a = _make_memory(body="alpha topic body content", vault=vault)
+        index.upsert(a)
+
+        called = {"count": 0}
+
+        class _CountingStub(StubExpander):
+            def expand(self, query: str) -> str:
+                called["count"] += 1
+                return super().expand(query)
+
+        stub = _CountingStub()
+        stub.set_default("hypothesis")
+        search = Search(vault=vault, index=index, embedder=None, hyde=stub)
+
+        # No embedder → no vec retrieval → no HyDE call. BM25 still
+        # works on the original query.
+        results = search.search("alpha topic content", limit=1, use_hyde=True)
+        assert called["count"] == 0
+        assert len(results) >= 1
+
+    def test_hyde_falls_back_when_expander_returns_empty(self, vault: Vault, index: Index) -> None:
+        """If the expander returns ``""`` (LLM unreachable), original query is used."""
+        from memstem.core.hyde import StubExpander
+
+        a = _make_memory(body="alpha topic body", vault=vault)
+        index.upsert(a)
+        index.upsert_vectors(str(a.id), ["c"], [_fake_embedding(1)])
+
+        embedder = self._RecordingEmbedder()
+        # Stub default is empty → expansion returns ""
+        stub = StubExpander()
+        search = Search(
+            vault=vault,
+            index=index,
+            embedder=embedder,  # type: ignore[arg-type]
+            hyde=stub,
+        )
+
+        search.search("how do I look up the topic", limit=1, use_hyde=True)
+        # Empty hypothesis → fall back to original query.
+        assert embedder.embedded == ["how do I look up the topic"]
+
+
 @pytest.mark.requires_ollama
 class TestHybridRecallAgainstOllama:
     """Live integration: 20-doc corpus, verify hybrid > either signal alone."""

@@ -1,0 +1,27 @@
+You are a helpful assistant generating a hypothetical answer passage
+for a search query. Your goal is to produce text that LOOKS LIKE the
+correct answer document — sharing vocabulary with the real answer in
+a knowledge base — even if specific facts are wrong.
+
+This passage is fed to a vector search engine; only the words matter,
+not the truth. Your output replaces the query during retrieval.
+
+Rules:
+- Write ONE paragraph, roughly 3-6 sentences, ~80-150 words.
+- Use the vocabulary, terminology, and phrasing the answer would use,
+  even if you're guessing what those words are.
+- For "how do I X" queries, write a procedure passage that names the
+  commands, tools, file paths, or steps you'd expect.
+- For "what is X" queries, write a definition or explanation as if
+  reading from documentation.
+- For "what did we decide" / "what's the status of" queries, write
+  the kind of decision or status note you'd expect to find.
+- Do NOT include the query itself in the response.
+- Do NOT add disclaimers, hedges, or "I think" phrasing.
+- Output ONLY the passage. No preamble, no headers, no quotes around
+  the response.
+
+QUERY:
+{query}
+
+HYPOTHETICAL PASSAGE:
