@@ -351,6 +351,83 @@ path; budget two weeks including the eval suite.
   only on user request? Current draft: yes by default — links are
   cheap and aid navigation.
 
+## Addendum (2026-04-30): Layer-1 retro pass
+
+Layer 1 (the SHA-256 body-hash check) was originally framed as
+write-time only — it catches duplicates as new records arrive. On
+2026-04-29 a read-only audit of Brad's live vault found ~20% of
+records (240 collision groups, 245 deprecate candidates) were
+already-stuck duplicates from re-ingestion that pre-dated the
+Layer 1 PR. Write-time semantics alone can't recover that damage.
+
+This addendum specifies a retroactive pass that applies the same
+Layer 1 logic to records already in the vault. It is not a new
+layer; it's the existing Layer 1 logic invoked over an existing
+corpus.
+
+### Module + CLI
+
+- `memstem.hygiene.cleanup_retro` exports two read-only planners
+  (`find_dedup_collisions`, `find_noise_hits`) and two writers
+  (`apply_dedup_collisions`, `apply_noise_expiry`). Each writer
+  consumes the matching planner's output.
+- `memstem hygiene cleanup-retro` CLI command runs both passes by
+  default. `--no-noise` / `--no-dedup` scope the pass; `--apply`
+  switches from dry-run (default) to mutation.
+
+### Winner selection
+
+Same heuristic as the audit script that prototyped this work:
+
+1. Highest `importance` (depends on W1 importance seed for signal).
+2. Most retrievals from `query_log` (proxy for "in active use").
+3. Most-recently-updated (proxy for "the active-pipeline copy").
+4. Lex-smallest `id` (deterministic tiebreak).
+
+A `coin_flip = True` flag surfaces when (1)-(3) all match and only
+(4) breaks the tie — useful for the operator to verify the winner
+choice on byte-identical bodies where it doesn't matter. The audit
+showed 88% of groups in Brad's vault are coin flips today (because
+importance is null and retrievals are 0 for most records); shipping
+W1 first reduces this materially.
+
+### Skill collisions
+
+Per the original Layer 4 rule: skill-involved groups never auto-merge.
+The retro pass writes a markdown review ticket to
+`vault/skills/_review/<utc_iso>-<slug>.md` containing both
+candidates' metadata and a winner proposal. The operator reviews
+manually; nothing happens to the vault until they act.
+
+### Search filter
+
+A complementary change in `core/search.py`: records carrying a
+`deprecated_by` pointer are filtered out of default `Search.search`
+results (parallel to the existing `valid_to` filter). Pass
+`include_deprecated=True` to surface them anyway. Without this
+filter, the retro pass would only logically deprecate records;
+they'd still rank in default queries.
+
+### Audit log
+
+Every applied verdict appends a row to `dedup_audit` with
+`judge="layer1-retro"`, `verdict="DUPLICATE"`, and a one-line
+rationale. The operator can later trace which pairs were collapsed
+and recover from a wrong call by editing the loser's frontmatter to
+clear `deprecated_by`.
+
+### Idempotence
+
+The pass is idempotent: re-running on a clean vault produces zero
+collision groups and zero apply actions. Records already deprecated
+by an earlier pass are excluded from the planner.
+
+### Phasing
+
+Single PR (W3 in `RECALL-PLAN.md`). Lands after W1 (importance seed)
+so winner selection has real signal. Tests cover the planner, the
+writer, the skill-review path, and the search filter end-to-end.
+
 ## References
 
 - ADR 0008 (Tier 3 dedup — this ADR supersedes its simple cosine step)
