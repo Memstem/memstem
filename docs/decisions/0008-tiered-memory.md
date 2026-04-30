@@ -192,11 +192,14 @@ performs:
   older record gains `valid_to: <timestamp>` rather than being
   deleted. Search defaults to "currently valid" but historical
   queries are possible via `--at <date>`.
-- **Auto-skill extraction.** Detect multi-step procedures from
-  session transcripts; write them as
-  `skills/auto/<slug>/SKILL.md` with `provenance.source:
-  hygiene-worker` and `_meta.json` describing the source span. The
-  user reviews and either keeps or deletes.
+
+> **Auto-skill extraction is no longer in scope.** The original draft
+> of this ADR proposed a hygiene-worker pass that would write
+> `skills/auto/<slug>/SKILL.md` from session transcripts. That
+> capability has been removed from MemStem's roadmap — each AI
+> generates skills its own way (Claude Code, Codex, Hermes, OpenClaw
+> all have their own conventions), and MemStem's role is to ingest
+> those `SKILL.md` files from disk, not to author them. See ADR 0019.
 
 ## Schema additions (frontmatter)
 
@@ -267,8 +270,10 @@ critical path for v0.1 cutover.
    the LLM client from PR-D.
 6. **PR-F: bi-temporal validity + supersedes.** Last because it
    touches the most queries.
-7. **PR-G: auto-skill extraction.** Latest because skills are
-   user-facing and benefit from the prior tiers' polish.
+
+> PR-G (auto-skill extraction) was removed from this ADR's plan per
+> [ADR 0019](./0019-no-skill-authoring.md). MemStem ingests skills
+> authored by other AIs; it does not author them itself.
 
 Each PR is independently mergeable and reverts cleanly: the schema
 additions are optional, the worker is gated behind config, the search

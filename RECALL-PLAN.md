@@ -52,7 +52,12 @@ Source: `/tmp/audit_dedup_retro.py` against
 
 ## §3 — Work items
 
-Three buckets, 8 items total (W0–W7). Each is one PR.
+Three buckets, 7 items total (W0–W6 + W2). Each is one PR.
+
+> **W7 (reflective synthesis) was removed** from this plan
+> 2026-04-30. Authoring derived knowledge in MemStem's vault crosses
+> the line into territory each AI handles its own way; MemStem's
+> role is to ingest, not to author. See ADR 0019.
 
 ### Bucket 1 — Finish what's already approved
 
@@ -163,26 +168,7 @@ don't share vocabulary.
 
 LOC: ~250. Risk: medium (LLM latency). ADR: new (0018-hyde).
 
-### Bucket 3 — One genuinely new capability (needs new ADR)
-
-#### W7 — Reflective synthesis (REM-phase equivalent)
-
-Goal: the only Dreaming capability not on Memstem's roadmap. Weekly
-LLM pass writes cross-cluster reflection records.
-
-- `hygiene/reflection.py`. CLI `memstem hygiene reflect`.
-- Reads top-100 highest-importance memories, prompts LLM for 3-5
-  reflective patterns with citations to source records.
-- Each pattern → `type: reflection` record with `links`.
-- Citations required (≥3 source ids); reflections without valid
-  cites are rejected.
-- Older reflections gain `deprecated_by` when newer ones cover the
-  same pattern.
-- Acceptance: queryable reflection records; dedup against prior
-  reflections via Layer 3 judge.
-
-LOC: ~400. Risk: medium-high (hallucination risk; mitigated by
-citation requirement). ADR: new (0019-reflective-synthesis).
+### Bucket 3 — Atomic-fact extraction
 
 #### W2 — Atomic-fact extraction (ADR 0011 PR-D, ready as written)
 
@@ -205,13 +191,12 @@ Block 2 (next session — needs ADR + tuning):
   5. W5 cross-encoder
   6. W6 HyDE
 
-Block 3 (later — bigger ships):
+Block 3 (later — bigger ship):
   7. W2 atomic facts
-  8. W7 reflections
 ```
 
 If a 4-week ship is needed: do W0 + W1 + W3 + W5 only. That captures
-most of the precision lift; W7 ships in v0.3 instead.
+most of the precision lift.
 
 ## §5 — Dependencies
 
@@ -220,8 +205,6 @@ most of the precision lift; W7 ships in v0.3 instead.
 - W3 depends on W1 (winner selection needs real importance signal).
 - W4/W5/W6 are independent of each other; each is independent of
   W1/W3.
-- W7 depends on W1 (importance seed picks the top-100) and benefits
-  from W2 (atomic facts make better reflection input).
 - W2 has no hard deps; benefits from W1 for fact-importance seeding.
 
 ## §6 — What was deferred (don't do these yet)
@@ -232,8 +215,8 @@ most of the precision lift; W7 ships in v0.3 instead.
   importance pipeline when we get there.
 - **Query-class routing** — defer until we measure that W4+W5+W6
   aren't enough on their own. Don't ship complexity on speculation.
-- **High-recall promotion** — overlap with distillation; defer or
-  fold into W7 reflections later.
+- **High-recall promotion** — overlap with distillation; defer
+  consideration to a future plan if signal warrants.
 
 ## §7 — Risks + mitigations
 
@@ -241,8 +224,7 @@ most of the precision lift; W7 ships in v0.3 instead.
 |---|---|
 | Retro pass picks wrong winner | Audit dry-run + skill review queue + `coin_flip` flag in plan |
 | Importance weights bias retrieval | Eval harness gates merge; weights are config |
-| LLM unreliability (W2/W6/W7) | NoOp fallbacks; eval gates `enabled: true` flips |
-| Reflection hallucinates patterns | ≥3 citation requirement; reject reflections without valid cites |
+| LLM unreliability (W2/W6) | NoOp fallbacks; eval gates `enabled: true` flips |
 | Schema additions break old readers | All new fields optional; v0.1 readers ignore unknowns |
 
 ## §8 — Open questions Brad will resolve as PRs land
