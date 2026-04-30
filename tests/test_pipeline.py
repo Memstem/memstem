@@ -251,6 +251,62 @@ class TestProcess:
         assert memory.frontmatter.updated is not None
 
 
+class TestImportanceSeed:
+    """Pipeline integration for ADR 0008 Tier 1 PR-A heuristic seed."""
+
+    def test_seeds_importance_when_absent(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(
+            pipe,
+            _record(type_="memory", body="x" * 500),
+        )
+        assert memory.frontmatter.importance is not None
+        assert 0.0 <= memory.frontmatter.importance <= 1.0
+
+    def test_skill_seeds_higher_than_session_for_same_age_and_length(
+        self, vault: Vault, index: Index
+    ) -> None:
+        pipe = Pipeline(vault, index)
+        skill = _processed(
+            pipe,
+            _record(
+                source="openclaw",
+                ref="/skills/x/SKILL.md",
+                type_="skill",
+                title="Skill X",
+                # Distinct content per record so Layer 1 dedup doesn't
+                # collapse the second one into the first.
+                body="skill content " + ("a" * 500),
+            ),
+        )
+        session = _processed(
+            pipe,
+            _record(
+                source="claude-code",
+                ref="/sessions/y.jsonl",
+                type_="session",
+                title="Session Y",
+                body="session content " + ("b" * 500),
+                extra_metadata={"session_id": "y"},
+            ),
+        )
+        assert skill.frontmatter.importance is not None
+        assert session.frontmatter.importance is not None
+        assert skill.frontmatter.importance > session.frontmatter.importance
+
+    def test_existing_importance_preserved(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(
+            pipe,
+            _record(
+                body="x" * 500,
+                extra_metadata={"importance": 0.95},
+            ),
+        )
+        # The pipeline must not overwrite an upstream-set importance.
+        assert memory.frontmatter.importance == 0.95
+
+
 class TestEmbedQueueing:
     """Pipeline writes records synchronously and pushes them onto the
     embed queue. The actual embedding is the worker's job (covered in
