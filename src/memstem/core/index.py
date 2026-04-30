@@ -28,7 +28,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -274,6 +274,28 @@ MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_rerank_cache_ts ON rerank_cache(ts);
         CREATE INDEX IF NOT EXISTS idx_rerank_cache_memory_id
             ON rerank_cache(memory_id);
+    """,
+    10: """
+        -- ADR 0018: HyDE query-expansion cache. Memoizes
+        -- (query_hash, judge) -> hypothesis so repeat queries skip the
+        -- LLM round trip. The hypothesis is the LLM-generated passage
+        -- that gets embedded in place of the original query for vec
+        -- retrieval.
+        --
+        -- Non-canonical: losing the table costs first-call latency,
+        -- not correctness.
+        --
+        -- No body_hash here (unlike rerank_cache) because HyDE expands
+        -- the query, not a query/document pair. The hypothesis is
+        -- document-independent.
+        CREATE TABLE IF NOT EXISTS hyde_cache (
+            query_hash TEXT NOT NULL,
+            judge TEXT NOT NULL,
+            hypothesis TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            PRIMARY KEY (query_hash, judge)
+        );
+        CREATE INDEX IF NOT EXISTS idx_hyde_cache_ts ON hyde_cache(ts);
     """,
 }
 

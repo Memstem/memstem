@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from memstem.core.embeddings import Embedder
+from memstem.core.hyde import HydeExpander, NoOpExpander
 from memstem.core.index import FtsHit, Index, VecHit
 from memstem.core.mmr import mmr_rerank
 from memstem.core.rerank import (
@@ -160,6 +161,7 @@ class Search:
         index: Index,
         embedder: Embedder | None = None,
         reranker: Reranker | None = None,
+        hyde: HydeExpander | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
@@ -169,6 +171,10 @@ class Search:
         # silent passthrough (every score 1.0, stable sort preserves
         # the input order). ADR 0017.
         self.reranker = reranker if reranker is not None else NoOpReranker()
+        # NoOp default for HyDE: returns the query unchanged so
+        # ``use_hyde=True`` without a configured expander is a no-op
+        # rather than a crash. ADR 0018.
+        self.hyde = hyde if hyde is not None else NoOpExpander()
 
     def query_bm25(
         self,
@@ -206,6 +212,7 @@ class Search:
         include_deprecated: bool = False,
         mmr_lambda: float | None = None,
         rerank_top_n: int | None = None,
+        use_hyde: bool = False,
         log_client: str | None = None,
         log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
     ) -> list[Result]:
@@ -261,14 +268,24 @@ class Search:
         ordering is deterministic. The rerank stage runs *before* MMR
         so MMR diversifies the precision-ordered pool rather than
         the importance-ordered one.
+
+        ``use_hyde`` enables HyDE query expansion (ADR 0018). When
+        ``False`` (the default), the original query embedding feeds
+        vec retrieval. When ``True``, the configured :attr:`hyde`
+        expander rewrites the query into a hypothetical-answer passage
+        (subject to its ``should_expand`` gate); that passage is
+        embedded as the vec query. BM25 always uses the original
+        query — HyDE replaces semantic-space proximity, not lexical
+        match. With no embedder configured, HyDE is silently skipped.
         """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
         vec: list[VecHit] = []
         query_embedding: list[float] | None = None
         if self.embedder is not None:
+            embed_input = self._maybe_expand_for_hyde(query, use_hyde=use_hyde)
             try:
-                query_embedding = self.embedder.embed(query)
+                query_embedding = self.embedder.embed(embed_input)
                 vec = self.query_vec(
                     query_embedding,
                     limit=limit * OVERFETCH_MULTIPLIER,
@@ -345,6 +362,29 @@ class Search:
         if n_floats == 0:
             return None
         return list(struct.unpack(f"{n_floats}f", blob))
+
+    def _maybe_expand_for_hyde(self, query: str, *, use_hyde: bool) -> str:
+        """Return the string to feed the embedder for vec retrieval.
+
+        Per ADR 0018: HyDE expands the query into a hypothetical
+        passage and embeds the passage in place of the query. The
+        original query is preserved for BM25.
+
+        Skips expansion when:
+        - ``use_hyde`` is False (default) — the bypass path.
+        - The expander's ``should_expand`` gate rejects the query.
+        - The expander returns the empty string (LLM unreachable);
+          falling back keeps search alive.
+        """
+        if not use_hyde:
+            return query
+        if not self.hyde.should_expand(query):
+            return query
+        with self.index._lock:
+            hypothesis = self.hyde.expand_cached(query, db=self.index.db)
+        if not hypothesis:
+            return query
+        return hypothesis
 
     def _apply_rerank(
         self,

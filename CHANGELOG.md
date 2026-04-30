@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HyDE query expansion scaffolding (ADR 0018, RECALL-PLAN.md W6).**
+  New `core/hyde.py` ships a `HydeExpander` ABC plus three
+  implementations (`NoOpExpander` default-fallback, `StubExpander`
+  for tests, `OllamaExpander` for production). When `Search.search`
+  is called with `use_hyde=True`, the expander rewrites the query
+  into a hypothetical-answer passage and that passage gets embedded
+  as the vec query. BM25 still uses the original query — HyDE
+  replaces semantic-space proximity, not lexical match. A
+  `should_expand` gate filters out short queries, quoted strings,
+  boolean operators, and identifier shapes (UUIDs, hex hashes, file
+  paths) so HyDE doesn't burn LLM cycles on exact lookups. New
+  SQLite migration v10 adds `hyde_cache(query_hash, judge,
+  hypothesis, ts)` so repeat queries skip the LLM round trip;
+  `judge` is part of the key so swapping models invalidates the
+  right rows. Empty hypotheses (LLM failure) are NOT cached —
+  caching failure would lock it in until manual cache clear. Prompt
+  template at `prompts/hyde.txt` asks for a one-paragraph
+  passage (~80-150 words) using the vocabulary the answer would
+  use. Default-off; flipping the default to on is gated on the
+  follow-up PR demonstrating ≥20% MRR lift on procedural-class
+  queries with no factual-class regression (per ADR 0015).
+  Default-off eval matches the prior baseline exactly.
 - **Cross-encoder rerank scaffolding (ADR 0017, RECALL-PLAN.md W5).**
   New `core/rerank.py` ships a `Reranker` ABC plus three
   implementations (`NoOpReranker` default-fallback, `StubReranker`
