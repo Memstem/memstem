@@ -29,6 +29,7 @@ from memstem.core.dedup import (
 )
 from memstem.core.extraction import NoiseAction, noise_filter
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
+from memstem.core.importance_seed import compute_seed
 from memstem.core.index import Index, body_hash
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
@@ -251,6 +252,19 @@ class Pipeline:
             assert isinstance(raw_fm, dict)
             payload.setdefault("scope", str(raw_fm.get("scope") or "universal"))
             payload.setdefault("verification", str(raw_fm.get("verification") or "verify by hand"))
+        # ADR 0008 Tier 1 PR-A: seed `importance` from cheap heuristics
+        # at ingest. We only set it when the record doesn't already
+        # carry one — user-set or upstream-set values are preserved.
+        # The search-side multiplier (`final = rrf * (1 + alpha *
+        # importance)`) is inert without this until pinned/bumped.
+        if "importance" not in meta:
+            payload["importance"] = compute_seed(
+                memory_type=type_str,
+                body_length=len(record.body),
+                created=created,
+            )
+        else:
+            payload["importance"] = meta["importance"]
         return validate(payload)
 
     def _record_mapping(self, source: str, ref: str, memory_id: UUID) -> None:

@@ -432,6 +432,85 @@ class TestReindex:
         assert result.exit_code == 0, result.output
         assert "reindexed 2 memories" in result.output
 
+    def test_reseed_importance_writes_to_frontmatter(
+        self, initialized_vault: Path, runner: CliRunner
+    ) -> None:
+        """`--reseed-importance` fills missing importance values."""
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            mem = _write_memory(vault, idx, title="t", body="x" * 500, type_="memory")
+        finally:
+            idx.close()
+        # Sanity: written memory has no importance yet.
+        assert vault.read(mem.path).frontmatter.importance is None
+
+        result = runner.invoke(
+            app,
+            [
+                "reindex",
+                "--vault",
+                str(initialized_vault),
+                "--no-embed",
+                "--reseed-importance",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "reseeded importance on 1 record" in result.output
+
+        on_disk = vault.read(mem.path)
+        assert on_disk.frontmatter.importance is not None
+        assert 0.0 <= on_disk.frontmatter.importance <= 1.0
+
+    def test_reseed_importance_preserves_existing_unless_forced(
+        self, initialized_vault: Path, runner: CliRunner
+    ) -> None:
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            mem = _write_memory(vault, idx, title="t", body="x" * 500, type_="memory")
+            # Manually pin the importance to 0.99 so we can tell whether
+            # it gets overwritten.
+            from memstem.core.frontmatter import Frontmatter
+
+            new_fm: Frontmatter = mem.frontmatter.model_copy(update={"importance": 0.99})
+            vault.write(Memory(frontmatter=new_fm, body=mem.body, path=mem.path))
+        finally:
+            idx.close()
+
+        # Default: --reseed-importance preserves the existing value.
+        result = runner.invoke(
+            app,
+            [
+                "reindex",
+                "--vault",
+                str(initialized_vault),
+                "--no-embed",
+                "--reseed-importance",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert vault.read(mem.path).frontmatter.importance == 0.99
+
+        # --force-reseed overwrites.
+        result = runner.invoke(
+            app,
+            [
+                "reindex",
+                "--vault",
+                str(initialized_vault),
+                "--no-embed",
+                "--reseed-importance",
+                "--force-reseed",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        on_disk = vault.read(mem.path)
+        assert on_disk.frontmatter.importance is not None
+        assert on_disk.frontmatter.importance != 0.99
+
 
 class TestMigrateCommand:
     """Verify the top-level `memstem migrate` command exists and proxies to memstem.migrate."""

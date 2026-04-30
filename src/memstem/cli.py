@@ -458,6 +458,24 @@ def reindex(
     embed: bool = typer.Option(
         True, help="Enqueue every record for re-embedding (run `memstem embed` to drain)"
     ),
+    reseed_importance: bool = typer.Option(
+        False,
+        "--reseed-importance",
+        help=(
+            "Compute the ADR 0008 importance heuristic seed for every record "
+            "that doesn't already have one and write it back to the canonical "
+            "markdown frontmatter. Use --force-reseed to overwrite existing values."
+        ),
+    ),
+    force_reseed: bool = typer.Option(
+        False,
+        "--force-reseed",
+        help=(
+            "When combined with --reseed-importance, overwrite existing "
+            "importance values instead of preserving them. Ignored without "
+            "--reseed-importance."
+        ),
+    ),
 ) -> None:
     """Rebuild the index from the canonical vault.
 
@@ -466,18 +484,40 @@ def reindex(
     The actual embedding happens via the queue worker — run `memstem
     embed` for a one-shot drain or `memstem daemon` to drain
     continuously. Use this after switching embedding providers.
+
+    With ``--reseed-importance``, the heuristic seed (ADR 0008 Tier 1
+    PR-A) is computed for each record and written to the canonical
+    markdown frontmatter. By default this only fills in missing values;
+    pass ``--force-reseed`` to overwrite existing scores.
     """
+    from memstem.core.importance_seed import compute_seed
+    from memstem.core.storage import Memory
+
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
     try:
         count = 0
+        reseeded = 0
         for memory in vault_obj.walk():
-            index.upsert(memory)
+            target = memory
+            if reseed_importance and (memory.frontmatter.importance is None or force_reseed):
+                seeded = compute_seed(
+                    memory_type=memory.frontmatter.type,
+                    body_length=len(memory.body),
+                    created=memory.frontmatter.created,
+                )
+                new_fm = memory.frontmatter.model_copy(update={"importance": seeded})
+                target = Memory(frontmatter=new_fm, body=memory.body, path=memory.path)
+                vault_obj.write(target)
+                reseeded += 1
+            index.upsert(target)
             if embed:
-                index.enqueue_embed(str(memory.id))
+                index.enqueue_embed(str(target.id))
             count += 1
         typer.echo(f"reindexed {count} memories")
+        if reseed_importance:
+            typer.echo(f"reseeded importance on {reseeded} record(s)")
         if embed:
             stats = index.queue_stats()
             typer.echo(
