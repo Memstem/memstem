@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import logging
 import re
+import struct
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from memstem.core.embeddings import Embedder
 from memstem.core.index import FtsHit, Index, VecHit
+from memstem.core.mmr import mmr_rerank
 from memstem.core.retrieval_log import (
     DEFAULT_MAX_ROWS as DEFAULT_QUERY_LOG_MAX_ROWS,
 )
@@ -190,6 +192,7 @@ class Search:
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         include_expired: bool = False,
         include_deprecated: bool = False,
+        mmr_lambda: float | None = None,
         log_client: str | None = None,
         log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
     ) -> list[Result]:
@@ -227,10 +230,20 @@ class Search:
         retro pass and future Layer 3 resolutions both set this) are
         also filtered by default. Pass ``include_deprecated=True`` to
         surface them.
+
+        ``mmr_lambda`` enables Maximal Marginal Relevance diversification
+        (ADR 0016) on the materialized top-K. ``None`` (the default)
+        disables MMR — RRF + importance ordering is final. A float in
+        ``[0, 1]`` activates the diversifier: ``0.7`` is the literature
+        default; ``1.0`` reduces to identity; ``0.0`` is pure novelty.
+        MMR adds one cosine computation per ``(picked, candidate)`` pair
+        — bounded by ``limit`` — so the overhead is negligible for
+        typical top-10 queries.
         """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
         vec: list[VecHit] = []
+        query_embedding: list[float] | None = None
         if self.embedder is not None:
             try:
                 query_embedding = self.embedder.embed(query)
@@ -241,6 +254,7 @@ class Search:
                 )
             except Exception as exc:
                 logger.warning("vec query failed; falling back to BM25: %s", exc)
+                query_embedding = None
 
         fused = rrf_combine(
             bm25,
@@ -249,18 +263,63 @@ class Search:
             bm25_weight=bm25_weight,
             vector_weight=vector_weight,
         )
+        # When MMR is enabled, materialize a wider pool so the
+        # diversifier has options to choose from. The pool is bounded by
+        # OVERFETCH_MULTIPLIER * limit (same cap the importance boost
+        # uses) so the cost stays predictable.
+        materialize_limit = (
+            limit * OVERFETCH_MULTIPLIER
+            if mmr_lambda is not None and query_embedding is not None
+            else limit
+        )
         results = self._materialize(
             fused,
-            limit=limit,
+            limit=materialize_limit,
             importance_weight=importance_weight,
             include_expired=include_expired,
             include_deprecated=include_deprecated,
         )
+        if mmr_lambda is not None and query_embedding is not None:
+            results = mmr_rerank(
+                results,
+                query_embedding,
+                lambda r: self._first_chunk_embedding(str(r.memory.id)),
+                lambda_=mmr_lambda,
+                k=limit,
+            )
+        else:
+            results = results[:limit]
         if log_client is not None and results:
             self._log_results(
                 query=query, results=results, client=log_client, max_rows=log_max_rows
             )
         return results
+
+    def _first_chunk_embedding(self, memory_id: str) -> list[float] | None:
+        """Return the first chunk's embedding for ``memory_id``.
+
+        Used by MMR to compute pairwise similarity between candidates.
+        Returns ``None`` when the memory has no vectors (e.g. embedder
+        failed at ingest or the worker hasn't drained yet) — MMR handles
+        this case by appending such candidates after the diversified pool.
+        """
+        with self.index._lock:
+            row = self.index.db.execute(
+                """
+                SELECT embedding FROM memories_vec
+                WHERE memory_id = ? AND chunk_index = 0
+                """,
+                (memory_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        blob = row[0]
+        if not isinstance(blob, bytes | bytearray):
+            return None
+        n_floats = len(blob) // 4
+        if n_floats == 0:
+            return None
+        return list(struct.unpack(f"{n_floats}f", blob))
 
     def _log_results(
         self,
