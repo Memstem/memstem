@@ -38,8 +38,9 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.7.0 — public release.** Live on the maintainer's box; ingesting from
-multi-agent OpenClaw + Claude Code in real time. Shipping:
+**v0.8.1 — first post-public release.** Live on the maintainer's box;
+ingesting from multi-agent OpenClaw + Claude Code in real time.
+Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
   markdown-canonical vault. Index is rebuildable from the files.
@@ -134,6 +135,30 @@ memstem daemon                               # ingest + watch
 ```
 
 `memstem init` runs an interactive setup wizard that finds OpenClaw agent workspaces (any directory under `$HOME` with an `openclaw.json`), shared rules files (`HARD-RULES.md`), and Claude Code's session root, then writes `~/memstem-vault/_meta/config.yaml`. Pass `-y` to auto-include every candidate with content.
+
+### macOS install
+
+**Use Homebrew or pyenv Python — not the system Python.** Memstem needs `sqlite-vec`, which loads as a SQLite extension at runtime. macOS's system Python (`/usr/bin/python3`) ships with a SQLite that has extension loading **disabled at compile time**, so it can't load `sqlite-vec`. The `install.sh` script detects this up front and bails with a clear error rather than letting it crash later.
+
+The fix is one of:
+
+```bash
+# Recommended — Homebrew
+brew install python@3.12
+hash -r   # let your shell pick up the Homebrew python3
+curl -fsSL https://memstem.com/install.sh | bash    # re-run
+```
+
+```bash
+# Or — pyenv
+pyenv install 3.12.5
+pyenv global 3.12.5
+curl -fsSL https://memstem.com/install.sh | bash    # re-run
+```
+
+Both build SQLite with extension support enabled. Once you're on a Homebrew or pyenv Python, every other step (Quickstart, manual install, `memstem doctor`) works the same as on Linux.
+
+Note: macOS CI is currently `continue-on-error: true` — the GitHub Actions `setup-python` build hits the same system-Python issue. We track full macOS CI green as a follow-up; the user-facing install path on a real Mac is reliable today via Homebrew or pyenv.
 
 `memstem connect-clients` is the cutover wiring step. It (a) adds an `mcpServers.memstem` entry to `~/.claude.json` so Claude Code sees Memstem MCP, (b) registers `mcp.servers.memstem` in each configured OpenClaw agent's `openclaw.json` so OpenClaw agents see it too, (c) strips any stale entry from the legacy `~/.claude/settings.json`, and (d) inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
 
