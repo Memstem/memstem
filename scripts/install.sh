@@ -178,6 +178,82 @@ done
 [ -z "$PY" ] && die "Python 3.11+ is required. Please install it and re-run."
 ok "Python: $($PY --version)"
 
+# --- SQLite extension support check -----------------------------------------
+# Memstem needs sqlite-vec, which loads as a runtime SQLite extension. macOS's
+# system Python (/usr/bin/python3) ships with a SQLite that has extension
+# loading disabled at compile time — running memstem on it would crash later
+# with a confusing AttributeError. Catch it here with an actionable error.
+say "Checking SQLite extension support..."
+if ! "$PY" - >/dev/null 2>&1 <<'PY_CHECK'
+import sqlite3
+import sys
+
+conn = sqlite3.connect(":memory:")
+if not hasattr(conn, "enable_load_extension"):
+    sys.exit(1)
+try:
+    conn.enable_load_extension(True)
+except (AttributeError, sqlite3.OperationalError, sqlite3.NotSupportedError):
+    sys.exit(1)
+PY_CHECK
+then
+  PY_PATH="$(command -v "$PY")"
+  PY_VER="$($PY --version 2>&1)"
+  # ANSI-C quoting so ANSI escapes survive heredoc substitution.
+  RED=$'\033[1;31m'
+  BOLD=$'\033[1m'
+  RESET=$'\033[0m'
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    cat >&2 <<EOF
+
+${RED}✗${RESET} SQLite extension loading is disabled in this Python build.
+
+  Detected Python: $PY_PATH
+  Detected version: $PY_VER
+
+  Memstem needs sqlite-vec, which loads as a SQLite extension at
+  runtime. macOS's system Python ships with a SQLite that has
+  extension loading turned off at compile time, so it can't load
+  sqlite-vec. The fix is to use a Python from Homebrew or pyenv —
+  both build SQLite with extension support enabled.
+
+  ${BOLD}Recommended (Homebrew):${RESET}
+      brew install python@3.12
+      hash -r   # let your shell pick up the new python3 from Homebrew
+      curl -fsSL https://memstem.com/install.sh | bash    # re-run
+
+  ${BOLD}Alternative (pyenv):${RESET}
+      pyenv install 3.12.5
+      pyenv global 3.12.5
+      curl -fsSL https://memstem.com/install.sh | bash    # re-run
+
+  See https://github.com/Memstem/memstem#macos-install for more.
+EOF
+    exit 1
+  else
+    cat >&2 <<EOF
+
+${RED}✗${RESET} SQLite extension loading is disabled in this Python build.
+
+  Detected Python: $PY_PATH
+  Detected version: $PY_VER
+
+  Memstem needs sqlite-vec, which loads as a SQLite extension at
+  runtime. Your Python build doesn't support that. Most Linux
+  distributions enable it by default; if you're on a custom or
+  minimal build, install Python via your distribution's package
+  manager (apt, dnf, pacman, …) or via pyenv:
+
+      pyenv install 3.12.5
+      pyenv global 3.12.5
+
+  Then re-run this installer.
+EOF
+    exit 1
+  fi
+fi
+ok "SQLite extension support: enabled"
+
 # --- pipx --------------------------------------------------------------------
 if ! command -v pipx >/dev/null 2>&1; then
   say "Installing pipx..."

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-04-30
+
+The "recall quality + macOS unblocked" release. Five PRs (#84–#88)
+ship the cross-encoder rerank and HyDE scaffolding from
+RECALL-PLAN.md Block 2 plus a multi-provider chat-model story
+(OpenAI alongside Ollama, with a recommended-models guide). One
+follow-up PR (#89) closes the "macOS users hit a wall" gap that
+showed up on the first day public — `install.sh` now detects
+SQLite-extension-disabled Pythons up front and tells users exactly
+how to fix it (Homebrew or pyenv) instead of letting them crash
+with an `enable_load_extension` AttributeError later. ADR 0019
+documents the architectural decision that MemStem does not author
+skills — each AI's skill-generator stays in its own repo; MemStem
+indexes the resulting `SKILL.md` files.
+
+Schema migrations: 8 → 9 → 10 (rerank_cache table for ADR 0017,
+hyde_cache table for ADR 0018; both are non-canonical, drop-and-
+rebuild safe).
+
+### Added
+
+- **macOS install path with up-front detection.** `scripts/install.sh`
+  now checks for SQLite extension-loading capability after the Python
+  version check and bails with an actionable error if missing.
+  macOS's system Python (`/usr/bin/python3`) ships with a SQLite
+  built without `enable_load_extension`, which would otherwise crash
+  Memstem at first index open with a confusing `AttributeError`.
+  The error message names the detected Python and version, then
+  walks the user through the fix — `brew install python@3.12` or
+  `pyenv install 3.12.5` — and tells them to re-run the installer.
+  New "macOS install" section in the README documents the same
+  thing for users who prefer reading docs first. CI is unaffected
+  (Linux gating + macOS continue-on-error). Closes the day-one
+  install gap for the ~half of cloners on Mac.
+
 ### Changed
 
 - **MemStem does not author skills (ADR 0019).** Removed
