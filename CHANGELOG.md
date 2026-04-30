@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MemStem does not author skills (ADR 0019).** Removed
+  auto-skill-extraction and reflective-synthesis from the roadmap.
+  Each AI (Claude Code, Codex, Hermes, OpenClaw, …) generates skills
+  its own way; MemStem ingests `SKILL.md` files from disk and
+  indexes them, but doesn't author its own. Authoring would couple
+  MemStem to a specific skill format and add a runtime LLM
+  dependency to the daily hygiene loop — exactly the per-AI
+  coupling the read-files-from-disk architecture was designed to
+  avoid. Affects: `PLAN.md` (auto-skill bullet removed),
+  `ARCHITECTURE.md` (hygiene-worker skill-extraction bullet
+  removed), ADR 0008 (PR-G dropped, capability bullet annotated),
+  `RECALL-PLAN.md` (W7 reflective-synthesis dropped from buckets,
+  ordering, dependencies, deferred-list, and risks). New ADR 0019
+  documents the decision and the boundary rule (mutating existing
+  records is in scope; LLM-authoring new records is out).
+
 ### Fixed
 
 - **Rerank API 400 errors on oversized memory bodies.** Two

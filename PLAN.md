@@ -383,7 +383,10 @@ Already on ROADMAP as Phase 2 work. Specifically:
 - **Decay**: importance falls over time per the curve in Tier 1. Decayed memories that haven't been retrieved in 6 months drop below the search threshold by default (still findable with `--include-decayed`).
 - **5-minute reconciliation pass** to catch files that changed while the daemon was offline. (Not in v0.1; documented as a v0.2 follow-up.)
 - **Bi-temporal validity**: when a fact contradicts an existing one (LLM-judged or explicit `supersedes:` field), the old gets `valid_to:` rather than being deleted. Search defaults to "currently valid" but historical queries are possible.
-- **Auto-skill extraction**: detect multi-step procedures from session transcripts; write them as `skills/auto/<slug>/SKILL.md` with `provenance.source: hygiene-worker`. Brad reviews and either keeps or deletes.
+
+> Skill authoring is explicitly **out of scope**. Each AI generates
+> skills its own way; MemStem only ingests `SKILL.md` files from
+> disk. See [ADR 0019](docs/decisions/0019-no-skill-authoring.md).
 
 ### ADRs 0011 + 0012 — Quality pipeline (proposed 2026-04-27)
 

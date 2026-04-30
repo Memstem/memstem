@@ -113,8 +113,12 @@ Runs in a background thread, processing the canonical store at a low priority:
 
 - **Dedup**: pairs with cosine similarity > 0.95 are merged; the higher-importance record wins, the duplicate becomes a redirect.
 - **Decay**: importance score decays over time; bursts of recall raise it.
-- **Skill extraction**: an LLM pass on multi-step procedures from session transcripts. Successful procedures become skills (`skills/auto/...`).
 - **Bi-temporal validity** (planned): when a fact contradicts an existing one, the old one gets `valid_to: <date>` rather than being deleted.
+
+> Note: MemStem does **not** author skills. Each AI generates skills its
+> own way (Claude Code, Codex, Hermes, OpenClaw all have their own
+> conventions); MemStem reads `SKILL.md` files from disk and indexes
+> them. See [ADR 0019](decisions/0019-no-skill-authoring.md).
 
 ## API surface
 
