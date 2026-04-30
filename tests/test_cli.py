@@ -433,6 +433,111 @@ class TestReindex:
         assert "reindexed 2 memories" in result.output
 
 
+class TestHygieneCleanupRetro:
+    """W3: retro cleanup CLI."""
+
+    def test_dry_run_reports_no_apply(self, initialized_vault: Path, runner: CliRunner) -> None:
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            _write_memory(vault, idx, title="A", body="duplicate body XYZ")
+            _write_memory(vault, idx, title="B", body="duplicate body XYZ")
+        finally:
+            idx.close()
+
+        result = runner.invoke(
+            app,
+            [
+                "hygiene",
+                "cleanup-retro",
+                "--vault",
+                str(initialized_vault),
+                "--no-noise",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "RETRO DEDUP PLAN" in result.output
+        assert "dry-run" in result.output
+        assert "dedup applied" not in result.output
+
+    def test_apply_mutates_vault(self, initialized_vault: Path, runner: CliRunner) -> None:
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            a = _write_memory(vault, idx, title="A", body="duplicate ZZZ")
+            b = _write_memory(vault, idx, title="B", body="duplicate ZZZ")
+            # Pin importance values so winner selection is deterministic.
+            # We must update both the vault file AND the index row —
+            # find_dedup_collisions reads importance from the index.
+            from memstem.core.frontmatter import Frontmatter
+
+            new_a_fm: Frontmatter = a.frontmatter.model_copy(update={"importance": 0.9})
+            new_a = Memory(frontmatter=new_a_fm, body=a.body, path=a.path)
+            vault.write(new_a)
+            idx.upsert(new_a)
+            new_b_fm: Frontmatter = b.frontmatter.model_copy(update={"importance": 0.4})
+            new_b = Memory(frontmatter=new_b_fm, body=b.body, path=b.path)
+            vault.write(new_b)
+            idx.upsert(new_b)
+        finally:
+            idx.close()
+
+        result = runner.invoke(
+            app,
+            [
+                "hygiene",
+                "cleanup-retro",
+                "--vault",
+                str(initialized_vault),
+                "--no-noise",
+                "--apply",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "dedup applied" in result.output
+        assert vault.read(a.path).frontmatter.deprecated_by is None
+        assert vault.read(b.path).frontmatter.deprecated_by == a.id
+
+    def test_idempotent_apply(self, initialized_vault: Path, runner: CliRunner) -> None:
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            _write_memory(vault, idx, title="A", body="dup body for idempotent")
+            _write_memory(vault, idx, title="B", body="dup body for idempotent")
+        finally:
+            idx.close()
+
+        first = runner.invoke(
+            app,
+            [
+                "hygiene",
+                "cleanup-retro",
+                "--vault",
+                str(initialized_vault),
+                "--no-noise",
+                "--apply",
+            ],
+        )
+        assert first.exit_code == 0
+        # Second run: zero collision groups left.
+        second = runner.invoke(
+            app,
+            [
+                "hygiene",
+                "cleanup-retro",
+                "--vault",
+                str(initialized_vault),
+                "--no-noise",
+                "--apply",
+            ],
+        )
+        assert second.exit_code == 0
+        assert "Collision groups:        0" in second.output
+
+
 class TestMigrateCommand:
     """Verify the top-level `memstem migrate` command exists and proxies to memstem.migrate."""
 

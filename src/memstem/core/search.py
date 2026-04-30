@@ -189,6 +189,7 @@ class Search:
         vector_weight: float = 1.0,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         include_expired: bool = False,
+        include_deprecated: bool = False,
         log_client: str | None = None,
         log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
     ) -> list[Result]:
@@ -221,6 +222,11 @@ class Search:
         (ADR 0011 PR-B). Pass ``include_expired=True`` to surface them
         anyway — useful for audit or debugging "where did that transient
         record go?" questions.
+
+        Records carrying a ``deprecated_by`` pointer (ADR 0012 — the W3
+        retro pass and future Layer 3 resolutions both set this) are
+        also filtered by default. Pass ``include_deprecated=True`` to
+        surface them.
         """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
@@ -248,6 +254,7 @@ class Search:
             limit=limit,
             importance_weight=importance_weight,
             include_expired=include_expired,
+            include_deprecated=include_deprecated,
         )
         if log_client is not None and results:
             self._log_results(
@@ -291,6 +298,7 @@ class Search:
         limit: int,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         include_expired: bool = False,
+        include_deprecated: bool = False,
     ) -> list[Result]:
         """Read each fused hit's `Memory` from the vault, optionally re-score, sort, truncate.
 
@@ -328,6 +336,8 @@ class Search:
                 )
                 continue
             if not include_expired and self._is_expired(memory, now):
+                continue
+            if not include_deprecated and memory.frontmatter.deprecated_by is not None:
                 continue
             score = self._apply_importance(hit.score, memory, importance_weight)
             pool.append(

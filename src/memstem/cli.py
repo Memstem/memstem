@@ -1613,5 +1613,121 @@ def hygiene_dedup_judge(
         index.close()
 
 
+@hygiene_app.command("cleanup-retro")
+def hygiene_cleanup_retro(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "Persist mutations to the vault. Default is dry-run; the "
+                "apply flag is required to actually write deprecated_by / "
+                "valid_to fields and skill review tickets."
+            ),
+        ),
+    ] = False,
+    dedup: Annotated[
+        bool,
+        typer.Option("--dedup/--no-dedup", help="Run the body-hash dedup retro pass."),
+    ] = True,
+    noise: Annotated[
+        bool,
+        typer.Option("--noise/--no-noise", help="Run the noise-rule retro replay."),
+    ] = True,
+    json_out: Annotated[
+        Path | None,
+        typer.Option("--json-out", help="Write the full plan + apply result as JSON."),
+    ] = None,
+) -> None:
+    """Retroactively apply Layer-1 dedup + noise rules to the existing vault.
+
+    The pipeline catches new duplicates and new noise at ingest. This
+    command applies the same logic to records already in the vault —
+    typically ~20% of a long-lived vault is byte-hash duplicate damage
+    from re-ingestion before Layer 1 dedup landed.
+
+    By default both passes run; use ``--no-dedup`` or ``--no-noise``
+    to scope. Default is dry-run; ``--apply`` writes the changes.
+
+    Skill collisions never auto-merge — they route to
+    ``vault/skills/_review/`` for operator review per ADR 0012.
+    """
+    import json
+
+    from memstem.hygiene.cleanup_retro import (
+        apply_dedup_collisions,
+        apply_noise_expiry,
+        find_dedup_collisions,
+        find_noise_hits,
+        format_dedup_report,
+        format_noise_report,
+    )
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+    payload: dict[str, Any] = {
+        "vault": str(cfg.vault_path),
+        "applied": apply,
+    }
+    try:
+        if dedup:
+            plan = find_dedup_collisions(vault_obj, index)
+            typer.echo(format_dedup_report(plan))
+            payload["dedup"] = {
+                "groups": len(plan.groups),
+                "deprecate_count": plan.deprecate_count,
+                "skill_groups": len(plan.skill_groups),
+                "coin_flip_groups": sum(1 for w in plan.winners if w.coin_flip),
+            }
+            if apply:
+                result = apply_dedup_collisions(vault_obj, index, plan)
+                typer.echo(
+                    f"\ndedup applied: {result.deprecated} deprecated, "
+                    f"{result.skill_review_tickets} skill ticket(s), "
+                    f"{result.audit_rows} audit row(s), "
+                    f"{len(result.apply_errors)} error(s)"
+                )
+                payload["dedup"].update(
+                    deprecated=result.deprecated,
+                    skill_review_tickets=result.skill_review_tickets,
+                    audit_rows=result.audit_rows,
+                    apply_errors=result.apply_errors,
+                )
+                for err in result.apply_errors:
+                    typer.echo(f"  ERROR: {err}", err=True)
+
+        if noise:
+            noise_plan = find_noise_hits(vault_obj, index)
+            typer.echo("")
+            typer.echo(format_noise_report(noise_plan))
+            payload["noise"] = {
+                "drops": len(noise_plan.drops),
+                "transients": len(noise_plan.transients),
+            }
+            if apply:
+                noise_result = apply_noise_expiry(vault_obj, index, noise_plan)
+                typer.echo(
+                    f"\nnoise applied: {noise_result.expired} record(s) expired, "
+                    f"{len(noise_result.apply_errors)} error(s)"
+                )
+                payload["noise"].update(
+                    expired=noise_result.expired,
+                    apply_errors=noise_result.apply_errors,
+                )
+                for err in noise_result.apply_errors:
+                    typer.echo(f"  ERROR: {err}", err=True)
+
+        if not apply:
+            typer.echo("\n(dry-run; re-run with --apply to persist these changes)")
+
+        if json_out is not None:
+            json_out.write_text(json.dumps(payload, indent=2, default=str))
+            typer.echo(f"\nJSON report written to {json_out}")
+    finally:
+        index.close()
+
+
 if __name__ == "__main__":
     app()
