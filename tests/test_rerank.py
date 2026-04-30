@@ -15,12 +15,14 @@ from memstem.core.rerank import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_RERANK_TOP_N,
+    MAX_RERANK_BODY_CHARS,
     NoOpReranker,
     OllamaReranker,
     OpenAIReranker,
     RerankCandidate,
     Reranker,
     StubReranker,
+    _format_body_for_prompt,
     _parse_score,
     cache_lookup,
     cache_write,
@@ -325,6 +327,37 @@ class TestStubReranker:
         assert scores == [pytest.approx(0.4)]
 
 
+# ─── _format_body_for_prompt ──────────────────────────────────────
+
+
+class TestFormatBodyForPrompt:
+    def test_short_body_unchanged(self) -> None:
+        short = "a short document body"
+        assert _format_body_for_prompt(short) == short
+
+    def test_body_at_cap_unchanged(self) -> None:
+        body = "x" * MAX_RERANK_BODY_CHARS
+        assert _format_body_for_prompt(body) == body
+
+    def test_oversize_body_truncated_with_marker(self) -> None:
+        body = "x" * (MAX_RERANK_BODY_CHARS + 1000)
+        out = _format_body_for_prompt(body)
+        assert len(out) < len(body)
+        # Head must be the original first MAX_RERANK_BODY_CHARS chars.
+        assert out.startswith("x" * MAX_RERANK_BODY_CHARS)
+        # Marker tells the LLM how much was elided.
+        assert "1,000 more chars" in out
+        assert "document continues" in out
+
+    def test_huge_body_truncates_to_bounded_size(self) -> None:
+        # The 1.7 MB Brad-vault case: must produce something well under
+        # any provider's context window.
+        body = "x" * 1_700_000
+        out = _format_body_for_prompt(body)
+        # Output is the head slice + marker; bounded by MAX + ~80 chars.
+        assert len(out) <= MAX_RERANK_BODY_CHARS + 200
+
+
 # ─── _parse_score ─────────────────────────────────────────────────
 
 
@@ -409,6 +442,20 @@ class TestOllamaReranker:
         )
         # Score must NOT propagate the exception — fall through to 0.0.
         assert reranker.score("q", candidate) == 0.0
+
+    def test_score_truncates_oversize_body_in_prompt(self) -> None:
+        """OllamaReranker must also truncate — qwen2.5:7b has a 32k context."""
+        client = _MockHttpClient(_MockHttpResponse(body={"response": "70"}))
+        reranker = OllamaReranker(client=client)
+        big_body = "alpha topic body " + ("filler text " * 8000)
+        assert len(big_body) > MAX_RERANK_BODY_CHARS
+        candidate = RerankCandidate.from_memory(
+            _memory("88888888-8888-8888-8888-888888888888", big_body)
+        )
+        reranker.score("query", candidate)
+        _, body = client.calls[0]
+        sent_prompt = body["prompt"]
+        assert len(sent_prompt) <= MAX_RERANK_BODY_CHARS + 2500
 
     def test_score_handles_malformed_response(self) -> None:
         client = _MockHttpClient(_MockHttpResponse(body={"response": "I have opinions"}))
@@ -527,6 +574,28 @@ class TestOpenAIReranker:
         assert "doc body" in body["messages"][0]["content"]
         # Low temperature for stability.
         assert body["temperature"] == 0.0
+
+    def test_score_truncates_oversize_body_in_prompt(self) -> None:
+        """A 1.7MB-style body must be truncated before reaching the API."""
+        client = _MockHttpClient(_openai_response("70"))
+        reranker = OpenAIReranker(client=client)
+        # Build a candidate with a 100k body — well over the truncation cap.
+        big_body = "alpha topic body " + ("filler text " * 8000)
+        assert len(big_body) > MAX_RERANK_BODY_CHARS
+        candidate = RerankCandidate.from_memory(
+            _memory("99999999-9999-9999-9999-999999999999", big_body)
+        )
+        reranker.score("query", candidate)
+        # The prompt sent to OpenAI must be bounded by the truncation cap.
+        _, body = client.calls[0]
+        sent_prompt = body["messages"][0]["content"]
+        # Prompt template (~1.5k chars rubric) + truncated body should
+        # fit well under any provider's context window.
+        assert len(sent_prompt) <= MAX_RERANK_BODY_CHARS + 2500
+        # And the candidate's body_hash on disk still reflects the FULL
+        # body — cache invalidation works correctly when content changes
+        # even if the truncated slice happens to be identical.
+        assert candidate.body == big_body
 
     def test_score_returns_zero_on_http_failure(self) -> None:
         client = _MockHttpClient(RuntimeError("boom"))

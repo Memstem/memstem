@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rerank API 400 errors on oversized memory bodies.** Two
+  multi-megabyte ``Infrastructure — Extended Context`` memories in
+  Brad's vault (1.7 MB and 1.5 MB bodies) blew past every chat
+  model's context window, causing every rerank score on those
+  candidates to fail with HTTP 400 from OpenAI (and silent context
+  overflow with Ollama). Failed candidates returned 0.0 and fell
+  to the bottom of the rerank order — silently corrupting the
+  ranking. Fixed by truncating the document body in the rerank
+  prompt to ``MAX_RERANK_BODY_CHARS = 4000`` (plenty for relevance
+  judgment, fits in any provider's context). The truncated slice
+  carries a ``[…document continues for N more chars]`` marker so
+  the LLM knows it's looking at a head sample. Cache key still
+  uses the full-body hash, so cache invalidation on body edits
+  works correctly. Surfaced during the first end-to-end eval run
+  (see ``docs/recall-eval-results.md``).
+
 ### Added
 
+- **First end-to-end W5/W6 eval results** at
+  ``docs/recall-eval-results.md``. Both features fail their default-on
+  gates on Brad's vault as configured (W5 -12% aggregate MRR vs
+  ≥15% required; W6 -10% on procedural class vs ≥20% required).
+  Per-class breakdown surfaces asymmetric effects: W5 helps
+  conceptual (+25%) but breaks historical (-44%); W6 helps factual
+  (+6%) but breaks procedural (-10%) — the classic HyDE-on-domain-
+  specific-corpus failure mode. R@3 and R@10 are largely unaffected.
+  Eval gate working as designed; defaults stay off. Document
+  includes follow-up tuning ideas for any future PR.
 - **OpenAI provider for cross-encoder rerank and HyDE query
   expansion.** New `OpenAIReranker` (in `core/rerank.py`) and
   `OpenAIExpander` (in `core/hyde.py`) talk to
