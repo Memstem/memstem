@@ -13,9 +13,11 @@ from memstem.core.frontmatter import Frontmatter, validate
 from memstem.core.index import Index
 from memstem.core.rerank import (
     DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OPENAI_MODEL,
     DEFAULT_RERANK_TOP_N,
     NoOpReranker,
     OllamaReranker,
+    OpenAIReranker,
     RerankCandidate,
     Reranker,
     StubReranker,
@@ -478,9 +480,119 @@ def test_score_candidates_swallows_per_call_failures(index: Index) -> None:
 def test_default_constants_exposed() -> None:
     assert DEFAULT_RERANK_TOP_N >= 1
     assert DEFAULT_OLLAMA_MODEL
+    assert DEFAULT_OPENAI_MODEL
 
 
 def test_reranker_is_abstract() -> None:
     """Direct instantiation of the ABC should fail."""
     with pytest.raises(TypeError):
         Reranker()  # type: ignore[abstract]
+
+
+# ─── OpenAIReranker (mocked client) ───────────────────────────────
+
+
+def _openai_response(content: str) -> _MockHttpResponse:
+    """Build a mock OpenAI chat-completions response body."""
+    return _MockHttpResponse(
+        body={"choices": [{"message": {"role": "assistant", "content": content}, "index": 0}]}
+    )
+
+
+class TestOpenAIReranker:
+    def test_default_name_includes_model(self) -> None:
+        reranker = OpenAIReranker(client=_MockHttpClient(_openai_response("0")))
+        assert reranker.name == f"openai:{DEFAULT_OPENAI_MODEL}"
+
+    def test_custom_model_in_name(self) -> None:
+        reranker = OpenAIReranker(model="gpt-4o", client=_MockHttpClient(_openai_response("0")))
+        assert reranker.name == "openai:gpt-4o"
+
+    def test_score_parses_response(self) -> None:
+        client = _MockHttpClient(_openai_response("85"))
+        reranker = OpenAIReranker(client=client)
+        candidate = RerankCandidate.from_memory(
+            _memory("11111111-1111-1111-1111-111111111111", "doc body")
+        )
+        score = reranker.score("query about the doc", candidate)
+        assert score == pytest.approx(0.85)
+        # Must have hit /chat/completions exactly once.
+        assert len(client.calls) == 1
+        url, body = client.calls[0]
+        assert url == "/chat/completions"
+        assert body["model"] == DEFAULT_OPENAI_MODEL
+        assert body["messages"][0]["role"] == "user"
+        # Prompt should mention the query and document body.
+        assert "query about the doc" in body["messages"][0]["content"]
+        assert "doc body" in body["messages"][0]["content"]
+        # Low temperature for stability.
+        assert body["temperature"] == 0.0
+
+    def test_score_returns_zero_on_http_failure(self) -> None:
+        client = _MockHttpClient(RuntimeError("boom"))
+        reranker = OpenAIReranker(client=client)
+        candidate = RerankCandidate.from_memory(
+            _memory("22222222-2222-2222-2222-222222222222", "b")
+        )
+        assert reranker.score("q", candidate) == 0.0
+
+    def test_score_handles_empty_choices(self) -> None:
+        client = _MockHttpClient(_MockHttpResponse(body={"choices": []}))
+        reranker = OpenAIReranker(client=client)
+        candidate = RerankCandidate.from_memory(
+            _memory("33333333-3333-3333-3333-333333333333", "b")
+        )
+        # Empty choices → empty content → 0.0 from _parse_score.
+        assert reranker.score("q", candidate) == 0.0
+
+    def test_score_clamps_out_of_range(self) -> None:
+        client = _MockHttpClient(_openai_response("999"))
+        reranker = OpenAIReranker(client=client)
+        candidate = RerankCandidate.from_memory(
+            _memory("44444444-4444-4444-4444-444444444444", "b")
+        )
+        assert reranker.score("q", candidate) == 1.0
+
+    def test_score_candidates_writes_cache(self, index: Index) -> None:
+        memory_id = "55555555-5555-5555-5555-555555555555"
+        index.db.execute(
+            """INSERT INTO memories(id, type, source, title, body, path, created, updated)
+               VALUES (?, 'memory', 'test', 't', 'b', 'po1.md', '2026-01-01', '2026-01-01')""",
+            (memory_id,),
+        )
+        client = _MockHttpClient(_openai_response("70"))
+        reranker = OpenAIReranker(client=client)
+        candidate = RerankCandidate.from_memory(_memory(memory_id, "b"))
+        scores = reranker.score_candidates("q", [candidate], db=index.db)
+        assert scores == [pytest.approx(0.7)]
+        assert len(client.calls) == 1
+        # Second call hits cache, no extra HTTP.
+        scores_again = reranker.score_candidates("q", [candidate], db=index.db)
+        assert scores_again == [pytest.approx(0.7)]
+        assert len(client.calls) == 1
+
+    def test_cache_isolated_from_ollama_judge(self, index: Index) -> None:
+        """Same query+memory+body, different judges → independent cache rows."""
+        memory_id = "66666666-6666-6666-6666-666666666666"
+        index.db.execute(
+            """INSERT INTO memories(id, type, source, title, body, path, created, updated)
+               VALUES (?, 'memory', 'test', 't', 'b', 'po2.md', '2026-01-01', '2026-01-01')""",
+            (memory_id,),
+        )
+        candidate = RerankCandidate.from_memory(_memory(memory_id, "b"))
+        # Score with OpenAI judge.
+        oa_client = _MockHttpClient(_openai_response("80"))
+        oa_reranker = OpenAIReranker(client=oa_client)
+        oa_scores = oa_reranker.score_candidates("q", [candidate], db=index.db)
+        # Score with Ollama judge — must NOT use the OpenAI cache row.
+        ol_client = _MockHttpClient(_MockHttpResponse(body={"response": "30"}))
+        ol_reranker = OllamaReranker(client=ol_client)
+        ol_scores = ol_reranker.score_candidates("q", [candidate], db=index.db)
+        assert oa_scores == [pytest.approx(0.8)]
+        assert ol_scores == [pytest.approx(0.3)]
+        # Both judges hit the network (no cross-judge cache hit).
+        assert len(oa_client.calls) == 1
+        assert len(ol_client.calls) == 1
+        # Two distinct cache rows now.
+        rows = index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()[0]
+        assert rows == 2

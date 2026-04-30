@@ -10,10 +10,12 @@ import pytest
 
 from memstem.core.hyde import (
     DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OPENAI_MODEL,
     MIN_QUERY_TOKENS,
     HydeExpander,
     NoOpExpander,
     OllamaExpander,
+    OpenAIExpander,
     StubExpander,
     cache_lookup,
     cache_write,
@@ -285,3 +287,74 @@ def test_expand_cached_swallows_exceptions(index: Index) -> None:
     expander = _FailingExpander()
     result = expander.expand_cached("how do I X", db=index.db)
     assert result == ""
+
+
+# ─── OpenAIExpander (mocked client) ───────────────────────────────
+
+
+def _openai_response(content: str) -> _MockHttpResponse:
+    """Build a mock OpenAI chat-completions response body."""
+    return _MockHttpResponse(
+        body={"choices": [{"message": {"role": "assistant", "content": content}, "index": 0}]}
+    )
+
+
+class TestOpenAIExpander:
+    def test_default_name_includes_model(self) -> None:
+        expander = OpenAIExpander(client=_MockHttpClient(_openai_response("x")))
+        assert expander.name == f"openai:{DEFAULT_OPENAI_MODEL}"
+
+    def test_custom_model_in_name(self) -> None:
+        expander = OpenAIExpander(model="gpt-4o", client=_MockHttpClient(_openai_response("x")))
+        assert expander.name == "openai:gpt-4o"
+
+    def test_expand_returns_passage(self) -> None:
+        passage = "To send a Telegram message, run bash ~/scripts/tg-send 'msg'."
+        client = _MockHttpClient(_openai_response(passage))
+        expander = OpenAIExpander(client=client)
+        result = expander.expand("how do I send a Telegram message")
+        assert result == passage
+        assert len(client.calls) == 1
+        url, body = client.calls[0]
+        assert url == "/chat/completions"
+        assert body["model"] == DEFAULT_OPENAI_MODEL
+        assert body["messages"][0]["role"] == "user"
+        assert "how do I send a Telegram message" in body["messages"][0]["content"]
+        # Passage shape: mild temperature, generous max tokens.
+        assert body["temperature"] == 0.3
+        assert body["max_tokens"] == 200
+
+    def test_expand_strips_code_fences(self) -> None:
+        client = _MockHttpClient(_openai_response("```\nA passage about X.\n```"))
+        expander = OpenAIExpander(client=client)
+        assert expander.expand("how do I send a Telegram message") == "A passage about X."
+
+    def test_expand_returns_empty_on_http_failure(self) -> None:
+        client = _MockHttpClient(RuntimeError("boom"))
+        expander = OpenAIExpander(client=client)
+        assert expander.expand("query") == ""
+
+    def test_expand_handles_empty_choices(self) -> None:
+        client = _MockHttpClient(_MockHttpResponse(body={"choices": []}))
+        expander = OpenAIExpander(client=client)
+        # Empty choices → empty content → fall through.
+        assert expander.expand("how do I X") == ""
+
+    def test_cache_isolated_from_ollama_judge(self, index: Index) -> None:
+        """Same query, different judges → independent cache rows."""
+        oa_client = _MockHttpClient(_openai_response("OpenAI hypothesis"))
+        oa = OpenAIExpander(client=oa_client)
+        oa_result = oa.expand_cached("how do I send a Telegram message", db=index.db)
+
+        ol_client = _MockHttpClient(_MockHttpResponse(body={"response": "Ollama hypothesis"}))
+        ol = OllamaExpander(client=ol_client)
+        ol_result = ol.expand_cached("how do I send a Telegram message", db=index.db)
+
+        assert oa_result == "OpenAI hypothesis"
+        assert ol_result == "Ollama hypothesis"
+        # Both judges hit the network (no cross-judge cache hit).
+        assert len(oa_client.calls) == 1
+        assert len(ol_client.calls) == 1
+        # Two distinct cache rows.
+        rows = index.db.execute("SELECT COUNT(*) FROM hyde_cache").fetchone()[0]
+        assert rows == 2

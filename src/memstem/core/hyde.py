@@ -51,6 +51,18 @@ DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 """Default model. Same model the dedup judge and reranker use so a
 single already-pulled model serves all three features."""
 
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+"""Default OpenAI-compatible base URL. Override the constructor to
+point at any OpenAI-compatible endpoint."""
+
+DEFAULT_OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+"""Default env var checked for the OpenAI API key. The auth module
+also falls back to ``~/.config/memstem/secrets.yaml``."""
+
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+"""Default OpenAI model. See ``docs/recall-models.md`` for the
+recommended-models ladder and upgrade path."""
+
 MIN_QUERY_TOKENS = 3
 """Minimum query token count for ``should_expand``. Queries shorter
 than this are typically exact lookups (``"ari port"``,
@@ -364,13 +376,109 @@ class OllamaExpander(HydeExpander):
         return str(body.get("response", ""))
 
 
+class OpenAIExpander(HydeExpander):
+    """OpenAI-compatible HyDE expander. Calls the chat-completions endpoint.
+
+    Talks to ``{base_url}/chat/completions`` with the standard OpenAI
+    shape. The default ``base_url`` is OpenAI itself; any compatible
+    provider works.
+
+    Recommended model: ``gpt-4o-mini``. See ``docs/recall-models.md``
+    for the upgrade ladder.
+
+    HTTP failures return ``""``; the search path detects that and
+    falls back to the original query for embedding.
+    """
+
+    name_prefix = "openai"
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_OPENAI_MODEL,
+        api_key_env: str = DEFAULT_OPENAI_API_KEY_ENV,
+        base_url: str = DEFAULT_OPENAI_BASE_URL,
+        prompt_template: str | None = None,
+        timeout: float = 60.0,
+        client: object = None,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.api_key_env = api_key_env
+        self.timeout = timeout
+        self.prompt_template = prompt_template or _load_hyde_prompt()
+        self._client = client
+        self.name = f"{self.name_prefix}:{model}"
+
+    def _http_client(self) -> object:
+        if self._client is None:
+            import httpx
+
+            from memstem.auth import get_secret
+
+            api_key = get_secret("openai", env_var=self.api_key_env)
+            if not api_key:
+                raise RuntimeError(
+                    f"OpenAIExpander needs an API key. Either export "
+                    f"${self.api_key_env}, run "
+                    f"`memstem auth set openai <key>`, or use "
+                    f"OllamaExpander for local-only setups."
+                )
+            self._client = httpx.Client(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        return self._client
+
+    def expand(self, query: str) -> str:
+        prompt = self.prompt_template.format(query=query)
+        try:
+            response = self._call_model(prompt)
+        except Exception as exc:
+            logger.warning("OpenAIExpander: model call failed: %s", exc)
+            return ""
+        return _strip_fences(response)
+
+    def _call_model(self, prompt: str) -> str:
+        client = self._http_client()
+        post = client.post  # type: ignore[attr-defined]
+        result = post(
+            "/chat/completions",
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                # Mild temperature: passage-shaped text, not
+                # deterministic recitation. ``max_tokens`` is sized
+                # for one paragraph (~150 tokens).
+                "temperature": 0.3,
+                "max_tokens": 200,
+            },
+        )
+        result.raise_for_status()
+        body = result.json()
+        choices = body.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        return str(content) if content is not None else ""
+
+
 __all__ = [
     "DEFAULT_OLLAMA_MODEL",
     "DEFAULT_OLLAMA_URL",
+    "DEFAULT_OPENAI_API_KEY_ENV",
+    "DEFAULT_OPENAI_BASE_URL",
+    "DEFAULT_OPENAI_MODEL",
     "MIN_QUERY_TOKENS",
     "HydeExpander",
     "NoOpExpander",
     "OllamaExpander",
+    "OpenAIExpander",
     "StubExpander",
     "cache_lookup",
     "cache_write",
