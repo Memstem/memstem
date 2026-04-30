@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-encoder rerank scaffolding (ADR 0017, RECALL-PLAN.md W5).**
+  New `core/rerank.py` ships a `Reranker` ABC plus three
+  implementations (`NoOpReranker` default-fallback, `StubReranker`
+  for tests, `OllamaReranker` for production). `Search.search` grows
+  an optional `rerank_top_n` parameter that re-scores the top-N
+  materialized candidates via the configured reranker, sorted by
+  rerank score with RRF as the tiebreaker. The stage runs after RRF
+  + importance and before MMR so MMR diversifies a precision-ordered
+  pool. New SQLite migration v9 adds `rerank_cache` keyed on
+  `(query_hash, memory_id, body_hash, judge)` so repeat scores against
+  unchanged content skip the LLM round trip; `judge` is part of the
+  key so swapping reranker variants doesn't serve stale scores.
+  Prompt template at `prompts/rerank.txt` asks the LLM for an integer
+  in [0, 100] (more reliable than float), normalized to [0, 1] and
+  clamped. Default-off; flipping the default to on is gated on a
+  follow-up PR with eval data showing ≥15% MRR lift (per ADR 0015).
+  Default-off eval matches the previous baseline exactly: MRR 0.737,
+  R@3 0.750, R@10 0.917, 11/12 found.
+
 ### Fixed
 
 - **Embed worker no longer crashes when the parent memory is deleted

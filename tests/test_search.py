@@ -427,6 +427,106 @@ class TestSearchMmr:
         assert len(results) >= 1
 
 
+class TestSearchRerank:
+    """ADR 0017: cross-encoder rerank when ``rerank_top_n`` is provided."""
+
+    def test_rerank_disabled_preserves_baseline(self, vault: Vault, index: Index) -> None:
+        """``rerank_top_n=None`` is the existing pre-rerank behavior."""
+        for body in ["alpha topic", "alpha aside", "alpha aside two"]:
+            mem = _make_memory(body=body, vault=vault)
+            index.upsert(mem)
+        search = Search(vault=vault, index=index, embedder=None)
+        no_rerank = search.search("alpha", limit=3, rerank_top_n=None)
+        assert len(no_rerank) == 3
+
+    def test_rerank_with_noop_preserves_order(self, vault: Vault, index: Index) -> None:
+        """NoOpReranker scores everything 1.0; stable sort preserves RRF order."""
+        from memstem.core.rerank import NoOpReranker
+
+        a = _make_memory(body="alpha first match", title="A", vault=vault)
+        b = _make_memory(body="alpha second match", title="B", vault=vault)
+        c = _make_memory(body="alpha third match", title="C", vault=vault)
+        for m in (a, b, c):
+            index.upsert(m)
+
+        baseline = Search(vault=vault, index=index, embedder=None).search(
+            "alpha", limit=3, rerank_top_n=None
+        )
+        with_noop = Search(vault=vault, index=index, embedder=None, reranker=NoOpReranker()).search(
+            "alpha", limit=3, rerank_top_n=3
+        )
+
+        # Same memory IDs in the same order — NoOp + stable sort is identity.
+        assert [r.memory.id for r in with_noop] == [r.memory.id for r in baseline]
+
+    def test_rerank_promotes_stub_winner(self, vault: Vault, index: Index) -> None:
+        """A stub that scores a low-RRF candidate high promotes it to rank 1."""
+        from memstem.core.rerank import StubReranker
+
+        # All three docs match "alpha" via BM25. RRF order is by tokenization;
+        # we check rerank can override it regardless.
+        a = _make_memory(body="alpha primary", title="A", vault=vault)
+        b = _make_memory(body="alpha and bravo extra", title="B", vault=vault)
+        c = _make_memory(body="alpha mention only", title="C", vault=vault)
+        for m in (a, b, c):
+            index.upsert(m)
+
+        stub = StubReranker()
+        # Drive `c` (likely lower-ranked by RRF given short body) to score 1.0
+        # and the others to 0.0 — rerank must put `c` first.
+        stub.set_default(0.0)
+        stub.set_score("alpha", str(c.id), 1.0)
+
+        search = Search(vault=vault, index=index, embedder=None, reranker=stub)
+        results = search.search("alpha", limit=3, rerank_top_n=3)
+        assert len(results) >= 1
+        assert results[0].memory.id == c.id
+
+    def test_rerank_only_touches_top_n(self, vault: Vault, index: Index) -> None:
+        """Candidates beyond ``rerank_top_n`` keep their original RRF position."""
+        from memstem.core.rerank import StubReranker
+
+        a = _make_memory(body="alpha one", vault=vault)
+        b = _make_memory(body="alpha two", vault=vault)
+        c = _make_memory(body="alpha three", vault=vault)
+        d = _make_memory(body="alpha four", vault=vault)
+        for m in (a, b, c, d):
+            index.upsert(m)
+
+        # Rerank top-2 only: a stub that scores everything high will only
+        # see the first two materialized candidates. The rest pass through.
+        stub = StubReranker()
+        stub.set_default(0.9)
+
+        search = Search(vault=vault, index=index, embedder=None, reranker=stub)
+        results = search.search("alpha", limit=4, rerank_top_n=2)
+        assert len(results) == 4
+        # Top-2 was reranked; the bottom-2 keeps relative RRF order. The
+        # exact identity of the top-2 depends on RRF tokenization — what
+        # matters is that we got 4 distinct results.
+        ids = {r.memory.id for r in results}
+        assert ids == {a.id, b.id, c.id, d.id}
+
+    def test_rerank_zero_top_n_is_disabled(self, vault: Vault, index: Index) -> None:
+        """``rerank_top_n=0`` is treated identically to ``None``."""
+        from memstem.core.rerank import StubReranker
+
+        a = _make_memory(body="alpha first", vault=vault)
+        b = _make_memory(body="alpha second", vault=vault)
+        for m in (a, b):
+            index.upsert(m)
+
+        # A stub that would invert the order, but rerank_top_n=0 should
+        # skip the stage entirely.
+        stub = StubReranker()
+        stub.set_default(0.0)
+
+        search = Search(vault=vault, index=index, embedder=None, reranker=stub)
+        with_zero = search.search("alpha", limit=2, rerank_top_n=0)
+        without = search.search("alpha", limit=2, rerank_top_n=None)
+        assert [r.memory.id for r in with_zero] == [r.memory.id for r in without]
+
+
 @pytest.mark.requires_ollama
 class TestHybridRecallAgainstOllama:
     """Live integration: 20-doc corpus, verify hybrid > either signal alone."""

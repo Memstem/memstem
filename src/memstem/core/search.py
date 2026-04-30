@@ -27,6 +27,12 @@ from datetime import UTC, datetime
 from memstem.core.embeddings import Embedder
 from memstem.core.index import FtsHit, Index, VecHit
 from memstem.core.mmr import mmr_rerank
+from memstem.core.rerank import (
+    DEFAULT_RERANK_TOP_N,
+    NoOpReranker,
+    RerankCandidate,
+    Reranker,
+)
 from memstem.core.retrieval_log import (
     DEFAULT_MAX_ROWS as DEFAULT_QUERY_LOG_MAX_ROWS,
 )
@@ -153,10 +159,16 @@ class Search:
         vault: Vault,
         index: Index,
         embedder: Embedder | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
         self.embedder = embedder
+        # NoOp default keeps the search path branch-free: callers that
+        # set ``rerank_top_n`` without configuring a reranker get a
+        # silent passthrough (every score 1.0, stable sort preserves
+        # the input order). ADR 0017.
+        self.reranker = reranker if reranker is not None else NoOpReranker()
 
     def query_bm25(
         self,
@@ -193,6 +205,7 @@ class Search:
         include_expired: bool = False,
         include_deprecated: bool = False,
         mmr_lambda: float | None = None,
+        rerank_top_n: int | None = None,
         log_client: str | None = None,
         log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
     ) -> list[Result]:
@@ -239,6 +252,15 @@ class Search:
         MMR adds one cosine computation per ``(picked, candidate)`` pair
         — bounded by ``limit`` — so the overhead is negligible for
         typical top-10 queries.
+
+        ``rerank_top_n`` enables cross-encoder reranking (ADR 0017).
+        ``None`` (the default) skips rerank entirely. An integer N
+        re-scores the top-N materialized candidates via
+        :attr:`reranker` and re-sorts by the new score before MMR /
+        truncation. Rerank ties break on the original RRF score so
+        ordering is deterministic. The rerank stage runs *before* MMR
+        so MMR diversifies the precision-ordered pool rather than
+        the importance-ordered one.
         """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
@@ -263,15 +285,16 @@ class Search:
             bm25_weight=bm25_weight,
             vector_weight=vector_weight,
         )
-        # When MMR is enabled, materialize a wider pool so the
-        # diversifier has options to choose from. The pool is bounded by
-        # OVERFETCH_MULTIPLIER * limit (same cap the importance boost
-        # uses) so the cost stays predictable.
-        materialize_limit = (
-            limit * OVERFETCH_MULTIPLIER
-            if mmr_lambda is not None and query_embedding is not None
-            else limit
-        )
+        # Materialize a wider pool when MMR or rerank wants more
+        # candidates than the final ``limit``. The pool size is the
+        # max of all enabled stages so each stage gets the breadth it
+        # asked for. ADR 0016 (MMR) defaults to OVERFETCH_MULTIPLIER *
+        # limit; ADR 0017 (rerank) sizes by ``rerank_top_n``.
+        materialize_limit = limit
+        if mmr_lambda is not None and query_embedding is not None:
+            materialize_limit = max(materialize_limit, limit * OVERFETCH_MULTIPLIER)
+        if rerank_top_n is not None and rerank_top_n > 0:
+            materialize_limit = max(materialize_limit, rerank_top_n)
         results = self._materialize(
             fused,
             limit=materialize_limit,
@@ -279,6 +302,8 @@ class Search:
             include_expired=include_expired,
             include_deprecated=include_deprecated,
         )
+        if rerank_top_n is not None and rerank_top_n > 0 and results:
+            results = self._apply_rerank(query, results, top_n=rerank_top_n)
         if mmr_lambda is not None and query_embedding is not None:
             results = mmr_rerank(
                 results,
@@ -320,6 +345,41 @@ class Search:
         if n_floats == 0:
             return None
         return list(struct.unpack(f"{n_floats}f", blob))
+
+    def _apply_rerank(
+        self,
+        query: str,
+        results: list[Result],
+        top_n: int,
+    ) -> list[Result]:
+        """Re-score the top-N materialized results via the configured reranker.
+
+        Per ADR 0017: the rerank stage runs after RRF + importance and
+        before MMR. Only the first ``top_n`` results are re-scored;
+        anything past ``top_n`` keeps its original RRF order. The
+        re-scored slice is sorted by ``(rerank_score, original_score)``
+        descending so RRF acts as the tiebreaker.
+
+        On any reranker failure, the candidates retain their input
+        order — :meth:`Reranker.score_candidates` already swallows
+        per-call exceptions and returns ``0.0`` for that slot, so the
+        fallback degrades gracefully rather than crashing the search.
+        """
+        head = results[:top_n]
+        tail = results[top_n:]
+        candidates = [RerankCandidate.from_memory(r.memory) for r in head]
+        with self.index._lock:
+            scores = self.reranker.score_candidates(query, candidates, db=self.index.db)
+        # Pair (rerank_score, original RRF score) for stable composite
+        # ordering. Higher rerank wins; ties break on RRF (which itself
+        # already encodes importance boost) so two ``1.0`` reranks
+        # don't shuffle randomly.
+        ordered = sorted(
+            zip(scores, head, strict=True),
+            key=lambda pair: (pair[0], pair[1].score),
+            reverse=True,
+        )
+        return [r for _, r in ordered] + tail
 
     def _log_results(
         self,
@@ -441,6 +501,7 @@ class Search:
 __all__ = [
     "DEFAULT_IMPORTANCE",
     "DEFAULT_IMPORTANCE_WEIGHT",
+    "DEFAULT_RERANK_TOP_N",
     "DEFAULT_RRF_K",
     "FusedHit",
     "Result",

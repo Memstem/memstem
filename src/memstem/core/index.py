@@ -28,7 +28,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -249,6 +249,31 @@ MIGRATIONS: dict[int, str] = {
         -- did a full vec0 scan that scaled O(memories x chunks) -- 35 s on
         -- a 1+ GB index. See ADR 0014 for context.
         SELECT 1;
+    """,
+    9: """
+        -- ADR 0017: cross-encoder rerank cache. Memoizes
+        -- (query, memory_id, body_hash, judge) -> score so repeat queries
+        -- against unchanged memory bodies skip the LLM round trip.
+        --
+        -- Non-canonical: losing this table costs first-call latency, not
+        -- correctness. Cascades on memory delete so stale rows don't
+        -- accumulate.
+        --
+        -- `judge` is part of the key so swapping reranker variants
+        -- (different model, different prompt template) doesn't silently
+        -- serve scores from the previous variant.
+        CREATE TABLE IF NOT EXISTS rerank_cache (
+            query_hash TEXT NOT NULL,
+            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            body_hash TEXT NOT NULL,
+            score REAL NOT NULL,
+            judge TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            PRIMARY KEY (query_hash, memory_id, body_hash, judge)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rerank_cache_ts ON rerank_cache(ts);
+        CREATE INDEX IF NOT EXISTS idx_rerank_cache_memory_id
+            ON rerank_cache(memory_id);
     """,
 }
 
