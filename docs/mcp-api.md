@@ -10,7 +10,7 @@ Hybrid keyword + semantic search across all memories and skills.
 
 - `query` (string, required): natural language query
 - `limit` (int, optional, default 10): max results
-- `types` (array, optional): filter by memory type (`memory`, `skill`, `session`, etc.)
+- `types` (array, optional): filter by memory type (`memory`, `skill`, `session`, `daily`, `decision`, `project`, `distillation`, etc.). Useful: `types=[distillation, project]` returns only the derived rollup records — typically what an agent wants for "what is the X project" / "what did we decide about Y" queries; `types=[memory, skill, decision]` returns only primary sources.
 - `tags` (array, optional): filter by tag
 
 **Returns:**
@@ -99,6 +99,17 @@ Add or update a memory. Used by adapters and by clients writing knowledge.
   "created": true
 }
 ```
+
+## Derived records (`type: distillation`, `type: project`)
+
+Returned by the same `memstem_search` and `memstem_get` tools. They look like any other memory but carry `links` pointing back to their source records (the session a distillation summarized; the sessions + distillations a project rollup aggregated). Importance is seeded at 0.8 (distillation) / 0.85 (project) so they outrank raw transcripts on close ties.
+
+Produced by the hygiene-worker writers, not by the adapter pipeline:
+
+- `memstem hygiene distill-sessions [--apply] [--backfill]` — one distillation per meaningful session ([ADR 0020](./decisions/0020-session-distillation-writer.md)).
+- `memstem hygiene project-records [--apply]` — one project record per Claude Code project tag with ≥2 sessions ([ADR 0021](./decisions/0021-project-records.md)).
+
+See [docs/distillation-verification.md](./distillation-verification.md) for the operator playbook.
 
 ## Anthropic memory tool adapter (Phase 2)
 
