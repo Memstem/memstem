@@ -38,9 +38,10 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.8.1 — first post-public release.** Live on the maintainer's box;
+**v0.9.0 — derived records.** Live on the maintainer's box;
 ingesting from multi-agent OpenClaw + Claude Code in real time.
-Shipping:
+0.9.0 adds session distillation + project records on top of the
+0.8.1 retrieval pipeline. Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
   markdown-canonical vault. Index is rebuildable from the files.
@@ -50,6 +51,15 @@ Shipping:
 - **Four pluggable embedders** — Ollama (local default), OpenAI, Gemini,
   Voyage — selectable via `_meta/config.yaml`. Always-on embed queue
   with retry/backoff and idle-timeout self-exit.
+- **Derived records (new in 0.9.0)** — `memstem hygiene
+  distill-sessions` produces `type: distillation` companion records
+  for meaningful sessions, and `memstem hygiene project-records`
+  aggregates per-project-tag sessions into `type: project` rollups.
+  Both are CLI-driven, idempotent, opt-in (NoOp default; pluggable
+  OpenAI / Ollama summarizer). Direct fix for "the project where we
+  did X" queries that today fail to surface project work that
+  exists in the vault. See
+  [docs/distillation-verification.md](./docs/distillation-verification.md).
 - **Quality pipeline** — write-time noise filter, exact-body hash dedup
   (Layer 1), TTL tagging for transient kinds, boot-echo hash filter —
   keeps the vault from being polluted by AI-session firehose.
@@ -66,7 +76,7 @@ Cross-platform CI runs Linux (gating) plus macOS and Windows
 (experimental, `continue-on-error: true` — sqlite-vec needs
 `enable_load_extension`, which `actions/setup-python`'s macOS build
 doesn't ship; native Windows is WSL2-only by design for v0.x).
-737 tests, 88% coverage. See [CHANGELOG.md](./CHANGELOG.md) for the
+1087 tests passing. See [CHANGELOG.md](./CHANGELOG.md) for the
 release-by-release history and [ROADMAP.md](./ROADMAP.md) for what's
 next.
 
@@ -254,6 +264,43 @@ adapters:
 
 Run `memstem doctor` after edits to verify every configured target exists and the embedder is reachable.
 
+## Distillation + project records (new in 0.9.0)
+
+Two new hygiene commands turn raw session transcripts and per-project
+session sets into retrieval-shaped derived records. Both are
+**CLI-driven, idempotent, and opt-in** — NoOp is the install-time
+default, you opt into a real summarizer explicitly.
+
+```bash
+# One-shot backfill at cutover (or any time you want to refresh):
+memstem auth set openai sk-...
+memstem hygiene distill-sessions --backfill --provider openai --apply
+memstem hygiene project-records --provider openai --apply
+
+# Routine refresh (post-backfill):
+memstem hygiene distill-sessions --provider openai --apply
+memstem hygiene project-records --provider openai --apply
+```
+
+What you get:
+
+- **Session distillations** at `vault/distillations/<source>/<session_id>.md` —
+  one paragraph + structured Key entities / Deliverables / Decisions /
+  Status sections per session. Provenance always points back to the
+  source transcript.
+- **Project records** at `vault/memories/projects/<slug>.md` — one
+  per Claude Code project tag with ≥2 sessions. Canonical project
+  name extracted from the work itself, accumulated decisions,
+  link map.
+
+Both can also run with Ollama (`--provider ollama`, default model
+`qwen2.5:7b`) for local-only setups. See
+[docs/distillation-verification.md](./docs/distillation-verification.md)
+for the full operator workflow (dry-run, quality spot-check, eval
+diff, manual override) and
+[docs/recall-models.md](./docs/recall-models.md) for the model
+recommendations + cost expectations.
+
 ## Verifying it works
 
 `memstem doctor` is the single source of truth for "is the install healthy?":
@@ -263,7 +310,7 @@ $ memstem doctor
 Memstem doctor (vault=/home/ubuntu/memstem-vault):
 
   ✓ Python 3.11
-  ✓ memstem 0.1.0
+  ✓ memstem 0.9.0
   ✓ Vault: /home/ubuntu/memstem-vault
   ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly

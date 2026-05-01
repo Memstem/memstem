@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-01
+
+The "derived records" release. Five PRs (#90–#94) ship Block 4 of
+RECALL-PLAN.md: session distillation writer (W8, ADR 0020) and
+project records (W9, ADR 0021). Direct fix for the recall failure
+where natural-language queries like "the Woodfield Country Club
+e-bike video" or "the project where we revised the aerial demo"
+fail to surface project work that exists in the vault — the data
+is there, the *shape* is wrong. Both new commands ship CLI-driven
+and idempotent; the recommended workflow is one backfill pass per
+command at cutover, then routine runs from cron / PM2 / `memstem
+schedule`.
+
+ADR 0019's "no skill authoring" rule stands unchanged — distillations
+and project records are search-shape derivatives with mandatory
+provenance back to the source, not skill-style standalone knowledge
+claims. The boundary table in ADRs 0020/0021 spells out the
+distinction.
+
+Schema migration: 10 → 11 (`summarizer_cache` table — shared by
+both writers; non-canonical, drop-and-rebuild safe).
+
+### Added
+
+- **Session distillation writer (ADR 0020 / W8).** `memstem hygiene
+  distill-sessions [--apply] [--backfill] [--force]` walks the vault,
+  applies a meaningfulness threshold (≥10 turns + ≥100 words),
+  skips already-distilled sessions, and produces a 1-paragraph
+  rollup with structured Key entities / Deliverables / Decisions /
+  Status sections at `vault/distillations/<source>/<session_id>.md`.
+  Each distillation links back to its source session via `links` and
+  carries `provenance.ref = session-distillation:<id>`. Importance
+  seed = 0.8 so the existing `alpha=0.2` multiplier surfaces
+  distillations above raw transcripts on close ties without
+  bulldozing skills/decisions. `--force` regenerates against the
+  prompt template; the existing memory_id is preserved for in-place
+  overwrite. NoOp summarizer is the safe default; opt into OpenAI
+  (`gpt-5.4-mini`) or Ollama (`qwen2.5:7b`) explicitly via
+  `--provider`.
+- **Project records writer (ADR 0021 / W9).** `memstem hygiene
+  project-records [--apply] [--force]` aggregates Claude Code
+  sessions sharing a project tag (e.g.
+  `home-ubuntu-woodfield-quotes`) into a single `type: project`
+  record at `vault/memories/projects/<slug>.md` — canonical project
+  name extracted from the work itself, description, participants,
+  deliverables, accumulated decisions, latest known state. Reuses
+  the W8 summarizer abstraction with a separate prompt template;
+  prefers session distillations over raw bodies when both exist.
+  Threshold: ≥2 sessions per project tag. `manual: true` in the
+  record's frontmatter preserves hand-curated bodies on re-run
+  (only `links` and `updated` refresh); `--force` overrides.
+  Importance seed = 0.85, just above session distillations (0.8),
+  so a project record outranks any specific session for the same
+  project on close ties.
+- **Generic summarizer abstraction (PR #91).** New
+  `core/summarizer.py` mirrors the rerank/HyDE/dedup-judge pattern:
+  `Summarizer` ABC + `NoOpSummarizer` + `StubSummarizer` +
+  `OllamaSummarizer` + `OpenAISummarizer`, lazy httpx, content-keyed
+  cache. Default OpenAI model is `gpt-5.4-mini` because summary
+  text IS the search target — quality matters more than for
+  rerank/HyDE where the LLM output is a score or query rewrite.
+- **Schema migration v11.** `summarizer_cache(content_hash,
+  summarizer, output, ts)`. Shared by W8 and W9; cache-isolation
+  via the `summarizer` column so swapping models doesn't serve
+  stale outputs. Non-canonical, drop-and-rebuild safe.
+- **Updated `docs/recall-models.md`** with session distillation +
+  project records rows in the TL;DR, a "why `gpt-5.4-mini` not
+  `gpt-4o-mini`" callout, per-feature upgrade ladder, refreshed
+  cost expectations, and an Ollama-on-CPU operator note (summary
+  generation is heavier than rerank/HyDE on local hardware).
+- **New `docs/distillation-verification.md`** — operator playbook
+  walking through the post-cutover flow: NoOp dry-run → real-provider
+  dry-run → apply → manual quality spot-check → eval harness diff →
+  routine maintenance.
+- **Eval queries.** Four `project_*` queries in `eval/queries.yaml`
+  exercise the recall failure mode that motivated W8/W9. They report
+  baseline today and should land on shape-optimized records after
+  the first apply pass — the lift is the gate for any default-on
+  flip.
+- **ADRs 0020 + 0021** documenting the design + the boundary against
+  ADR 0019's "no skill authoring" rule.
+
+### Changed
+
+- **Default OpenAI summarization model is `gpt-5.4-mini`.** Same
+  caveat as the W5/W6 defaults in 0.8.1: NoOp is the install-time
+  default, the user opts into a real provider explicitly. The eval
+  harness gates any future default-on flip.
+
+### Notes
+
+- 1087 tests pass on Linux 3.11/3.12 (114 new in PRs #91–#93).
+  Cross-platform CI matrix unchanged: macOS + Windows continue-on-
+  error.
+- Brad's Ari vault should not see any of this until the upgrade pass
+  documented in `docs/distillation-verification.md` runs explicitly.
+- Cost at typical MemStem volumes for a one-shot backfill of ~356
+  Claude Code sessions on `gpt-5.4-mini`: ~$5 one time, ~$3-4/month
+  steady-state. NoOp + Ollama path is $0/month + the hardware you
+  already have.
+
 ## [0.8.1] — 2026-04-30
 
 The "recall quality + macOS unblocked" release. Five PRs (#84–#88)
