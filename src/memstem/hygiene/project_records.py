@@ -614,6 +614,11 @@ def apply_project_records(
             )
             vault.write(memory)
             index.upsert(memory)
+            # Enqueue for embedding so vec retrieval can rank the new
+            # project record. Same rationale as the session-distill
+            # writer: a focused project summary loses to sprawling
+            # source transcripts on BM25 term-frequency alone.
+            index.enqueue_embed(str(memory.id))
             if proposal.manual_skip:
                 result.links_only_updates += 1
             elif proposal.is_update:

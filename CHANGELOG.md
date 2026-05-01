@@ -95,6 +95,15 @@ both writers; non-canonical, drop-and-rebuild safe).
   caveat as the W5/W6 defaults in 0.8.1: NoOp is the install-time
   default, the user opts into a real provider explicitly. The eval
   harness gates any future default-on flip.
+- **OpenAI clients now send `max_completion_tokens` instead of
+  `max_tokens`.** Affects `OpenAISummarizer`, `OpenAIReranker`, and
+  `OpenAIExpander`. The GPT-5.x family rejects `max_tokens` outright
+  with HTTP 400 (`unsupported_parameter`), and the newer field name
+  is also accepted by the older `gpt-4o-mini` family — so the
+  switch is universal and forward-compatible. Surfaced during the
+  cutover smoke test on Brad's box: every summarizer call returned
+  400 until the field was renamed. Test fixtures updated to assert
+  the new field.
 
 ### Notes
 

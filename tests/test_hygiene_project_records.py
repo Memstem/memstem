@@ -566,6 +566,13 @@ class TestApply:
         ).fetchone()
         assert row is not None
         assert row["type"] == MemoryType.PROJECT.value
+        # And confirm the project record was enqueued for embedding so
+        # vec retrieval can rank it above raw transcripts (BM25 alone
+        # favors longer documents on term frequency).
+        queue_row = index.db.execute(
+            "SELECT memory_id FROM embed_queue WHERE memory_id = ?", (str(record.id),)
+        ).fetchone()
+        assert queue_row is not None
 
     def test_apply_refreshes_links_only_for_manual_record(self, vault: Vault, index: Index) -> None:
         # Set up a manual existing record.

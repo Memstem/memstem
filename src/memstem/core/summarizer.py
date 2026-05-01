@@ -426,13 +426,19 @@ class OpenAISummarizer(Summarizer):
     def _call_model(self, prompt: str) -> str:
         client = self._http_client()
         post = client.post  # type: ignore[attr-defined]
+        # `max_completion_tokens` rather than `max_tokens` because the
+        # GPT-5.x family rejects `max_tokens` outright (HTTP 400,
+        # ``unsupported_parameter``). The newer field name is also
+        # accepted by the older `gpt-4o-mini` family, so always sending
+        # it avoids a model-name → field-name branch and keeps the
+        # client forward-compatible with the next OpenAI rev.
         result = post(
             "/chat/completions",
             json={
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": self.temperature,
-                "max_tokens": self.max_output_tokens,
+                "max_completion_tokens": self.max_output_tokens,
             },
         )
         result.raise_for_status()
