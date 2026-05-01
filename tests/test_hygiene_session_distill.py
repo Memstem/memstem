@@ -460,6 +460,13 @@ class TestApplyDistillations:
         ).fetchone()
         assert rows is not None
         assert rows["type"] == MemoryType.DISTILLATION.value
+        # And confirm the distillation was enqueued for embedding so
+        # vec retrieval can find it. Without this, BM25 alone has the
+        # long source transcript outranking the focused summary.
+        queue_row = index.db.execute(
+            "SELECT memory_id FROM embed_queue WHERE memory_id = ?", (str(d.id),)
+        ).fetchone()
+        assert queue_row is not None
 
     def test_apply_skips_proposals_with_empty_summary(self, vault: Vault, index: Index) -> None:
         _write_session(vault, session_id="s1", turns=12)

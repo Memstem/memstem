@@ -545,6 +545,14 @@ def apply_distillations(
             )
             vault.write(memory)
             index.upsert(memory)
+            # Enqueue for embedding so vec retrieval can rank the new
+            # record. Without this, the distillation lives in FTS5 only
+            # and the long, noisy source transcript outranks the focused
+            # summary on BM25 alone — the very failure mode this writer
+            # exists to fix. The pipeline's normal ingest path (see
+            # core/pipeline.py) does the same enqueue after upsert; we
+            # mirror it here for hygiene-worker writes.
+            index.enqueue_embed(str(memory.id))
             result.written += 1
         except Exception as exc:
             err = f"distillation apply failed for session {candidate.session_id}: {exc}"
