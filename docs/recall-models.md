@@ -1,14 +1,15 @@
 # Recall-quality models — recommendations and upgrade ladder
 
-> Last updated: 2026-04-30. Tracks shipped recall-quality features
+> Last updated: 2026-05-01. Tracks shipped recall-quality features
 > ([RECALL-PLAN.md](../RECALL-PLAN.md)) and the model choices that
 > drive them.
 
 Memstem's recall-quality features (cross-encoder rerank, HyDE query
-expansion, dedup judge) need a chat-capable LLM in addition to the
-embedder. The chat model is **pluggable**: pick a provider that fits
-your box. This guide names the recommended model for each feature
-and the next step up if results aren't good enough.
+expansion, dedup judge, session/project summarization) need a
+chat-capable LLM in addition to the embedder. The chat model is
+**pluggable**: pick a provider that fits your box. This guide names
+the recommended model for each feature and the next step up if
+results aren't good enough.
 
 ## TL;DR
 
@@ -17,10 +18,23 @@ and the next step up if results aren't good enough.
 | **Cross-encoder rerank** (W5, ADR 0017) | `gpt-4o-mini` | `qwen2.5:7b` |
 | **HyDE query expansion** (W6, ADR 0018) | `gpt-4o-mini` | `qwen2.5:7b` |
 | **Dedup judge** (ADR 0012) | `gpt-4o-mini` | `qwen2.5:7b` |
+| **Session distillation** (W8, ADR 0020) | **`gpt-5.4-mini`** | `qwen2.5:7b` |
+| **Project records** (W9, ADR 0021) | **`gpt-5.4-mini`** | `qwen2.5:7b` |
 
-`gpt-4o-mini` is the safe default for cloud-backed setups: cheap,
-fast, strong enough for all three jobs. `qwen2.5:7b` is the
-local-only equivalent — same role, different deployment shape.
+For rerank/HyDE/dedup, `gpt-4o-mini` is cheap, fast, and strong
+enough — the model output isn't itself indexed, so the quality bar
+is "reliable scoring / structured output," not "human-readable
+prose."
+
+For session distillation and project records, **the model output IS
+the search target** — the summary text is what gets indexed and
+returned to retrievers. Quality matters more here, which is why we
+default to `gpt-5.4-mini` (the newer-generation mini-tier model with
+notably better summarization output per dollar). Cost at typical
+MemStem volumes is pennies per month.
+
+`qwen2.5:7b` is the local-only equivalent across every feature —
+same role, different deployment shape, zero per-call cost.
 
 If results don't meet the eval bar, walk the upgrade ladder per
 feature below.
@@ -201,21 +215,84 @@ Note: today the dedup judge is **Ollama-only** (no `OpenAIDedupJudge`
 yet). The OpenAI variant is a follow-up PR — same shape as
 `OpenAIReranker` and `OpenAIExpander`.
 
+### Session distillation (W8, ADR 0020)
+
+**What it does:** turns long Claude Code or OpenClaw session
+transcripts into 1-paragraph rollups with structured Key entities /
+Deliverables / Decisions / Status sections. The output replaces the
+verbose transcript in retrieval — agents searching for the work the
+session represents land on the summary.
+
+**Recommended:** `gpt-5.4-mini` (OpenAI) / `qwen2.5:7b` (Ollama).
+
+**Why `gpt-5.4-mini` (not `gpt-4o-mini`)** — for session
+distillation, the LLM output IS the search target. Bad summaries
+become permanent retrieval misses. `gpt-5.4-mini` produces
+materially better entity coverage and decision clarity on
+summarization benchmarks at ~5× the per-call cost of `gpt-4o-mini`,
+which still works out to **single-digit dollars per month** at a
+typical 5–10-substantive-sessions-per-day pace. The quality lift
+is worth it for the canonical search artifact; the LLM-as-judge
+features (rerank/HyDE/dedup) don't need it because their outputs
+are scores or query rewrites, not indexed content.
+
+**If results aren't good enough:**
+
+| Step | Model | When to pick it |
+|---|---|---|
+| 1 | `gpt-5.4-mini` (default) | Start here. Brad's eval queries land on distillations? Done. |
+| 2 | `gpt-5.4` | Better at long sessions where the answer is buried among tool calls. ~3× the cost. |
+| 3 | `gpt-5` (full) | Frontier-class. Worth it only if specific failure modes survive 5.4. |
+
+**For Ollama users:** same upgrade ladder as rerank/HyDE — `qwen2.5:7b` →
+`qwen2.5:14b` → `qwen2.5:32b`. Larger local models materially improve
+summarization quality (the gap between `7b` and `14b` is bigger here
+than for rerank).
+
+### Project records (W9, ADR 0021)
+
+**What it does:** aggregates Claude Code sessions sharing a project
+tag into a single `type: project` rollup at
+`vault/memories/projects/<slug>.md` — canonical project name,
+description, participants, deliverables, accumulated decisions.
+
+**Recommended:** `gpt-5.4-mini` (OpenAI) / `qwen2.5:7b` (Ollama).
+
+**Why:** project records have the same "output IS the search target"
+property as session distillations. The LLM is also doing
+extraction work the smaller models miss — pulling a
+human-readable canonical name out of an encoded directory tag is the
+kind of task where 5.4-mini's reasoning earns its keep.
+
+**Volume note:** project records are run at much lower frequency
+than session distillations (one record per project, regenerated only
+when the source set changes), so the cost difference between
+`gpt-5.4-mini` and the 4o-mini tier rounds to nothing in absolute
+terms.
+
+The same upgrade ladder applies for both providers — see session
+distillation above.
+
 ## Cost expectations
 
-For a 200-queries/day vault with all three features default-on and
+For a 200-queries/day vault with all features default-on and
 all cache misses (worst case):
 
-| Feature | OpenAI (`gpt-4o-mini`) | Notes |
+| Feature | OpenAI default | Notes |
 |---|---|---|
-| Cross-encoder rerank | $3-5/month | 20 candidates × 200 prompt tokens × 200 queries/day. The cache absorbs most of this in steady state. |
-| HyDE | $1/month | 1 call × 300 tokens × 200 queries/day. Cache hit rate is high — same query → same hypothesis. |
-| Dedup judge | $0.50/month | Hygiene-worker pace, not query pace. ~50 candidate pairs/week. |
+| Cross-encoder rerank (`gpt-4o-mini`) | $3-5/month | 20 candidates × 200 prompt tokens × 200 queries/day. Cache absorbs most of this in steady state. |
+| HyDE (`gpt-4o-mini`) | $1/month | 1 call × 300 tokens × 200 queries/day. Cache hit rate is high — same query → same hypothesis. |
+| Dedup judge (`gpt-4o-mini`) | $0.50/month | Hygiene-worker pace, not query pace. ~50 candidate pairs/week. |
+| Session distillation (`gpt-5.4-mini`) | $1-5/month | One LLM call per substantive session (~15K tokens in, 500 tokens out). Cache hits when source unchanged. |
+| Project records (`gpt-5.4-mini`) | $0.10-0.50/month | Regenerated only when project source set changes. Typically a few calls per week. |
 
-Realistic with caches warm: $1-3/month total.
+Realistic with caches warm: **$2-8/month total**.
 
 For Ollama users: $0/month + the cost of the GPU/RAM you already
-have.
+have. Note that summarization is materially heavier than rerank/HyDE
+on local hardware — a CPU-only Ollama can take 30-90 seconds per
+session distillation, vs. low-second-digit on a GPU. Plan for that
+when sizing.
 
 ## Related ADRs
 
@@ -224,3 +301,5 @@ have.
 - [ADR 0015 — Recall-quality eval harness](decisions/0015-eval-harness.md)
 - [ADR 0017 — Cross-encoder rerank](decisions/0017-cross-encoder-rerank.md)
 - [ADR 0018 — HyDE query expansion](decisions/0018-hyde-query-expansion.md)
+- [ADR 0020 — Session distillation writer](decisions/0020-session-distillation-writer.md)
+- [ADR 0021 — Project records](decisions/0021-project-records.md)

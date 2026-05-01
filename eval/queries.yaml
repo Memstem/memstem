@@ -101,3 +101,51 @@ queries:
     query: when was the Qdrant memory backfill done
     expect:
       body_contains: ["2026-03-14", "Qdrant Memory Backfill", "10,313"]
+
+  # ─── PROJECT-GRAIN (W8/W9: distillation + project records) ──────────
+  # These queries exercise the recall failure mode that motivated ADRs
+  # 0020/0021: natural-language searches for project work (entities,
+  # deliverables, "the project where we did X") should land on a
+  # type=project or type=distillation record, not a raw session JSONL.
+  # Until `memstem hygiene distill-sessions --backfill --apply` and
+  # `memstem hygiene project-records --apply` have run on the live
+  # vault, these queries report the baseline (raw transcripts surface
+  # weakly or not at all). After running both commands, the same
+  # queries should land on shape-optimized records — that lift is the
+  # eval gate for flipping any default-on knobs.
+  #
+  # If your vault doesn't contain a Woodfield project, replace the
+  # body_contains substrings with terms from your actual project
+  # records. The structure is what matters, not the specific entity.
+
+  - id: project_woodfield_ebike_video
+    class: conceptual
+    query: Woodfield Country Club e-bike video
+    expect:
+      title_contains: ["Woodfield"]
+      body_contains: ["Woodfield", "e-bike"]
+      path_contains: ["projects/home-ubuntu-woodfield", "distillations"]
+
+  - id: project_aerial_demo_revision
+    class: conceptual
+    query: the project where we revised the aerial-style demo video
+    expect:
+      body_contains: ["aerial", "demo", "revision", "video"]
+      path_contains: ["projects/", "distillations"]
+
+  - id: project_recent_client_work
+    class: conceptual
+    query: what did we build for the client last week
+    expect:
+      title_contains: ["Project"]
+      path_contains: ["projects/"]
+
+  - id: project_distillation_ranks_above_raw
+    class: conceptual
+    query: Woodfield e-bike & golf cart tracking proposal
+    expect:
+      # A distillation or project record (path under
+      # `distillations/` or `memories/projects/`) should outrank the
+      # raw session JSONL at `sessions/<id>.md`. The ranking is what
+      # we care about; substring matching just confirms shape.
+      path_contains: ["distillations/", "memories/projects/"]
