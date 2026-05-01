@@ -86,7 +86,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 - **Tests passing:** 220 (5 deselected — Ollama integration tests, all pass when run with `-m requires_ollama`)
 - **Coverage:** 88% overall; new modules typically 90%+
 - **CI:** green on every merged PR
-- **Decisions locked:** ADRs 0001–0007, 0009, 0010 are accepted in [`docs/decisions/`](./docs/decisions/). ADRs 0008 (tiered memory), 0011 (noise filter + fact extraction), 0012 (LLM-judge dedup) are proposed and awaiting Brad's review.
+- **Decisions locked:** ADRs 0001–0007, 0009, 0010 are accepted in [`docs/decisions/`](./docs/decisions/). ADRs 0008 (tiered memory), 0011 (noise filter + fact extraction), 0012 (LLM-judge dedup) are proposed and awaiting Brad's review. ADR 0019 (no skill authoring) accepted 2026-04-30. ADRs 0020 (session distillation writer) and 0021 (project records) accepted 2026-05-01 — see RECALL-PLAN.md Block 4.
 - **Live infra status:** Ollama 0.21.2 installed and running on `127.0.0.1:11434`, `nomic-embed-text` (768 dims) loaded.
 
 ### Merged PRs (full Phase 1 + extensions)
