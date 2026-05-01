@@ -1,8 +1,9 @@
 # Memstem Recall Quality — Plan
 
-> Created 2026-04-29; simplified 2026-04-30.
+> Created 2026-04-29; simplified 2026-04-30; expanded 2026-05-01 with
+> W8/W9 (distillation writer + project records).
 > Companion to [PLAN.md](./PLAN.md) (Phase 1 cutover). This is the
-> Phase 2+ recall-quality agenda. Approved by Brad 2026-04-30.
+> Phase 2+ recall-quality agenda. Approved by Brad 2026-04-30 + 2026-05-01.
 
 ## TL;DR
 
@@ -23,7 +24,9 @@ without measurable improvement.
 | LLM dedup *judge* | `hygiene/dedup_judge.py` | Shipped (NoOp default) |
 | Importance multiplier in search | `core/search.py` | Shipped |
 | Importance bumps from retrievals | `hygiene/importance.py` | Shipped |
-| Distillation *candidates* | `hygiene/distillation.py` | Shipped (read-only) |
+| Distillation *candidates* (topic + week) | `hygiene/distillation.py` | Shipped (read-only) |
+| Distillation *writer* (sessions) | `hygiene/session_distill.py` | **NOT shipped** (W8) |
+| Project records | `hygiene/project_records.py` | **NOT shipped** (W9) |
 | Bi-temporal `valid_to` filter | `core/search.py` | Shipped |
 | Importance seed at ingest | (ADR 0008 PR-A) | **NOT shipped** |
 | Atomic-fact extraction | (ADR 0011 PR-D) | **NOT shipped** |
@@ -178,25 +181,109 @@ at ingest; original preserved as `session_raw`.
 LOC: ~600 (largest single PR). ADR: existing ADR 0011 covers the
 design.
 
+### Bucket 4 — Session distillation + project records (ADRs 0020 + 0021)
+
+Direct fix for the recall failure mode where natural-language queries
+("the Woodfield Country Club e-bike video", "the project where we
+revised the aerial demo") fail to surface project work that does
+exist in the vault. The data is there; the *shape* is wrong. These
+two PRs add retrieval-shaped derived records with mandatory
+provenance back to the source.
+
+#### W8 — Session distillation writer (ADR 0020)
+
+Goal: every meaningful Claude Code or OpenClaw session gets a 1-paragraph
+`type: distillation` companion record, retrieval-optimized, with a
+hard `links` pointer back to the source session.
+
+- `core/summarizer.py` — `Summarizer` ABC + `NoOpSummarizer` +
+  `StubSummarizer` + `OllamaSummarizer` + `OpenAISummarizer`. Same
+  pattern as ADRs 0017/0018: lazy httpx, `provider:model` name,
+  cache helpers (`distillation_cache`, schema migration v11).
+  Prompt template at `prompts/distill_session.txt`.
+- `hygiene/session_distill.py` — `find_session_candidates` (turn-count
+  + word-count thresholds + skip-already-distilled), `distill_session`
+  (one LLM call per session), `apply_distillations` (write the
+  `type: distillation` records).
+- CLI: `memstem hygiene distill-sessions [--backfill] [--apply]
+  [--force]`. Default mode is dry-run.
+- Tests at `tests/test_summarizer.py` and
+  `tests/test_hygiene_session_distill.py`.
+
+LOC: ~700. Risk: medium (LLM dependency for quality; eval gates the
+default-on flip). ADR: existing 0020.
+
+#### W9 — Project records (ADR 0021)
+
+Goal: every Claude Code project tag with ≥2 sessions gets a single
+`type: project` record at `vault/memories/projects/<slug>.md` —
+canonical project name, summary, accumulated decisions, link map to
+the project's session distillations.
+
+- `hygiene/project_records.py` — `find_project_candidates` (group
+  sessions by Claude Code project tag, threshold ≥2 sessions),
+  `materialize_project_record` (LLM call against the project's
+  distillations, falling back to raw session bodies),
+  `apply_project_records` (write `vault/memories/projects/<slug>.md`,
+  idempotent on body-hash unchanged).
+- Honours a `manual: true` frontmatter flag for hand-curated records
+  (skip body regeneration; still update `links`).
+- Schema migration v12 (`project_record_state`).
+- CLI: `memstem hygiene project-records [--backfill] [--apply]
+  [--force]`. Default mode is dry-run.
+- Reuses W8's `Summarizer` abstraction with a separate prompt template
+  (`prompts/distill_project.txt`).
+- Tests at `tests/test_hygiene_project_records.py`.
+
+LOC: ~500. Risk: low–medium (depends on W8's summarizer quality; v1
+scope explicitly Claude Code only). ADR: existing 0021.
+
+#### W10 — Eval extension (gates W8/W9 default-on)
+
+Add Woodfield-shape fixtures to `eval/queries.yaml` that exercise the
+project-grain recall path. The eval harness from W0 measures the
+before/after lift on these queries; W8 and W9 ship default-off and
+flip to default-on only when the eval shows clear improvement (same
+gate as W5/W6).
+
+LOC: ~200 (mostly fixture content). Risk: low. ADR: none — extends
+existing 0015.
+
 ## §4 — Order of execution
 
 ```
-Block 1 (this session, if scope allows):
+Block 1 (shipped):
   1. W0 eval harness     (gates everything)
   2. W1 importance seed  (must precede W3)
   3. W3 retro cleanup    (depends on W1)
   4. W4 MMR              (independent; quick win)
 
-Block 2 (next session — needs ADR + tuning):
+Block 2 (shipped — defaults stayed off after eval):
   5. W5 cross-encoder
   6. W6 HyDE
 
 Block 3 (later — bigger ship):
   7. W2 atomic facts
+
+Block 4 (this session — derived records):
+  8. W8 session distillation writer  (PRs B + C below)
+  9. W9 project records              (PR D below)
+ 10. W10 eval extension              (PR E below)
 ```
 
 If a 4-week ship is needed: do W0 + W1 + W3 + W5 only. That captures
 most of the precision lift.
+
+Block 4 PRs in dependency order:
+
+```
+PR-A: ADRs 0020 + 0021 + RECALL-PLAN updates    (planning, no code)
+PR-B: core/summarizer.py + prompts              (foundation for W8/W9)
+PR-C: hygiene/session_distill.py + CLI          (W8 writer)
+PR-D: hygiene/project_records.py + CLI          (W9 writer)
+PR-E: eval extension + recall-models update     (W10 verification)
+PR-F: README/ARCHITECTURE/CHANGELOG + 0.9.0     (release prep)
+```
 
 ## §5 — Dependencies
 
@@ -206,6 +293,15 @@ most of the precision lift.
 - W4/W5/W6 are independent of each other; each is independent of
   W1/W3.
 - W2 has no hard deps; benefits from W1 for fact-importance seeding.
+- W8 has no hard deps but benefits from W5 (rerank) and W6 (HyDE)
+  being available — distillations are themselves search targets, so
+  the same ranking improvements apply.
+- W9 has a soft dep on W8: project records summarize session
+  distillations preferentially, falling back to raw session bodies
+  when no distillation exists. Order matters for *quality*, not for
+  *correctness*.
+- W10 depends on W8 + W9 (it measures their combined effect on the
+  Woodfield-shape query class).
 
 ## §6 — What was deferred (don't do these yet)
 
@@ -245,5 +341,12 @@ These don't block writing the plan or starting work — tunable knobs.
 - ADR 0008 ([decisions/0008](./docs/decisions/0008-tiered-memory.md))
 - ADR 0011 ([decisions/0011](./docs/decisions/0011-noise-filter-and-fact-extraction.md))
 - ADR 0012 ([decisions/0012](./docs/decisions/0012-llm-judge-dedup.md))
+- ADR 0019 ([decisions/0019](./docs/decisions/0019-no-skill-authoring.md))
+  — boundary clarification: distillations and project records are in
+  scope, skills are not.
+- ADR 0020 ([decisions/0020](./docs/decisions/0020-session-distillation-writer.md))
+  — session distillation writer (W8).
+- ADR 0021 ([decisions/0021](./docs/decisions/0021-project-records.md))
+  — project records (W9).
 - `/tmp/audit_dedup_retro.py` + `/tmp/memstem-dedup-retro-audit.json`
   — read-only retro-dedup audit (run 2026-04-29)
