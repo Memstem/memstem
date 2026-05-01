@@ -1611,6 +1611,156 @@ def hygiene_distill_sessions(
         index.close()
 
 
+@hygiene_app.command("project-records")
+def hygiene_project_records(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "Persist project records to the vault and index. Default "
+                "is dry-run; the apply flag is required to actually write "
+                "type=project records."
+            ),
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Re-summarize project records that already exist, "
+                "including those flagged manual:true. Without --force, "
+                "manual records have only their links and updated "
+                "timestamp refreshed."
+            ),
+        ),
+    ] = False,
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help=(
+                "Summarizer provider: 'noop' (default; reports candidates "
+                "but writes nothing), 'openai', or 'ollama'. NoOp lets you "
+                "preview the candidate set without paying any LLM cost."
+            ),
+        ),
+    ] = "noop",
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Override the provider's default model. "
+                "OpenAI default: gpt-5.4-mini. Ollama default: qwen2.5:7b."
+            ),
+        ),
+    ] = None,
+    min_sessions: Annotated[
+        int,
+        typer.Option(help="Minimum sessions per project tag to qualify."),
+    ] = 2,
+) -> None:
+    """Generate type=project records for Claude Code project tags (ADR 0021).
+
+    Walks every session in the vault, groups by Claude Code project
+    tag (the encoded directory under ``~/.claude/projects/``), and for
+    each tag with at least ``--min-sessions`` sessions runs the
+    configured summarizer to produce a single project rollup at
+    ``vault/memories/projects/<slug>.md``.
+
+    Body source preference: linked session distillations first, raw
+    session bodies second. For best results, run
+    ``memstem hygiene distill-sessions --backfill --provider <X>
+    --apply`` before this command so the project writer sees clean
+    inputs.
+
+    Default mode is dry-run + NoOp provider — the safest preview.
+    The first real run is typically:
+
+    \b
+        memstem hygiene project-records --provider openai --apply
+
+    Records flagged ``manual: true`` in their frontmatter have only
+    their ``links`` and ``updated`` fields refreshed, preserving the
+    hand-edited body. Pass ``--force`` to override that protection.
+    """
+    from memstem.core.summarizer import (
+        DEFAULT_OLLAMA_MODEL,
+        DEFAULT_OPENAI_MODEL,
+        NoOpSummarizer,
+        OllamaSummarizer,
+        OpenAISummarizer,
+        Summarizer,
+    )
+    from memstem.hygiene.project_records import (
+        apply_project_records,
+        compute_project_record_plan,
+        format_plan_summary,
+        format_proposals,
+    )
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+
+    summarizer: Summarizer
+    provider_lc = provider.lower()
+    if provider_lc == "noop":
+        summarizer = NoOpSummarizer()
+    elif provider_lc == "openai":
+        summarizer = OpenAISummarizer(model=model or DEFAULT_OPENAI_MODEL)
+    elif provider_lc == "ollama":
+        summarizer = OllamaSummarizer(model=model or DEFAULT_OLLAMA_MODEL)
+    else:
+        typer.echo(
+            f"unknown provider {provider!r}. Known: noop, openai, ollama",
+            err=True,
+        )
+        index.close()
+        raise typer.Exit(2)
+
+    typer.echo(
+        f"hygiene project-records ({'apply' if apply else 'dry-run'}, "
+        f"provider={summarizer.name}, "
+        f"force={'yes' if force else 'no'}):"
+    )
+    try:
+        plan = compute_project_record_plan(
+            vault_obj,
+            summarizer,
+            db=index.db,
+            min_sessions=min_sessions,
+            force=force,
+        )
+        typer.echo("")
+        typer.echo(format_plan_summary(plan))
+        if plan.proposals:
+            typer.echo("")
+            for line in format_proposals(plan):
+                typer.echo(line)
+        if not plan.proposals:
+            typer.echo("\n(no qualifying project tags; relax --min-sessions or check your vault)")
+            return
+        if apply:
+            result = apply_project_records(vault_obj, index, plan)
+            typer.echo(
+                f"\napplied: {result.written} new, "
+                f"{result.updated} updated, "
+                f"{result.links_only_updates} links-only refresh, "
+                f"{result.skipped_no_summary} skipped (empty), "
+                f"{len(result.apply_errors)} error(s)"
+            )
+            for err in result.apply_errors:
+                typer.echo(f"  ERROR: {err}", err=True)
+        else:
+            typer.echo("\n(dry-run; re-run with --apply to persist these records)")
+    finally:
+        index.close()
+
+
 @hygiene_app.command("dedup-candidates")
 def hygiene_dedup_candidates(
     vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
