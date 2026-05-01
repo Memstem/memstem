@@ -1445,6 +1445,172 @@ def hygiene_distill(
         typer.echo("")
 
 
+@hygiene_app.command("distill-sessions")
+def hygiene_distill_sessions(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "Persist distillations to the vault and index. Default is "
+                "dry-run; the apply flag is required to actually write "
+                "type=distillation records."
+            ),
+        ),
+    ] = False,
+    backfill: Annotated[
+        bool,
+        typer.Option(
+            "--backfill",
+            help=(
+                "Disable the recency filter so every session in the vault "
+                "is considered. Use this for the one-shot post-cutover "
+                "pass; default mode only considers sessions updated in "
+                "the last --recency-days days."
+            ),
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Re-distill sessions that already have a linked "
+                "distillation record. Used to refresh after improving "
+                "the prompt template or switching summarizer model."
+            ),
+        ),
+    ] = False,
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help=(
+                "Summarizer provider: 'noop' (default; reports candidates "
+                "but writes nothing), 'openai', or 'ollama'. NoOp lets you "
+                "preview the candidate set without paying any LLM cost."
+            ),
+        ),
+    ] = "noop",
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Override the provider's default model. "
+                "OpenAI default: gpt-5.4-mini. Ollama default: qwen2.5:7b."
+            ),
+        ),
+    ] = None,
+    min_turns: Annotated[
+        int,
+        typer.Option(help="Minimum turn count for a session to qualify."),
+    ] = 10,
+    min_words: Annotated[
+        int,
+        typer.Option(help="Minimum body word count for a session to qualify."),
+    ] = 100,
+    recency_days: Annotated[
+        int,
+        typer.Option(
+            help=("Recency window in days (default 30). Ignored when --backfill is set."),
+        ),
+    ] = 30,
+) -> None:
+    """Generate type=distillation records for meaningful sessions (ADR 0020).
+
+    Walks every session in the vault, filters by the meaningfulness
+    threshold (turn count + word count) and skips sessions that already
+    have a linked distillation, then calls the configured summarizer to
+    produce a 1-paragraph rollup with structured Key entities /
+    Deliverables / Decisions / Status sections.
+
+    Default mode is dry-run + NoOp provider — the safest preview.
+    The first real run is typically:
+
+    \b
+        memstem hygiene distill-sessions --backfill --provider openai --apply
+
+    after running ``memstem auth set openai <key>`` to store the API
+    key. NoOp + ``--apply`` is a no-op (every candidate is skipped
+    because the summarizer returns empty).
+    """
+    from memstem.core.summarizer import (
+        DEFAULT_OLLAMA_MODEL,
+        DEFAULT_OPENAI_MODEL,
+        NoOpSummarizer,
+        OllamaSummarizer,
+        OpenAISummarizer,
+        Summarizer,
+    )
+    from memstem.hygiene.session_distill import (
+        apply_distillations,
+        compute_distillation_plan,
+        format_plan_summary,
+        format_proposals,
+    )
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+
+    summarizer: Summarizer
+    provider_lc = provider.lower()
+    if provider_lc == "noop":
+        summarizer = NoOpSummarizer()
+    elif provider_lc == "openai":
+        summarizer = OpenAISummarizer(model=model or DEFAULT_OPENAI_MODEL)
+    elif provider_lc == "ollama":
+        summarizer = OllamaSummarizer(model=model or DEFAULT_OLLAMA_MODEL)
+    else:
+        typer.echo(
+            f"unknown provider {provider!r}. Known: noop, openai, ollama",
+            err=True,
+        )
+        index.close()
+        raise typer.Exit(2)
+
+    typer.echo(
+        f"hygiene distill-sessions ({'apply' if apply else 'dry-run'}, "
+        f"provider={summarizer.name}, "
+        f"backfill={'yes' if backfill else 'no'}, "
+        f"force={'yes' if force else 'no'}):"
+    )
+    try:
+        plan = compute_distillation_plan(
+            vault_obj,
+            summarizer,
+            db=index.db,
+            min_turns=min_turns,
+            min_words=min_words,
+            recency_days=None if backfill else recency_days,
+            force=force,
+        )
+        typer.echo("")
+        typer.echo(format_plan_summary(plan))
+        if plan.proposals:
+            typer.echo("")
+            for line in format_proposals(plan):
+                typer.echo(line)
+        if not plan.proposals:
+            typer.echo("\n(no eligible sessions; re-run with --backfill or relax thresholds)")
+            return
+        if apply:
+            result = apply_distillations(vault_obj, index, plan)
+            typer.echo(
+                f"\napplied: {result.written} distillation(s) written, "
+                f"{result.skipped_no_summary} skipped (empty summary), "
+                f"{len(result.apply_errors)} error(s)"
+            )
+            for err in result.apply_errors:
+                typer.echo(f"  ERROR: {err}", err=True)
+        else:
+            typer.echo("\n(dry-run; re-run with --apply to persist these distillations)")
+    finally:
+        index.close()
+
+
 @hygiene_app.command("dedup-candidates")
 def hygiene_dedup_candidates(
     vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
