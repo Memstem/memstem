@@ -349,7 +349,7 @@ def test_openai_summarizer_calls_chat_completions_endpoint() -> None:
     assert body["model"] == smod.DEFAULT_OPENAI_MODEL
     assert body["messages"] == [{"role": "user", "content": "a prompt"}]
     assert body["temperature"] == smod.DEFAULT_TEMPERATURE
-    assert body["max_tokens"] == smod.DEFAULT_MAX_OUTPUT_TOKENS
+    assert body["max_completion_tokens"] == smod.DEFAULT_MAX_OUTPUT_TOKENS
 
 
 def test_openai_summarizer_strips_response_fences() -> None:

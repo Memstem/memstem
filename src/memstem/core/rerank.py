@@ -551,16 +551,20 @@ class OpenAIReranker(Reranker):
     def _call_model(self, prompt: str) -> str:
         client = self._http_client()
         post = client.post  # type: ignore[attr-defined]
+        # `max_completion_tokens` rather than `max_tokens`: the GPT-5.x
+        # family rejects `max_tokens` outright with HTTP 400. The
+        # newer field name is also accepted by `gpt-4o-mini`, so
+        # always sending it avoids a model-name → field-name branch.
         result = post(
             "/chat/completions",
             json={
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
-                # Low temperature for scoring stability; ``max_tokens``
-                # is small because we're asking for an integer, not a
+                # Low temperature for scoring stability; the budget is
+                # small because we're asking for an integer, not a
                 # paragraph.
                 "temperature": 0.0,
-                "max_tokens": 16,
+                "max_completion_tokens": 16,
             },
         )
         result.raise_for_status()

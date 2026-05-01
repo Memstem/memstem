@@ -446,16 +446,20 @@ class OpenAIExpander(HydeExpander):
     def _call_model(self, prompt: str) -> str:
         client = self._http_client()
         post = client.post  # type: ignore[attr-defined]
+        # `max_completion_tokens` rather than `max_tokens`: the GPT-5.x
+        # family rejects `max_tokens` outright with HTTP 400. The
+        # newer field name is also accepted by `gpt-4o-mini`, so
+        # always sending it avoids a model-name → field-name branch.
         result = post(
             "/chat/completions",
             json={
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 # Mild temperature: passage-shaped text, not
-                # deterministic recitation. ``max_tokens`` is sized
-                # for one paragraph (~150 tokens).
+                # deterministic recitation. The budget is sized for
+                # one paragraph (~150 tokens).
                 "temperature": 0.3,
-                "max_tokens": 200,
+                "max_completion_tokens": 200,
             },
         )
         result.raise_for_status()

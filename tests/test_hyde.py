@@ -322,7 +322,7 @@ class TestOpenAIExpander:
         assert "how do I send a Telegram message" in body["messages"][0]["content"]
         # Passage shape: mild temperature, generous max tokens.
         assert body["temperature"] == 0.3
-        assert body["max_tokens"] == 200
+        assert body["max_completion_tokens"] == 200
 
     def test_expand_strips_code_fences(self) -> None:
         client = _MockHttpClient(_openai_response("```\nA passage about X.\n```"))
