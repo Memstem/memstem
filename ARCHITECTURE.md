@@ -115,10 +115,35 @@ Runs in a background thread, processing the canonical store at a low priority:
 - **Decay**: importance score decays over time; bursts of recall raise it.
 - **Bi-temporal validity** (planned): when a fact contradicts an existing one, the old one gets `valid_to: <date>` rather than being deleted.
 
+The hygiene package also hosts two CLI-driven derived-record writers
+(see ADR 0020 and ADR 0021) that turn raw transcripts and project
+session sets into retrieval-shaped records:
+
+- **Session distillation** (`memstem hygiene distill-sessions`): one
+  `type: distillation` per meaningful session, link-back via
+  frontmatter. Importance seeded above raw sessions so the existing
+  multiplier surfaces them on close ties.
+- **Project records** (`memstem hygiene project-records`): one
+  `type: project` per Claude Code project tag with ≥2 sessions,
+  preferring linked distillations as input. Hand-edited records
+  carrying `manual: true` are protected from regeneration.
+
+Both run via the same pluggable `Summarizer` abstraction
+(`core/summarizer.py`) — NoOp default, OpenAI / Ollama opt-in. Their
+outputs are **derivative artifacts with mandatory provenance**, which
+is the boundary that keeps them inside the read-files-from-disk
+architecture.
+
 > Note: MemStem does **not** author skills. Each AI generates skills its
 > own way (Claude Code, Codex, Hermes, OpenClaw all have their own
 > conventions); MemStem reads `SKILL.md` files from disk and indexes
-> them. See [ADR 0019](decisions/0019-no-skill-authoring.md).
+> them. Distillations and project records are explicitly different —
+> they summarize source records with mandatory link-back rather than
+> producing standalone knowledge claims. See
+> [ADR 0019](decisions/0019-no-skill-authoring.md) for the boundary
+> rule and [ADR 0020](decisions/0020-session-distillation-writer.md) /
+> [ADR 0021](decisions/0021-project-records.md) for the
+> distillation / project-record designs.
 
 ## API surface
 
