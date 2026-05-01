@@ -17,12 +17,13 @@ source: <adapter_name>    # which adapter ingested this (or 'human')
 ## Memory types
 
 - `memory` — generic fact, decision, observation
-- `skill` — reusable procedure (curated or auto-extracted)
+- `skill` — reusable procedure (authored by the consuming AI; MemStem ingests but does not author — see [ADR 0019](./decisions/0019-no-skill-authoring.md))
 - `session` — chunk of a session transcript
 - `daily` — date-bucketed log
 - `person` — person profile
-- `project` — project context
+- `project` — durable rollup record for a piece of work spanning multiple sessions ([ADR 0021](./decisions/0021-project-records.md))
 - `decision` — decision record
+- `distillation` — derived summary record produced by the hygiene worker ([ADR 0008](./decisions/0008-tiered-memory.md), [ADR 0020](./decisions/0020-session-distillation-writer.md)). Always carries `links` back to source records. The session-distillation writer produces one per meaningful session; future topic-distillation work will add cluster rollups under the same type.
 
 ## Optional fields
 
@@ -40,6 +41,10 @@ valid_from: <iso8601>     # bi-temporal validity (Phase 2)
 valid_to: <iso8601>       # bi-temporal validity (Phase 2)
 embedding_version: <int>  # bumped when embedding model changes
 deprecated_by: <id>       # supersession (Phase 2)
+manual: <bool>            # project records only — `true` protects the
+                          # body from regeneration by `memstem hygiene
+                          # project-records` (links + updated still
+                          # refresh; --force overrides). See ADR 0021.
 ```
 
 ## Body conventions

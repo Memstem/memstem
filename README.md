@@ -336,7 +336,11 @@ All checks passed.
 - [Frontmatter spec](./docs/frontmatter-spec.md) — the markdown schema
 - [MCP API](./docs/mcp-api.md) — tool definitions
 - [Decisions](./docs/decisions/) — Architecture Decision Records
-- [Plan](./PLAN.md) — current work breakdown
+- [Distillation + project records — operator playbook](./docs/distillation-verification.md) — how to run the new derived-record commands and verify quality
+- [Recall-quality model recommendations](./docs/recall-models.md) — picking the right LLM for rerank / HyDE / dedup / summarization with cost expectations
+- [Recall eval results](./docs/recall-eval-results.md) — measured before/after data on the recall-quality features
+- [Phase 1 plan](./PLAN.md) — Phase 1 work breakdown
+- [Phase 2+ recall plan](./RECALL-PLAN.md) — recall-quality work blocks (W0–W10)
 
 ## Why star this repo
 
