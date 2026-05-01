@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-01
+
+Two cutover hotfixes from PR #96, found running 0.9.0 against Brad's
+live vault. Both are blocking for any user pointing the new W8/W9
+writers at OpenAI; both are silently corrupting if not for our
+"empty-summary skips the candidate" failure mode.
+
+### Fixed
+
+- **OpenAI clients now send `max_completion_tokens` instead of
+  `max_tokens`.** The GPT-5.x family rejects `max_tokens` outright
+  with HTTP 400 (`unsupported_parameter`). Switching is universal:
+  the older `gpt-4o-mini` family also accepts the new field, so
+  there's no model→field branch and the change is forward-compatible
+  with the next OpenAI rev. Affects `OpenAISummarizer`,
+  `OpenAIReranker`, and `OpenAIExpander`.
+- **Hygiene writers now enqueue new records for embedding.** The
+  session-distillation and project-records appliers wrote to the
+  vault and indexed in FTS5, but never called `index.enqueue_embed`.
+  Result: vec retrieval couldn't see the new records, and BM25 alone
+  had the long, noisy source transcripts outranking the focused
+  summaries on raw term frequency — the very failure mode these
+  writers exist to fix. Mirror the pipeline pattern: `enqueue_embed`
+  after `upsert` in both `apply_distillations` and
+  `apply_project_records`. Existing vaults that ran apply on 0.9.0
+  rescue cleanly via `memstem reindex` (which re-enqueues every
+  record; the daemon drains).
+
 ## [0.9.0] — 2026-05-01
 
 The "derived records" release. Five PRs (#90–#94) ship Block 4 of
