@@ -200,7 +200,37 @@ and `updated` (so the link map stays current as new sessions land)
 but preserve the body. `--force` overrides `manual: true` if you
 want to regenerate later.
 
-## 9. Routine maintenance
+## 9. Multi-user installs on the same host
+
+If two MemStem daemons run on the same machine under different OS
+users (e.g. `ubuntu` + `e1` on Brad's Ultra box), they will conflict
+on the default HTTP port `7821`. The second daemon to start
+crash-loops with a `SystemExit: 1` from uvicorn during startup —
+PM2 marks it `online` with `pid=N/A` and `0b` memory. The vault is
+not affected; only the HTTP-delegation path is blocked.
+
+Fix per non-primary user — bump the port (or disable the HTTP
+server) in their vault config:
+
+```yaml
+# In ~/.config/memstem/secrets.yaml is auth; the HTTP port lives in
+# the vault config:
+# /home/<user>/memstem-vault/_meta/config.yaml
+
+http:
+  enabled: true
+  host: 127.0.0.1
+  port: 7822      # different from any other MemStem on this host
+```
+
+Then `pm2 restart memstem` for that user. The MCP-over-stdio path
+that Claude Code uses is unaffected — it does not touch the HTTP
+port.
+
+If you don't need HTTP delegation for a particular user, set
+`http.enabled: false` instead and leave the port alone.
+
+## 10. Routine maintenance
 
 After the initial backfill, both commands are safe to run on a
 schedule (e.g. nightly via cron / PM2 / `memstem schedule`):
