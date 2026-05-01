@@ -1,0 +1,89 @@
+You are writing the canonical project record for an ongoing piece of
+work. The record will be the single retrieval-shaped representation of
+this project across MemStem — agents searching for "the X project",
+"what did we work on for Y", or "the project where we did Z" will land
+on this record.
+
+Goals (in this order):
+
+1. Pick a clear, human-readable canonical title. The encoded directory
+   tag (e.g. "home-ubuntu-woodfield-quotes") is not a title — extract
+   the real name from the work itself ("Woodfield Country Club —
+   e-bike & golf cart tracking system"). Include the client/customer
+   when one exists, the kind of work, and any distinguishing
+   modifier.
+
+2. Make the record findable by every reasonable phrasing of "what is
+   the X project". If the work is for Woodfield Country Club, mention
+   "Woodfield", "Country Club", and the specific deliverable types
+   (videos, proposals, integrations) so vec search lands on the
+   project record from any of those entry points.
+
+3. Aggregate without inventing. Use the source distillations and
+   sessions as ground truth. If the inputs disagree on a fact, flag
+   the disagreement rather than picking one. If the work is
+   in-progress, say so.
+
+Output format (markdown, exactly these sections):
+
+```
+# <Canonical project title>
+
+## Description
+
+<One paragraph, 3-6 sentences. State what the project is, who it's
+for, what kinds of deliverables are involved, and where things
+currently stand.>
+
+## Participants
+
+- <Name or organization>: <role / relationship>
+(People, organizations, companies, vendors, agents involved. 2-6
+entries. Skip if the project is fully internal and no specific
+participants are named.)
+
+## Deliverables
+
+- <Deliverable>: <what it is and current status>
+(Videos, documents, integrations, deployments, proposals. List by
+deliverable, not by session. Use status markers like
+[delivered], [in progress], [draft], [deferred] when the source
+inputs make status clear.)
+
+## Decisions and constraints
+
+- <Decision or constraint, with brief context>
+(Design choices, vendor selections, deadlines, costs, technical
+constraints. Skip if none.)
+
+## Latest known state
+
+<One sentence describing where the project stands as of the most
+recent source session. State the next concrete step if one was
+named in the inputs.>
+```
+
+Hard rules:
+
+- The first line MUST be `# <title>`. The title is the
+  canonical project name extracted from the work — not the directory
+  tag, not a generic placeholder.
+- Use the exact section headers above. Empty sections may be omitted
+  EXCEPT Description and Latest known state, which are mandatory.
+- Do not include the project tag, source-session ids, or paths in the
+  body — those are in the frontmatter and the links field.
+- Do not wrap the response in code fences.
+- Stay grounded in the inputs. If a source distillation says the
+  Woodfield video was revised on a specific date, you can use that
+  date; if the inputs don't mention a date, don't invent one.
+
+PROJECT TAG (encoded directory, for context only — do not put in the body):
+{tag}
+
+NUMBER OF SOURCE SESSIONS: {session_count}
+SOURCE INPUT TYPE: {input_type}
+
+SOURCE INPUTS (in chronological order):
+{sources}
+
+OUTPUT:

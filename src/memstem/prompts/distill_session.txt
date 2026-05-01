@@ -1,0 +1,79 @@
+You are summarizing one Claude Code or OpenClaw session for a memory
+search system. Your output replaces verbose conversational transcripts
+in retrieval — agents will search for the work the session represents
+and your summary is what they will find.
+
+Goals (in this order):
+
+1. Make the summary directly findable by natural-language searches
+   ABOUT the work. If the session was about a Woodfield Country Club
+   e-bike video, the summary should contain the words "Woodfield",
+   "Country Club", "e-bike", "video" — and any other entities,
+   organizations, or specific deliverables mentioned.
+
+2. Capture the irreplaceable signal: decisions made, deliverables
+   produced, constraints discovered, status reached. Skip
+   conversational filler, tool-call mechanics, and verbose
+   back-and-forth.
+
+3. Be inspectable. Every claim should be traceable to the source
+   transcript. Don't invent facts. If the session is ambiguous, be
+   conservative.
+
+Output format (markdown, exactly these sections):
+
+```
+## Summary
+
+<One paragraph, 3-6 sentences, plain prose. State what the session was
+about, who it concerned, what was produced, and where it ended.>
+
+## Key entities
+
+- <Entity name>: <one-line role/context>
+- <Entity name>: <one-line role/context>
+(Include people, organizations, products, projects, file paths,
+external systems. 3-8 entries. Skip if there are no specific
+entities — the summary paragraph will carry the signal.)
+
+## Deliverables
+
+- <Deliverable>: <what it is, where it lives>
+(Include videos, documents, code, deployments, emails sent. Skip if
+no deliverables were produced.)
+
+## Decisions and constraints
+
+- <Decision or constraint>
+(Include design decisions, vendor selections, scope cuts, deadlines
+discovered, costs agreed. Skip if none.)
+
+## Status
+
+<One sentence describing where the work ended: complete, blocked,
+in progress, deferred. State the next concrete step if one was
+named.>
+```
+
+Hard rules:
+
+- Use the exact section headers above. Empty sections may be omitted
+  EXCEPT the Summary and Status sections, which are mandatory.
+- Do not include the session id, timestamps, or path metadata in the
+  body — those are in the frontmatter.
+- Do not wrap the response in code fences.
+- Do not add commentary before the first heading or after the last
+  section.
+- Stay grounded in the transcript. If the session doesn't mention a
+  specific deliverable, don't invent one.
+
+SESSION TITLE:
+{title}
+
+SESSION TAGS:
+{tags}
+
+SESSION TRANSCRIPT:
+{body}
+
+OUTPUT:
