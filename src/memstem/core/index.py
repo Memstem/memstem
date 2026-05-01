@@ -28,7 +28,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 
@@ -296,6 +296,36 @@ MIGRATIONS: dict[int, str] = {
             PRIMARY KEY (query_hash, judge)
         );
         CREATE INDEX IF NOT EXISTS idx_hyde_cache_ts ON hyde_cache(ts);
+    """,
+    11: """
+        -- ADRs 0020 + 0021: shared summarizer LLM cache. Memoizes
+        -- (content_hash, summarizer) -> output so repeat summarization
+        -- prompts skip the LLM round trip. Both the session-distillation
+        -- writer (ADR 0020) and the project-records writer (ADR 0021)
+        -- share this table — they both call the same Summarizer
+        -- abstraction and benefit from the same cache.
+        --
+        -- The content_hash is the SHA-256 of the full prompt the writer
+        -- constructed (template + interpolated fields), so any change
+        -- to template wording or input fields invalidates the cache row
+        -- correctly.
+        --
+        -- Non-canonical: losing the table costs first-call LLM latency,
+        -- not correctness. The vault's distillation/project records
+        -- remain valid; rebuilding the cache just re-summarizes from
+        -- scratch on the next writer pass.
+        --
+        -- The summarizer column carries the provider:model identifier
+        -- (e.g. "openai:gpt-5.4-mini", "ollama:qwen2.5:7b") so swapping
+        -- models doesn't silently serve outputs from the previous one.
+        CREATE TABLE IF NOT EXISTS summarizer_cache (
+            content_hash TEXT NOT NULL,
+            summarizer TEXT NOT NULL,
+            output TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            PRIMARY KEY (content_hash, summarizer)
+        );
+        CREATE INDEX IF NOT EXISTS idx_summarizer_cache_ts ON summarizer_cache(ts);
     """,
 }
 
