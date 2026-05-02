@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Read-only multi-class dedupe audit** (`scripts/dedupe_audit_report.py`).
+  Walks the vault, classifies candidate duplicate groups into 8 classes
+  with explicit confidence + risk scores, writes markdown + JSON
+  reports to `<vault>/_meta/audits/`. Complements `cleanup-retro`'s
+  single-class summary with a multi-class survey; default safe action
+  per class is reported alongside `keep_all` for source-updated
+  records. No mutation surface; tests pin vault + index byte-equality
+  after a run.
+- **Strict Phase-1 selector** (`scripts/dedupe_phase1_select.py`).
+  Reads the audit JSON and emits a manifest of duplicate groups
+  conservative enough for near-mechanical quarantine review.
+  Inclusion rules: same type, same `provenance.source`, same
+  `provenance.ref`, same body hash, no deprecated members, type ∉
+  {skill, project, distillation}, no cross-type collisions, no
+  coin-flip winner. Eliminates the false-positive pattern where
+  same-bodied records live at different source paths.
+- **Manifest-constrained applier** (`scripts/dedupe_phase1_apply.py`).
+  Defaults to dry-run; `--apply` is the only mutation surface. The
+  blast radius is exactly the loser IDs declared in the manifest —
+  no broad-vault scan, no walk, no glob. Per-group defense-in-depth
+  re-validates every Phase-1 rule against current vault state at
+  apply time; aborts on body-hash drift, prior deprecation, schema
+  mismatch, or id mismatch. Writes audit rows to `dedup_audit` with
+  `judge='phase1-manifest'`.
+- **Policy doc** (`docs/dedupe-audit.md`) — class taxonomy,
+  confidence/risk matrix, Phase-1 inclusion rules, and the recommended
+  phased cleanup workflow with snapshot + rollback procedures.
+
 ## [0.9.1] — 2026-05-01
 
 Two cutover hotfixes from PR #96, found running 0.9.0 against Brad's

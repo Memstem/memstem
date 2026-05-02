@@ -125,6 +125,38 @@ LOC: ~400. Risk: medium (mutating real vault frontmatter — but every
 action is reversible because everything is markdown edit). ADR:
 addendum to ADR 0012 (~40 lines).
 
+##### W3.1 — Multi-class audit + Phase-1 manifest applier (follow-up)
+
+Goal: a more conservative, manifest-gated companion to W3 for
+operators who want to inspect candidate duplicates before any
+mutation, and constrain the apply pass to a strictly reviewed subset.
+
+- `scripts/dedupe_audit_report.py` — read-only multi-class survey
+  (8 classes; confidence + risk + recommended-action per group).
+  No mutation surface. Markdown + JSON outputs land in
+  `<vault>/_meta/audits/`.
+- `scripts/dedupe_phase1_select.py` — strict Phase-1 selector. Reads
+  the audit JSON, applies inclusion rules (same type / source / ref /
+  body hash; non-deprecated; type ∉ {skill, project, distillation};
+  unambiguous winner), emits a manifest. No `--apply`.
+- `scripts/dedupe_phase1_apply.py` — manifest-constrained applier.
+  Default dry-run; `--apply` is the only mutation surface. Blast
+  radius is exactly the loser IDs declared in the manifest. Per-group
+  defense-in-depth re-validates every Phase-1 rule against current
+  vault state at apply time; aborts on hash drift, prior deprecation,
+  schema mismatch, or id mismatch. Audit rows land in `dedup_audit`
+  with `judge='phase1-manifest'`.
+- `docs/dedupe-audit.md` — class taxonomy, Phase-1 inclusion rules,
+  recommended phased cleanup workflow with rollback procedure.
+- Acceptance: tests pin (a) the read-only invariant of audit and
+  selector via vault file mtime + bytes equality, (b) manifest-only
+  blast radius of the applier via a same-body-but-not-in-manifest
+  control file that must remain bit-identical post-apply, (c) one
+  rejection case per Phase-1 rule, (d) idempotent re-runs.
+
+LOC: ~1000 (incl. tests + docs). Risk: low (default dry-run,
+defense-in-depth, manifest-only blast radius enforced by tests).
+
 ### Bucket 2 — Three search-time additions (need new ADRs)
 
 #### W4 — MMR diversification
