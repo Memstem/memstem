@@ -918,3 +918,201 @@ class TestSearchConfigImportance:
         dumped = cfg.model_dump(mode="json")
         loaded = SearchConfig.model_validate(dumped)
         assert loaded.importance_weight == pytest.approx(0.5)
+
+
+def _make_typed_memory(
+    *,
+    body: str,
+    type_: str,
+    vault: Vault,
+    importance: float | None = None,
+) -> Memory:
+    """Helper: write a memory of the requested ``type_`` to the vault.
+
+    Distillations and skills require a few extra fields; this hides
+    that boilerplate so the test bodies stay focused on ranking.
+    """
+    metadata: dict[str, object] = {
+        "id": str(uuid4()),
+        "type": type_,
+        "created": "2026-04-25T15:00:00+00:00",
+        "updated": "2026-04-25T15:00:00+00:00",
+        "source": "test",
+        "title": f"item-{type_}",
+        "tags": [],
+    }
+    if importance is not None:
+        metadata["importance"] = importance
+    if type_ == "skill":
+        metadata["scope"] = "universal"
+        metadata["verification"] = "verify by hand"
+    fm: Frontmatter = validate(metadata)
+    folder = {
+        "memory": "memories",
+        "skill": "skills",
+        "session": "sessions",
+        "daily": "daily",
+        "distillation": "distillations",
+        "project": "projects",
+    }[type_]
+    memory = Memory(frontmatter=fm, body=body, path=Path(f"{folder}/{fm.id}.md"))
+    vault.write(memory)
+    return memory
+
+
+class TestTypeBiasRanking:
+    """Per-type ranking policy: prefer curated/derived records over raw sessions.
+
+    The default ``SearchConfig.type_bias`` mapping multiplies each
+    materialized hit's score by a per-type weight. Derived/curated
+    types (distillation, memory, skill, project) are mildly boosted;
+    raw ``session`` records are mildly demoted. Tests below pin the
+    intended ordering behaviour so the policy is visible and stable.
+    """
+
+    def test_distillation_outranks_session_at_equal_relevance(
+        self, vault: Vault, index: Index
+    ) -> None:
+        """Two body-identical hits — one distillation, one session — must
+        produce the distillation first under the default type bias.
+        Without bias they'd tie on RRF and ordering would be arbitrary."""
+        from memstem.config import DEFAULT_TYPE_BIAS
+
+        sess = _make_typed_memory(body="alpha topic", type_="session", vault=vault)
+        dist = _make_typed_memory(body="alpha topic", type_="distillation", vault=vault)
+        index.upsert(sess)
+        index.upsert(dist)
+        results = Search(vault=vault, index=index).search(
+            "alpha", limit=2, type_bias=dict(DEFAULT_TYPE_BIAS)
+        )
+        assert [r.memory.type.value for r in results] == ["distillation", "session"]
+
+    def test_memory_outranks_session_at_equal_relevance(self, vault: Vault, index: Index) -> None:
+        from memstem.config import DEFAULT_TYPE_BIAS
+
+        sess = _make_typed_memory(body="alpha topic", type_="session", vault=vault)
+        mem = _make_typed_memory(body="alpha topic", type_="memory", vault=vault)
+        index.upsert(sess)
+        index.upsert(mem)
+        results = Search(vault=vault, index=index).search(
+            "alpha", limit=2, type_bias=dict(DEFAULT_TYPE_BIAS)
+        )
+        assert [r.memory.type.value for r in results] == ["memory", "session"]
+
+    def test_skill_outranks_session_at_equal_relevance(self, vault: Vault, index: Index) -> None:
+        from memstem.config import DEFAULT_TYPE_BIAS
+
+        sess = _make_typed_memory(body="alpha topic", type_="session", vault=vault)
+        skill = _make_typed_memory(body="alpha topic", type_="skill", vault=vault)
+        index.upsert(sess)
+        index.upsert(skill)
+        results = Search(vault=vault, index=index).search(
+            "alpha", limit=2, type_bias=dict(DEFAULT_TYPE_BIAS)
+        )
+        assert [r.memory.type.value for r in results] == ["skill", "session"]
+
+    def test_empty_bias_recovers_unbiased_behaviour(self, vault: Vault, index: Index) -> None:
+        """Passing an empty dict (or ``None``) must fall back to the
+        pre-policy behaviour exactly — score is RRF * importance only.
+        This is the operator's escape hatch for shutting the policy off."""
+        from memstem.core.search import DEFAULT_IMPORTANCE_WEIGHT
+
+        mem = _make_typed_memory(body="alpha", type_="memory", vault=vault, importance=1.0)
+        index.upsert(mem)
+        results = Search(vault=vault, index=index).search("alpha", limit=1, type_bias={})
+        # rrf=1/61, importance boost=1.2 → score=(1/61)*1.2; no extra
+        # type_bias multiplier should be applied.
+        expected = (1 / 61) * (1.0 + DEFAULT_IMPORTANCE_WEIGHT * 1.0)
+        assert results[0].score == pytest.approx(expected)
+
+    def test_unlisted_type_treated_as_neutral(self, vault: Vault, index: Index) -> None:
+        """A type not present in the bias mapping must score with weight
+        ``1.0`` — this guards against a future MemoryType being added
+        without a matching default and silently zeroing its results."""
+        # Use an empty bias plus a hand-typed entry only for "memory":
+        bias = {"memory": 1.5}
+        sess = _make_typed_memory(body="alpha", type_="session", vault=vault)
+        mem = _make_typed_memory(body="alpha", type_="memory", vault=vault)
+        index.upsert(sess)
+        index.upsert(mem)
+        results = Search(vault=vault, index=index).search("alpha", limit=2, type_bias=bias)
+        # memory boosted 1.5x, session at neutral 1.0 — memory wins.
+        assert results[0].memory.id == mem.id
+        # And the session result is still in the list (neutral, not zero):
+        assert {r.memory.id for r in results} == {mem.id, sess.id}
+
+    def test_default_bias_is_bounded(self) -> None:
+        """The bias is a tiebreaker, not a forcing function: the worst
+        case ratio (best-boosted ÷ worst-demoted) must stay small enough
+        that a clearly-better RRF rank still wins. A bounded multiplier
+        guarantees the policy can't silently drop recall.
+
+        Concretely: with the shipped defaults, the ratio
+        ``max_boost / min_boost`` is ~1.29x. RRF scores between rank 1
+        and rank N differ by ``(60+N)/(60+1)``, so once the rank gap
+        exceeds ~17 the relevance signal wins regardless of bias. Pin
+        both bounds so this property is explicit and a future bias
+        tweak is forced to acknowledge it.
+        """
+        from memstem.config import DEFAULT_TYPE_BIAS
+
+        max_boost = max(DEFAULT_TYPE_BIAS.values())
+        min_boost = min(DEFAULT_TYPE_BIAS.values())
+        assert max_boost <= 1.20, "default type_bias is too aggressive — would override relevance"
+        assert min_boost >= 0.80, "default type_bias is too aggressive in the other direction"
+        # Worst-case rank-gap break-even point: solve
+        # max_boost/(60+1) == min_boost/(60+N) for N.
+        rank_breakeven = max_boost * 61 / min_boost - 60
+        assert rank_breakeven < 30, (
+            f"default type_bias requires a rank gap of {rank_breakeven:.0f} "
+            f"to dominate; that's wider than typical retrieval depth"
+        )
+
+    def test_apply_type_bias_is_multiplicative(self, vault: Vault, index: Index) -> None:
+        """Concretely verify the formula: ``final = score * type_bias[type]``.
+        A session record (default bias 0.85) at RRF score X should land
+        at exactly X * 0.85 in the materialized output."""
+        from memstem.config import DEFAULT_TYPE_BIAS
+        from memstem.core.search import DEFAULT_IMPORTANCE_WEIGHT
+
+        sess = _make_typed_memory(body="alpha", type_="session", vault=vault)
+        index.upsert(sess)
+        results = Search(vault=vault, index=index).search(
+            "alpha",
+            limit=1,
+            type_bias=dict(DEFAULT_TYPE_BIAS),
+        )
+        # rrf=1/61, importance=DEFAULT (0.5), session bias=0.85.
+        bias = DEFAULT_TYPE_BIAS["session"]
+        expected = (1 / 61) * (1.0 + DEFAULT_IMPORTANCE_WEIGHT * 0.5) * bias
+        assert results[0].score == pytest.approx(expected)
+
+
+class TestSearchConfigTypeBias:
+    """SearchConfig.type_bias defaults and threading."""
+
+    def test_default_bias_prefers_distillation_over_session(self) -> None:
+        """The shipped default mapping must encode the documented
+        policy: distillations win, sessions lose."""
+        from memstem.config import DEFAULT_TYPE_BIAS, SearchConfig
+
+        cfg = SearchConfig()
+        assert cfg.type_bias["distillation"] > cfg.type_bias["session"]
+        assert cfg.type_bias["memory"] > cfg.type_bias["session"]
+        assert cfg.type_bias["skill"] > cfg.type_bias["session"]
+        # And the default literal isn't accidentally shared between
+        # instances — mutating one mustn't bleed into the next.
+        cfg.type_bias["session"] = 0.5
+        fresh = SearchConfig()
+        assert fresh.type_bias["session"] == DEFAULT_TYPE_BIAS["session"]
+
+    def test_type_bias_round_trips_through_config(self) -> None:
+        """Operators must be able to persist a custom mapping in
+        ``_meta/config.yaml`` and have it survive load/dump."""
+        from memstem.config import SearchConfig
+
+        cfg = SearchConfig(type_bias={"distillation": 1.5, "session": 0.5})
+        dumped = cfg.model_dump(mode="json")
+        loaded = SearchConfig.model_validate(dumped)
+        assert loaded.type_bias["distillation"] == pytest.approx(1.5)
+        assert loaded.type_bias["session"] == pytest.approx(0.5)

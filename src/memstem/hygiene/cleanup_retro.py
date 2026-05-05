@@ -377,9 +377,17 @@ def write_skill_review_ticket(
         [
             "## Resolution options",
             "",
-            "- Keep all (skills are intentionally similar; not a duplicate)",
-            "- Merge: pick a winner manually and `memstem skill-review apply <ticket>`",
-            "- Dismiss: `memstem skill-review dismiss <ticket>`",
+            "- **Keep all** if the skills are intentionally similar (not a duplicate). "
+            "Delete this ticket file to clear it from the queue.",
+            "- **Merge** by editing the winner skill in place, deleting the loser "
+            "skill files manually, then deleting this ticket file.",
+            "- **Dismiss** by deleting this ticket file. The collision groups "
+            "stay in `cleanup-retro` dry-run output until the underlying "
+            "skill bodies actually diverge.",
+            "",
+            "Tracked under ADR 0012. A first-class `memstem skill-review` CLI "
+            "is on the roadmap but not yet shipped — the current workflow is "
+            "manual edits + manual ticket deletion.",
             "",
         ]
     )

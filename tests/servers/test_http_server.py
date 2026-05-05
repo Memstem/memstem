@@ -141,6 +141,25 @@ class TestSearch:
         )
         assert r.status_code == 200
 
+    def test_request_accepts_type_bias_override(
+        self, vault: Vault, index: Index, client: TestClient
+    ) -> None:
+        """The HTTP surface must accept a per-call ``type_bias`` mapping
+        and route it through to the underlying ``Search.search`` so an
+        operator (or test rig) can disable / override the default
+        ranking policy without editing ``_meta/config.yaml``."""
+        _write_memory(vault, index, title="type bias test", body="alpha")
+        r = client.post(
+            "/search",
+            json={
+                "query": "alpha",
+                "type_bias": {"memory": 1.0, "session": 1.0},
+            },
+        )
+        assert r.status_code == 200, r.text
+        results = r.json()
+        assert isinstance(results, list)
+
 
 class TestGetMemory:
     def test_by_path(self, vault: Vault, index: Index, client: TestClient) -> None:

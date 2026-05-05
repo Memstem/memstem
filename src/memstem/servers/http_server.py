@@ -59,6 +59,7 @@ class SearchRequest(BaseModel):
     bm25_weight: float | None = None
     vector_weight: float | None = None
     importance_weight: float | None = None
+    type_bias: dict[str, float] | None = None
 
 
 class SearchHit(BaseModel):
@@ -188,6 +189,7 @@ def build_app(
             importance_weight=(
                 req.importance_weight if req.importance_weight is not None else sc.importance_weight
             ),
+            type_bias=(req.type_bias if req.type_bias is not None else sc.type_bias),
             log_client=log_client,
             log_max_rows=hc.query_log_max_rows,
         )

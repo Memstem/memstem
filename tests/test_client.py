@@ -208,7 +208,32 @@ class TestSearch:
         assert "bm25_weight" not in captured["body"]
         assert "vector_weight" not in captured["body"]
         assert "importance_weight" not in captured["body"]
+        assert "type_bias" not in captured["body"]
         assert "types" not in captured["body"]
+
+    def test_type_bias_round_trips_to_daemon_body(self) -> None:
+        """When the caller passes a per-type bias mapping, it must be
+        forwarded as-is on the request body so the daemon can apply
+        the same policy that the local CLI would. Guards the
+        ``DaemonClient → /search`` surface that ties the CLI's
+        ``cfg.search.type_bias`` to the daemon's ranking."""
+        captured: dict[str, Any] = {}
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content.decode()
+            return httpx.Response(200, json=[])
+
+        client = _client_with_responder(respond)
+        try:
+            client.search(
+                "q",
+                type_bias={"distillation": 1.10, "session": 0.85},
+            )
+        finally:
+            client.close()
+        assert '"type_bias"' in captured["body"]
+        assert '"distillation":1.1' in captured["body"]
+        assert '"session":0.85' in captured["body"]
 
     def test_raises_daemon_error_on_5xx(self) -> None:
         def respond(_: httpx.Request) -> httpx.Response:

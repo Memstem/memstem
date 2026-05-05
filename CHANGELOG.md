@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Operator verification report** (`memstem hygiene verify`). Single
+  read-only command that summarizes post-cleanup, post-backfill state:
+  total memories, type breakdown (with deprecated / valid_to subcounts
+  per type), distillation coverage, undistilled-eligible session
+  count, active dedup collision groups still detectable by
+  cleanup-retro, noise drops / transients, open skill review tickets,
+  and parser-validation skips encountered during the walk.
+  `--json-out <path>` emits a machine-readable payload for CI /
+  monitoring scrapers. Replaces ad-hoc SQLite inspection with one
+  command. Wired through `memstem.hygiene.verify` so library callers
+  can build their own dashboards.
+- **Explicit per-type ranking policy** (`SearchConfig.type_bias`).
+  The fused RRF score is now multiplied by a per-type weight:
+  distillation 1.10, memory/skill/project/decision 1.05, daily/person
+  1.0, session 0.85. The intent is to make default search clearly
+  prefer curated/derived records over raw conversational sessions.
+  Bounds are tight ([0.85, 1.10]) so the bias breaks ties without
+  overriding relevance — a clearly-better-relevance session still
+  wins. Operators tune via `search.type_bias` in `_meta/config.yaml`;
+  an empty mapping recovers pre-0.10 behaviour. Per-call overrides
+  available on the HTTP `/search` body, the daemon client, and the
+  Python `Search.search` keyword argument.
+
+### Fixed
+
+- **Skill review tickets no longer trip vault scans.** Files under
+  `vault/skills/_review/` (and any directory whose name starts with
+  underscore) are operator artifacts, not memory documents — they
+  carry no frontmatter and have no schema. `Vault.walk` now skips
+  them silently rather than emitting one Pydantic ValidationError
+  WARNING per ticket. The `_meta/` skip rule generalizes naturally
+  to `_review/`, `_drafts/`, etc.
+- **Skill review ticket body no longer references unimplemented
+  CLI.** The "Resolution options" section previously suggested
+  `memstem skill-review apply <ticket>` / `dismiss <ticket>` —
+  commands that aren't shipped yet. The ticket now describes the
+  actual manual workflow (edit the skills in place, delete the
+  ticket file) and notes that the dedicated CLI is roadmap, not
+  current.
+
+### Read-only dedupe audit (carried from prior unreleased work)
+
 - **Read-only multi-class dedupe audit** (`scripts/dedupe_audit_report.py`).
   Walks the vault, classifies candidate duplicate groups into 8 classes
   with explicit confidence + risk scores, writes markdown + JSON

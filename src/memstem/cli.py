@@ -396,6 +396,7 @@ def _search_via_daemon(
             bm25_weight=cfg.search.bm25_weight,
             vector_weight=cfg.search.vector_weight,
             importance_weight=cfg.search.importance_weight,
+            type_bias=cfg.search.type_bias,
         )
         details["results"] = len(hits)
     _print_search_hits(hits)
@@ -424,6 +425,7 @@ def _search_via_direct_db(
                 bm25_weight=cfg.search.bm25_weight,
                 vector_weight=cfg.search.vector_weight,
                 importance_weight=cfg.search.importance_weight,
+                type_bias=cfg.search.type_bias,
                 log_client="cli" if cfg.hygiene.query_log_enabled else None,
                 log_max_rows=cfg.hygiene.query_log_max_rows,
             )
@@ -2080,6 +2082,65 @@ def hygiene_cleanup_retro(
 
         if json_out is not None:
             json_out.write_text(json.dumps(payload, indent=2, default=str))
+            typer.echo(f"\nJSON report written to {json_out}")
+    finally:
+        index.close()
+
+
+@hygiene_app.command("verify")
+def hygiene_verify(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    json_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--json-out",
+            help="Write the full report as JSON (suitable for CI / monitoring scrapers).",
+        ),
+    ] = None,
+    min_turns: Annotated[
+        int,
+        typer.Option(help="Minimum turn count for the undistilled-eligible scan."),
+    ] = 10,
+    min_words: Annotated[
+        int,
+        typer.Option(help="Minimum word count for the undistilled-eligible scan."),
+    ] = 100,
+) -> None:
+    """Verify post-cleanup, post-backfill state of a vault.
+
+    Reports the counts an operator needs after running
+    ``hygiene cleanup-retro`` and ``hygiene distill-sessions
+    --backfill``: total memories, type breakdown, deprecated /
+    valid_to counts, sessions covered by distillation, undistilled
+    eligible sessions still remaining, active duplicate / noise
+    findings cleanup-retro would still flag, open skill review
+    tickets, and any parser/validation skips encountered while
+    walking the vault.
+
+    Read-only. Safe to run on a production vault.
+
+    Example:
+
+    \b
+        memstem hygiene verify --json-out /tmp/memstem-state.json
+    """
+    import json
+
+    from memstem.hygiene.verify import format_report, verify_vault
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    vault_obj = Vault(cfg.vault_path)
+    index = _open_index(cfg)
+    try:
+        report = verify_vault(
+            vault_obj,
+            index,
+            min_turns=min_turns,
+            min_words=min_words,
+        )
+        typer.echo(format_report(report))
+        if json_out is not None:
+            json_out.write_text(json.dumps(report.as_json(), indent=2, default=str))
             typer.echo(f"\nJSON report written to {json_out}")
     finally:
         index.close()
