@@ -18,7 +18,9 @@ from memstem.core.embeddings import (
     GeminiEmbedder,
     OllamaEmbedder,
     OpenAIEmbedder,
+    TransientEmbeddingError,
     VoyageEmbedder,
+    _classify_http_error,
     chunk_text,
     embed_for,
 )
@@ -95,6 +97,106 @@ def _mock_transport(
 ) -> httpx.MockTransport:
     """Build an httpx MockTransport from a request → response handler."""
     return httpx.MockTransport(handler)
+
+
+class TestTransientClassification:
+    """``_classify_http_error`` decides whether an httpx failure should
+    raise :class:`TransientEmbeddingError` (worker should back off and
+    retry without bumping retry_count) or :class:`EmbeddingError`
+    (worker should mark and possibly fail the record).
+    """
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504, 599])
+    def test_5xx_classified_transient(self, status: int) -> None:
+        request = httpx.Request("POST", "https://api.example.com/embed")
+        response = httpx.Response(status, text="upstream blew up", request=request)
+        exc = httpx.HTTPStatusError("server error", request=request, response=response)
+        assert _classify_http_error(exc) is TransientEmbeddingError
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 499])
+    def test_4xx_classified_permanent(self, status: int) -> None:
+        request = httpx.Request("POST", "https://api.example.com/embed")
+        response = httpx.Response(status, text="bad input", request=request)
+        exc = httpx.HTTPStatusError("client error", request=request, response=response)
+        cls = _classify_http_error(exc)
+        assert cls is EmbeddingError
+        # Sanity: not the transient subclass either, even though it
+        # would still satisfy isinstance(EmbeddingError).
+        assert cls is not TransientEmbeddingError
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.ConnectError("connection refused"),
+            httpx.ReadError("peer closed connection without sending body"),
+            httpx.RemoteProtocolError("incomplete chunked read"),
+            httpx.ConnectTimeout("connect timeout"),
+            httpx.ReadTimeout("read timeout"),
+            httpx.WriteTimeout("write timeout"),
+            httpx.PoolTimeout("pool timeout"),
+        ],
+    )
+    def test_request_errors_classified_transient(self, exc: httpx.RequestError) -> None:
+        # All RequestError subclasses describe transport-level failures
+        # — the canonical "retry me later" cases.
+        assert _classify_http_error(exc) is TransientEmbeddingError
+
+    def test_transient_isinstance_embedding_error(self) -> None:
+        """Subclass relationship: existing ``except EmbeddingError``
+        handlers continue to catch transients as a fallback. Specific
+        handlers should catch :class:`TransientEmbeddingError` first."""
+        exc = TransientEmbeddingError("blip")
+        assert isinstance(exc, EmbeddingError)
+
+
+class TestOpenAITransientErrors:
+    """OpenAI embedder maps httpx failures to the right exception class."""
+
+    def test_500_raises_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)
+        emb._client = httpx.Client(
+            base_url=emb.base_url,
+            transport=_mock_transport(lambda r: httpx.Response(500, text="upstream down")),
+        )
+        try:
+            with pytest.raises(TransientEmbeddingError, match="OpenAI request failed"):
+                emb.embed_batch(["x"])
+        finally:
+            emb.close()
+
+    def test_400_raises_permanent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)
+        emb._client = httpx.Client(
+            base_url=emb.base_url,
+            transport=_mock_transport(lambda r: httpx.Response(400, text="bad request")),
+        )
+        try:
+            with pytest.raises(EmbeddingError) as excinfo:
+                emb.embed_batch(["x"])
+            # 4xx is permanent: the EmbeddingError raised must NOT be
+            # the transient subclass.
+            assert not isinstance(excinfo.value, TransientEmbeddingError)
+        finally:
+            emb.close()
+
+    def test_connect_error_raises_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Network-level failure (peer closed, connect refused, read
+        timeout) is the exact shape that was burning Ari's retry
+        budget. Must map to transient."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)
+
+        def boom(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadError("peer closed connection without sending complete message body")
+
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(boom))
+        try:
+            with pytest.raises(TransientEmbeddingError, match="OpenAI request failed"):
+                emb.embed_batch(["x"])
+        finally:
+            emb.close()
 
 
 class TestOpenAIEmbedder:

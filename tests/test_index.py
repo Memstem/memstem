@@ -469,6 +469,137 @@ class TestEmbedState:
         finally:
             idx.close()
 
+    def test_record_embed_state_swallows_fk_when_raised_as_database_error(
+        self, tmp_path: Path
+    ) -> None:
+        """The FK race handler must catch the violation regardless of
+        whether SQLite surfaces it as :class:`sqlite3.IntegrityError`
+        (the usual case) or as the parent
+        :class:`sqlite3.DatabaseError` (observed on Ari's Python 3.12 +
+        SQLite 3.45 deployment after the original PR #78 fix shipped —
+        the narrow ``except IntegrityError`` clause didn't fire and the
+        embed worker crashed).
+
+        We swap ``idx._db`` for a wrapper that proxies everything to
+        the real connection except ``execute`` of the ``INSERT INTO
+        embed_state`` statement, which raises a bare
+        :class:`sqlite3.DatabaseError` carrying the same FK message
+        SQLite emits. The handler must still match by extended error
+        code / message and run cleanup.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="db-error-shape")
+            idx.upsert(memory)
+            # Plant an orphan vec row so the handler has something to clean.
+            idx.upsert_vectors(str(memory.id), ["chunk"], [[0.3] * 8])
+            idx.delete(str(memory.id))
+
+            assert idx._db is not None
+            real_db: sqlite3.Connection = idx._db
+            insert_attempts: list[str] = []
+
+            class _RaisingDB:
+                """Proxy that intercepts the embed_state INSERT and
+                raises ``sqlite3.DatabaseError`` (parent class), the
+                shape Ari's box surfaced. Everything else falls
+                through to the real connection."""
+
+                def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+                    if "INSERT INTO embed_state" in sql:
+                        insert_attempts.append(sql)
+                        raise sqlite3.DatabaseError("FOREIGN KEY constraint failed")
+                    return real_db.execute(sql, parameters)  # type: ignore[arg-type]
+
+                def __getattr__(self, name: str) -> object:
+                    return getattr(real_db, name)
+
+                def __enter__(self) -> _RaisingDB:
+                    real_db.__enter__()
+                    return self
+
+                def __exit__(
+                    self,
+                    exc_type: type[BaseException] | None,
+                    exc_val: BaseException | None,
+                    exc_tb: object,
+                ) -> object:
+                    return real_db.__exit__(exc_type, exc_val, exc_tb)  # type: ignore[arg-type]
+
+            idx._db = _RaisingDB()  # type: ignore[assignment]
+            try:
+                # Pre-fix this re-raised DatabaseError; post-fix the
+                # handler matches by message/errorcode and swallows it.
+                idx.record_embed_state(str(memory.id), body_hash("db-error-shape"), "sig:8")
+            finally:
+                idx._db = real_db
+
+            assert insert_attempts, "test setup failed: INSERT was never attempted"
+
+            # Orphan vec rows cleaned despite the non-IntegrityError
+            # exception class — the handler still ran the cleanup branch.
+            assert (
+                idx.db.execute(
+                    "SELECT 1 FROM memories_vec WHERE memory_id = ?",
+                    (str(memory.id),),
+                ).fetchone()
+                is None
+            ), "orphan vec rows leaked: handler didn't run on DatabaseError"
+        finally:
+            idx.close()
+
+    def test_record_embed_state_propagates_non_fk_database_errors(self, tmp_path: Path) -> None:
+        """Counterpart to the FK swallow test: the broadened catch must
+        NOT swallow unrelated :class:`sqlite3.DatabaseError`s. A
+        corruption error or schema mismatch should still propagate so
+        the operator notices, instead of being silently logged as a
+        race recovery."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        try:
+            memory = _make_memory(body="non-fk-error")
+            idx.upsert(memory)
+
+            assert idx._db is not None
+            real_db: sqlite3.Connection = idx._db
+
+            class _CorruptDB:
+                def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+                    if "INSERT INTO embed_state" in sql:
+                        raise sqlite3.DatabaseError("database disk image is malformed")
+                    return real_db.execute(sql, parameters)  # type: ignore[arg-type]
+
+                def __getattr__(self, name: str) -> object:
+                    return getattr(real_db, name)
+
+                def __enter__(self) -> _CorruptDB:
+                    real_db.__enter__()
+                    return self
+
+                def __exit__(
+                    self,
+                    exc_type: type[BaseException] | None,
+                    exc_val: BaseException | None,
+                    exc_tb: object,
+                ) -> object:
+                    return real_db.__exit__(exc_type, exc_val, exc_tb)  # type: ignore[arg-type]
+
+            idx._db = _CorruptDB()  # type: ignore[assignment]
+            try:
+                with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+                    idx.record_embed_state(str(memory.id), body_hash("non-fk-error"), "sig:8")
+            finally:
+                idx._db = real_db
+        finally:
+            idx.close()
+
 
 class TestBackfillEmbedState:
     """On schema v3 upgrade, memories that already have vectors should

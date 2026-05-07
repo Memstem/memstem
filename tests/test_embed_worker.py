@@ -16,7 +16,7 @@ import pytest
 
 from memstem.adapters.base import MemoryRecord
 from memstem.core.embed_worker import EmbedWorker, drain_once
-from memstem.core.embeddings import Embedder, EmbeddingError
+from memstem.core.embeddings import Embedder, EmbeddingError, TransientEmbeddingError
 from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Memory, Vault
@@ -61,7 +61,14 @@ def _processed(pipe: Pipeline, record: MemoryRecord) -> Memory:
 
 
 class _StubEmbedder(Embedder):
-    """Records calls; returns deterministic dummy vectors."""
+    """Records calls; returns deterministic dummy vectors.
+
+    Toggle ``fail_once`` / ``fail_always`` for permanent
+    :class:`EmbeddingError`. Toggle ``transient_once`` /
+    ``transient_always`` for :class:`TransientEmbeddingError` (the
+    network-blip / 5xx shape that should NOT count against
+    ``retry_count``).
+    """
 
     dimensions = 8
 
@@ -69,9 +76,16 @@ class _StubEmbedder(Embedder):
         self.calls: list[list[str]] = []
         self.fail_once = False
         self.fail_always = False
+        self.transient_once = False
+        self.transient_always = False
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
+        if self.transient_always:
+            raise TransientEmbeddingError("intentional transient always")
+        if self.transient_once:
+            self.transient_once = False
+            raise TransientEmbeddingError("intentional transient one-shot")
         if self.fail_always:
             raise EmbeddingError("intentional always-fail")
         if self.fail_once:
@@ -196,6 +210,126 @@ class TestTick:
         )
         asyncio.run(worker.tick())
         assert index.queue_stats() == {"pending": 0, "failed": 0, "total": 0}
+
+
+class TestTransientHandling:
+    """:class:`TransientEmbeddingError` (network blip, 5xx, read
+    timeout) must NOT bump the record's ``retry_count`` and must drive
+    the worker's exponential backoff streak. Otherwise a 30-second
+    OpenAI hiccup permanently fails every record in flight (the
+    behaviour observed on Ari's box pre-fix).
+    """
+
+    def test_transient_does_not_bump_retry_count(self, vault: Vault, index: Index) -> None:
+        """The classic Ari shape: OpenAI returns peer-closed-connection
+        twice in a row, then succeeds. Permanent error handling would
+        burn through retries; transient handling shouldn't touch
+        ``retry_count`` at all and the eventual success cleans the
+        queue."""
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record())
+        embedder = _StubEmbedder()
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=1, idle_sleep=0
+        )
+
+        # First tick: transient. retry_count must stay at 0 because
+        # we don't punish the queue for transport failures.
+        embedder.transient_once = True
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT retry_count, failed, last_error FROM embed_queue WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchone()
+        assert row["retry_count"] == 0, "transient error must not bump retry_count"
+        assert row["failed"] == 0
+        assert row["last_error"] is None, (
+            "transient error must not write last_error — that's reserved for "
+            "permanent failures the operator might want to inspect"
+        )
+
+        # Second tick: succeeds; queue is cleaned.
+        asyncio.run(worker.tick())
+        assert (
+            index.db.execute(
+                "SELECT 1 FROM embed_queue WHERE memory_id = ?",
+                (str(memory.id),),
+            ).fetchone()
+            is None
+        )
+
+    def test_transient_streak_drives_backoff(self, vault: Vault, index: Index) -> None:
+        """Consecutive transient ticks bump the worker's backoff
+        counter, so the next sleep gets longer. A successful tick
+        resets the streak."""
+        pipe = Pipeline(vault, index)
+        _processed(pipe, _record())
+        embedder = _StubEmbedder()
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=embedder,
+            batch_size=1,
+            idle_sleep=1.0,
+            backoff_base=2.0,
+        )
+
+        assert worker._transient_streak == 0
+        assert worker._transient_sleep() == 1.0  # base idle when no streak
+
+        # First transient tick: streak=1, sleep stays at base (idle * base^0).
+        embedder.transient_always = True
+        asyncio.run(worker.tick())
+        assert worker._transient_streak == 1
+        assert worker._transient_sleep() == pytest.approx(1.0)
+
+        # Second transient tick: streak=2, sleep = base * base^1 = 2.0.
+        asyncio.run(worker.tick())
+        assert worker._transient_streak == 2
+        assert worker._transient_sleep() == pytest.approx(2.0)
+
+        # Third: streak=3, sleep = base * base^2 = 4.0.
+        asyncio.run(worker.tick())
+        assert worker._transient_streak == 3
+        assert worker._transient_sleep() == pytest.approx(4.0)
+
+        # Backoff caps at MAX_TRANSIENT_BACKOFF (so a multi-hour
+        # provider outage doesn't translate to multi-hour sleeps).
+        worker._transient_streak = 50
+        assert worker._transient_sleep() == EmbedWorker.MAX_TRANSIENT_BACKOFF
+
+        # First success resets the streak.
+        embedder.transient_always = False
+        asyncio.run(worker.tick())
+        assert worker._transient_streak == 0
+        assert worker._transient_sleep() == 1.0
+
+    def test_permanent_error_does_not_touch_streak(self, vault: Vault, index: Index) -> None:
+        """A genuine permanent failure (4xx, schema rejection) goes
+        through ``mark_embed_error`` and bumps retry_count, but it must
+        NOT drive the transient backoff — that's reserved for
+        infrastructure flakiness, not bad records."""
+        pipe = Pipeline(vault, index)
+        _processed(pipe, _record())
+        embedder = _StubEmbedder()
+        embedder.fail_always = True
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=embedder,
+            batch_size=1,
+            max_retries=10,
+            idle_sleep=1.0,
+        )
+
+        asyncio.run(worker.tick())
+        # Permanent error path bumped retry_count.
+        row = index.db.execute(
+            "SELECT retry_count FROM embed_queue WHERE memory_id IS NOT NULL"
+        ).fetchone()
+        assert row["retry_count"] == 1
+        # Transient streak untouched.
+        assert worker._transient_streak == 0
 
 
 class TestDrainOnce:
