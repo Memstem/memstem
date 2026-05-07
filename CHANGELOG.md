@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-07
+
+The "embed worker resilience" release. Two production bugs spotted on
+Ari's deployment after 0.9.1, plus the previously unreleased hygiene
+verify + type-bias work. Both bug fixes are blocking for any user
+running the daemon against OpenAI under real network conditions —
+without them, every cluster of OpenAI hiccups burns through retry
+budget and surfaces as worker crashes in stderr.
+
 ### Added
 
 - **Operator verification report** (`memstem hygiene verify`). Single
@@ -31,9 +40,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty mapping recovers pre-0.10 behaviour. Per-call overrides
   available on the HTTP `/search` body, the daemon client, and the
   Python `Search.search` keyword argument.
+- **`TransientEmbeddingError`** subclass of `EmbeddingError` to
+  represent embedder failures that should be retried without burning
+  through `retry_count`. Network-level httpx errors (`ReadError`,
+  `ConnectError`, `RemoteProtocolError`, all `*Timeout` variants) and
+  HTTP 5xx now classify as transient; 4xx and unrecognised httpx
+  failures stay permanent. Existing `except EmbeddingError` handlers
+  continue to catch transients as a fallback; specific handlers
+  should catch `TransientEmbeddingError` first. Wired through all
+  four shipped embedders (Ollama, OpenAI, Gemini, Voyage) via a
+  shared `_classify_http_error` helper.
 
 ### Fixed
 
+- **`record_embed_state` FK race handler now catches the violation
+  regardless of exception class.** PR #78 (shipped in 0.9.1) was the
+  intended fix for the embed-mid-delete race, but the catch was
+  narrowed to `sqlite3.IntegrityError`. SQLite + Python 3.12 + sqlite
+  3.45 surface the same FK violation as the parent
+  `sqlite3.DatabaseError` in some transaction-state combinations
+  (observed on Ari's deployment), and the worker would crash through
+  the original handler. The catch now matches by extended error code
+  (`SQLITE_CONSTRAINT_FOREIGNKEY = 787`) with a message-string
+  fallback for older bindings, via a new `_is_foreign_key_violation`
+  helper. Other `DatabaseError` causes (corruption, schema mismatch)
+  still propagate. Regression test exercises the actual
+  `DatabaseError` shape via a connection proxy.
+- **Embed worker no longer burns retry budget on transient embedder
+  failures.** Pre-0.10, a 30-second OpenAI hiccup translated to one
+  permanent failure per record in flight: each
+  `peer closed connection without sending complete message body` or
+  `read operation timed out` raised `EmbeddingError`, which bumped
+  `retry_count` and eventually flipped `failed=1` even though the
+  underlying problem was transient. The worker now branches on
+  `TransientEmbeddingError`: it logs a warning, leaves the queue row
+  alone (no `mark_embed_error`, no `last_error` write, no retry
+  bump), and bumps a per-worker consecutive-transient streak.
+  Successful ticks reset the streak; consecutive transient ticks
+  drive exponential backoff (`idle_sleep` × `backoff_base ^
+  (streak−1)`, capped at 60 s), so a multi-minute provider outage no
+  longer means N-workers-times-M-records of wasted round trips per
+  second. Permanent embedder errors keep their existing
+  retry-and-fail semantics; the streak-driven backoff is reserved for
+  transients so a single bad record doesn't slow the whole queue.
 - **Skill review tickets no longer trip vault scans.** Files under
   `vault/skills/_review/` (and any directory whose name starts with
   underscore) are operator artifacts, not memory documents — they
