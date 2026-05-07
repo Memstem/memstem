@@ -228,3 +228,207 @@ The smoke test is a *gate*, not a release. After it passes:
 4. Run `memstem hygiene dedup-judge` (NoOp first, then optionally
    `--enable-llm`) and inspect `dedup_audit`. Do not act on the
    audit table until the resolution PR lands.
+
+## Post-cleanup operator playbook
+
+This section is the runbook for an operator picking up a vault that
+has been live-ingested for a while and needs the periodic-hygiene
+pass. The order matters: cleanup before distillation backfill before
+verification. The whole loop is idempotent — re-running on a
+cleaner vault produces fewer findings, never new mutations.
+
+### 1. Run retro cleanup
+
+Apply the already-shipped Layer 1 dedup + noise rules to records
+that pre-date them. **Default is dry-run; review before applying.**
+
+```bash
+# Dry-run: prints the plan, mutates nothing.
+memstem hygiene cleanup-retro --vault "$VAULT"
+
+# Apply once you've reviewed the plan.
+memstem hygiene cleanup-retro --vault "$VAULT" --apply
+```
+
+What the writer actually does:
+
+- **Non-skill collisions** (multiple memories with the same
+  normalized body hash) → marks the losers `deprecated_by:
+  <winner_id>` so default search filters them out. Reversible by
+  clearing the field.
+- **Skill-involved collisions** → never auto-merge. The writer
+  drops a markdown ticket under `vault/skills/_review/` so the
+  operator can decide. ADR 0012.
+- **Noise hits** (boot echoes, ack-only sessions, transient
+  state) → sets `valid_to` so default search excludes them. The
+  record stays on disk, recoverable by clearing `valid_to`.
+
+Skip `--noise` or `--dedup` independently with the matching
+`--no-*` flag if you want only one of the two passes.
+
+### 2. Backfill session distillations
+
+After cleanup, run the session-distillation writer in backfill
+mode so every meaningful session gets a `type=distillation`
+companion. Default mode only considers recent (30-day) sessions;
+backfill ignores recency and walks the full vault.
+
+```bash
+# Make sure your provider key is stored once:
+memstem auth set openai sk-...
+
+# Dry-run with the real provider — preview without writing.
+memstem hygiene distill-sessions \
+  --vault "$VAULT" \
+  --backfill \
+  --provider openai
+
+# Apply once the preview looks right.
+memstem hygiene distill-sessions \
+  --vault "$VAULT" \
+  --backfill \
+  --provider openai \
+  --apply
+```
+
+Notes:
+
+- `--provider noop` is the safest preview (no LLM calls). NoOp +
+  `--apply` is a no-op because the summarizer returns the empty
+  string and the applier skips empty summaries.
+- Re-running with `--apply` is idempotent: sessions that already
+  carry a linked distillation are skipped. Use `--force` only when
+  you want to refresh after a prompt or model change.
+- `--min-turns 10 --min-words 100` is the meaningfulness gate.
+  Lower the thresholds to capture more candidates; raise them to
+  drop short transactional sessions.
+
+### 3. Verify success
+
+`memstem hygiene verify` is the operator-facing dashboard for
+"did the cleanup + backfill actually land?" It is read-only and
+safe to run on a production vault.
+
+```bash
+# Human-readable summary.
+memstem hygiene verify --vault "$VAULT"
+
+# Machine-readable for CI / monitoring.
+memstem hygiene verify --vault "$VAULT" --json-out /tmp/state.json
+```
+
+The report covers:
+
+| Section          | Field                                | Meaning |
+|------------------|--------------------------------------|---------|
+| Total            | `total_memories`                     | Index-resident records |
+| By type          | `total/deprecated/valid_to`          | Per-type sub-counts |
+| Cleanup state    | `deprecated_total`                   | All records pointed at by `deprecated_by` |
+| Cleanup state    | `valid_to_total`                     | All records carrying a `valid_to` (live or expired) |
+| Cleanup state    | `active_dedup_groups`                | Collision groups cleanup-retro would still flag |
+| Cleanup state    | `active_dedup_to_deprecate`          | Records cleanup-retro would deprecate next run |
+| Cleanup state    | `active_dedup_skill_groups`          | Subset of the above that involve a skill (require manual review) |
+| Cleanup state    | `noise_drops` / `noise_transients`   | Noise hits cleanup-retro would still flag |
+| Cleanup state    | `skill_review_tickets`               | Open tickets under `vault/skills/_review/` |
+| Derived records  | `distilled_session_targets`          | Sessions covered by a `type=distillation` link |
+| Derived records  | `undistilled_eligible_sessions`      | Sessions that pass the meaningfulness gate but have no companion |
+| Health           | `parser_skips`                       | Files skipped during walk because frontmatter validation failed |
+
+A clean vault after the playbook above shows:
+
+- `active_dedup_groups` at zero or only skill-involved groups.
+- `noise_drops` at zero, `noise_transients` at zero or one or two
+  during the TTL window.
+- `undistilled_eligible_sessions` close to zero (modulo new
+  sessions that arrived since the last backfill).
+- `parser_skips` empty.
+
+### 4. Interpreting remaining findings
+
+After the playbook runs, the residual findings are the operator's
+to act on — they are *not* automatic:
+
+- **`active_dedup_skill_groups > 0`**: skill-involved collisions
+  never auto-merge. Each one has a ticket under
+  `vault/skills/_review/`; review and resolve manually (keep all,
+  pick a winner, or dismiss).
+- **`noise_transients > 0`**: a non-trivial transient like a
+  recent ack-only session. These expire automatically once
+  `valid_to` lapses; nothing to do unless the count keeps
+  growing, in which case investigate the noise rule.
+- **`undistilled_eligible_sessions > 0`**: the next backfill run
+  will pick them up. If the count keeps climbing, run the
+  backfill on a schedule.
+- **`parser_skips` non-empty**: a record was written outside the
+  pipeline with malformed frontmatter. The message points at the
+  file; fix the file's frontmatter or remove it. Files inside any
+  underscore-prefixed directory (`_meta/`, `skills/_review/`,
+  `_drafts/`, …) are operator artifacts and never enter
+  `parser_skips` — those are skipped silently.
+
+### 5. Skill review ticket workflow
+
+Skill collisions write a ticket per group under
+`vault/skills/_review/<timestamp>-<slug>.md`. Each ticket lists
+the candidates with their importance, retrieval count, and
+update timestamps so the operator can compare without a separate
+vault walk.
+
+The tickets are intentionally **plain markdown without
+frontmatter** — they are an operator inbox, not vault records.
+`Vault.walk()` skips any directory whose name starts with
+underscore, so review tickets do not enter the index, do not
+appear in search results, and do not produce parser skips.
+`memstem hygiene verify` counts the open tickets so the operator
+can see at-a-glance how much is on the queue.
+
+To resolve a ticket, edit the relevant skill files manually
+(merge content, delete losers, etc.) and remove the ticket
+file. There is no first-class `memstem skill-review apply` /
+`dismiss` CLI yet — that is a future surface; the current
+contract is "read the ticket, edit the vault, delete the
+ticket."
+
+### 6. Default ranking policy
+
+`memstem search` defaults to a policy that prefers
+**curated/derived** records over **raw** records. Concretely,
+each result's RRF score is multiplied by:
+
+```
+final = rrf * (1 + alpha * importance) * type_bias[type]
+```
+
+The shipped `type_bias` defaults are:
+
+| Type           | Default weight | Effect |
+|----------------|---------------:|--------|
+| `distillation` | 1.10           | rolled-up summaries lead |
+| `memory`       | 1.05           | curated facts |
+| `skill`        | 1.05           | curated procedures |
+| `project`      | 1.05           | project records |
+| `decision`     | 1.05           | decision records |
+| `daily`, `person` | 1.00        | neutral |
+| `session`      | 0.85           | raw conversation, soft demote |
+
+Bounds are intentionally tight (`[0.85, 1.10]`). A clearly more
+relevant raw session still beats a barely-relevant distillation —
+the bias breaks ties; it does not override relevance.
+
+To tune the policy, edit `_meta/config.yaml`:
+
+```yaml
+search:
+  importance_weight: 0.2
+  type_bias:
+    distillation: 1.20    # lean harder on rollups
+    session: 0.70         # demote raw sessions further
+    memory: 1.05
+    skill: 1.10           # prefer skills above other curated forms
+```
+
+Set every entry to `1.0` (or supply an empty mapping `{}`) to
+disable the policy entirely and recover the pre-0.10 behaviour.
+Per-call overrides are also available via the HTTP `/search`
+body (`type_bias` field) and the Python `Search.search` keyword
+argument.

@@ -160,6 +160,7 @@ class DaemonClient:
         bm25_weight: float | None = None,
         vector_weight: float | None = None,
         importance_weight: float | None = None,
+        type_bias: dict[str, float] | None = None,
     ) -> list[SearchHit]:
         """Hybrid search via ``POST /search``. Raises :class:`DaemonError`
         on any HTTP-level failure so the caller can decide whether to
@@ -175,6 +176,8 @@ class DaemonClient:
             body["vector_weight"] = vector_weight
         if importance_weight is not None:
             body["importance_weight"] = importance_weight
+        if type_bias is not None:
+            body["type_bias"] = type_bias
 
         try:
             resp = self._client.post("/search", json=body)

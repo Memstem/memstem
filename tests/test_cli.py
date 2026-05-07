@@ -617,6 +617,78 @@ class TestHygieneCleanupRetro:
         assert "Collision groups:        0" in second.output
 
 
+class TestHygieneVerify:
+    """Operator verification report CLI."""
+
+    def test_renders_human_summary(self, initialized_vault: Path, runner: CliRunner) -> None:
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            _write_memory(vault, idx, title="A", body="alpha body")
+            _write_memory(vault, idx, title="B", body="beta body")
+        finally:
+            idx.close()
+
+        result = runner.invoke(
+            app,
+            ["hygiene", "verify", "--vault", str(initialized_vault)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "MEMSTEM VERIFY" in result.output
+        assert "Total memories:" in result.output
+        assert "By type:" in result.output
+        assert "Cleanup state:" in result.output
+        assert "Derived records:" in result.output
+
+    def test_json_out_writes_machine_readable_payload(
+        self, initialized_vault: Path, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """The ``--json-out`` flag must produce a parseable JSON payload
+        with all the documented fields, so CI / monitoring scrapers can
+        depend on the schema."""
+        vault = Vault(initialized_vault)
+        idx = Index(initialized_vault / "_meta" / "index.db", dimensions=768)
+        idx.connect()
+        try:
+            _write_memory(vault, idx, title="A", body="alpha")
+        finally:
+            idx.close()
+
+        out_path = tmp_path / "verify.json"
+        result = runner.invoke(
+            app,
+            [
+                "hygiene",
+                "verify",
+                "--vault",
+                str(initialized_vault),
+                "--json-out",
+                str(out_path),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert out_path.is_file()
+        payload = json.loads(out_path.read_text())
+        for key in (
+            "vault_path",
+            "total_memories",
+            "by_type",
+            "deprecated_total",
+            "valid_to_total",
+            "distilled_session_targets",
+            "undistilled_eligible_sessions",
+            "active_dedup_groups",
+            "active_dedup_skill_groups",
+            "active_dedup_to_deprecate",
+            "noise_drops",
+            "noise_transients",
+            "skill_review_tickets",
+            "parser_skips",
+        ):
+            assert key in payload, f"missing key {key!r} in JSON output"
+
+
 class TestMigrateCommand:
     """Verify the top-level `memstem migrate` command exists and proxies to memstem.migrate."""
 

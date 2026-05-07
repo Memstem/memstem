@@ -54,6 +54,12 @@ neutral (0.5) rather than 0.0. This keeps un-scored records on a level
 playing field with explicitly-mid-importance records, and prevents the
 boost from making un-scored records *worse* than they would have been
 without a boost at all."""
+DEFAULT_TYPE_BIAS_NEUTRAL = 1.0
+"""Multiplier returned for any record type not present in the configured
+``type_bias`` mapping — leaves the score untouched. Picked separately
+from :data:`DEFAULT_IMPORTANCE` because the two layers compose: a record
+with no importance and an unlisted type gets exactly the unboosted RRF
+score back."""
 OVERFETCH_MULTIPLIER = 5
 _FTS_SPECIAL_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
@@ -208,6 +214,7 @@ class Search:
         bm25_weight: float = 1.0,
         vector_weight: float = 1.0,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
+        type_bias: dict[str, float] | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
         mmr_lambda: float | None = None,
@@ -233,6 +240,16 @@ class Search:
         Records without an explicit ``importance`` get the neutral default
         (``0.5``) so un-scored records don't lose ranking just because no
         one annotated them.
+
+        ``type_bias`` (ranking policy) further multiplies each hit's score
+        by a per-type weight. Curated/derived records (``distillation``,
+        ``memory``, ``skill``, ``project``) are boosted slightly above
+        neutral; raw ``session`` records are slightly demoted, so
+        identical-relevance hits prefer the rolled-up form. ``None``
+        falls through to ``DEFAULT_TYPE_BIAS_NEUTRAL`` for every type
+        (no policy applied — pre-0.10 behaviour). Pass an empty dict
+        ``{}`` for the same effect when you want the parameter to be
+        explicit at the call site.
 
         ``log_client`` (ADR 0008 Tier 1 query log) tags retrieval-log rows
         with the call site (``"cli"``, ``"mcp"``, ``"http"``). Pass
@@ -316,6 +333,7 @@ class Search:
             fused,
             limit=materialize_limit,
             importance_weight=importance_weight,
+            type_bias=type_bias,
             include_expired=include_expired,
             include_deprecated=include_deprecated,
         )
@@ -456,23 +474,26 @@ class Search:
         hits: list[FusedHit],
         limit: int,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
+        type_bias: dict[str, float] | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
     ) -> list[Result]:
         """Read each fused hit's `Memory` from the vault, optionally re-score, sort, truncate.
 
-        When ``importance_weight == 0`` the loop short-circuits as soon as
-        ``limit`` results accumulate — RRF order is final and we don't
-        need to materialize anything further. When the importance boost
-        is active (the default), the boost can re-order results, so we
-        materialize a wider pool (capped at ``limit * OVERFETCH_MULTIPLIER``)
-        before sorting by the boosted score. The materialization cost is
-        bounded; the cost is one extra Memory.read() per pool entry that
-        wouldn't have been read in the short-circuit path.
+        When the importance boost is off AND no type bias is configured,
+        RRF order is already final and the loop short-circuits as soon as
+        ``limit`` results accumulate. When either re-scoring stage is
+        active, results may re-order, so we materialize a wider pool
+        (capped at ``limit * OVERFETCH_MULTIPLIER``) before sorting by
+        the final score. The materialization cost is bounded; the cost
+        is one extra ``Memory.read()`` per pool entry that wouldn't have
+        been read in the short-circuit path.
         """
         now = datetime.now(tz=UTC)
         boost_active = importance_weight != 0.0
-        pool_target = max(limit * OVERFETCH_MULTIPLIER, limit) if boost_active else limit
+        bias_active = bool(type_bias)
+        rescore_active = boost_active or bias_active
+        pool_target = max(limit * OVERFETCH_MULTIPLIER, limit) if rescore_active else limit
 
         pool: list[Result] = []
         for hit in hits:
@@ -499,6 +520,7 @@ class Search:
             if not include_deprecated and memory.frontmatter.deprecated_by is not None:
                 continue
             score = self._apply_importance(hit.score, memory, importance_weight)
+            score = self._apply_type_bias(score, memory, type_bias)
             pool.append(
                 Result(
                     memory=memory,
@@ -508,7 +530,7 @@ class Search:
                 )
             )
 
-        if boost_active:
+        if rescore_active:
             pool.sort(key=lambda r: r.score, reverse=True)
         return pool[:limit]
 
@@ -533,6 +555,26 @@ class Search:
         return rrf_score * (1.0 + importance_weight * importance)
 
     @staticmethod
+    def _apply_type_bias(
+        score: float,
+        memory: Memory,
+        type_bias: dict[str, float] | None,
+    ) -> float:
+        """Apply the per-type ranking multiplier configured in
+        :class:`~memstem.config.SearchConfig.type_bias`.
+
+        Types not present in the mapping fall through to
+        :data:`DEFAULT_TYPE_BIAS_NEUTRAL` (``1.0``) so adding a new
+        :class:`~memstem.core.frontmatter.MemoryType` never silently
+        zeroes its score. Returns ``score`` unchanged when the mapping
+        is empty or ``None``.
+        """
+        if not type_bias:
+            return score
+        weight = type_bias.get(memory.type.value, DEFAULT_TYPE_BIAS_NEUTRAL)
+        return score * weight
+
+    @staticmethod
     def _is_expired(memory: Memory, now: datetime) -> bool:
         valid_to = memory.frontmatter.valid_to
         return valid_to is not None and valid_to <= now
@@ -543,6 +585,7 @@ __all__ = [
     "DEFAULT_IMPORTANCE_WEIGHT",
     "DEFAULT_RERANK_TOP_N",
     "DEFAULT_RRF_K",
+    "DEFAULT_TYPE_BIAS_NEUTRAL",
     "FusedHit",
     "Result",
     "Search",

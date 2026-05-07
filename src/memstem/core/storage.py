@@ -20,6 +20,13 @@ from memstem.core.frontmatter import Frontmatter, MemoryType, parse, serialize, 
 logger = logging.getLogger(__name__)
 
 META_DIRNAME = "_meta"
+# Operator-only directories — anything whose name starts with an underscore.
+# These hold tickets, drafts, audit dumps, etc. that aren't memory files
+# (no frontmatter, no schema). Scanners must skip them so a vault walk
+# doesn't trip over operator artifacts. Examples currently in use:
+#   _meta/     daemon-managed config, index, query log
+#   _review/   skill collision review tickets (cleanup_retro, ADR 0012)
+RESERVED_DIR_PREFIX = "_"
 
 
 class VaultError(Exception):
@@ -92,13 +99,17 @@ class Vault:
     def walk(self, types: list[str] | None = None) -> Iterator[Memory]:
         """Yield every valid memory in the vault.
 
-        Files under `_meta/` are skipped. Files with invalid frontmatter are
-        logged and skipped, never raised — bulk operations should not crash on
-        a single bad file.
+        Files inside any directory whose name begins with an underscore are
+        skipped (e.g. ``_meta/``, ``_review/``). Those are operator-only
+        artifacts — daemon config, audit dumps, skill review tickets — not
+        memory documents, and have no schema to validate against.
+
+        Files with invalid frontmatter elsewhere are logged at WARNING and
+        skipped — bulk operations should not crash on a single bad file, but
+        unexpected schema breakage should still be visible to the operator.
         """
-        meta_root = self.root / META_DIRNAME
         for md_path in sorted(self.root.rglob("*.md")):
-            if meta_root in md_path.parents or md_path == meta_root:
+            if self._is_under_reserved_dir(md_path):
                 continue
             try:
                 memory = self.read(md_path.relative_to(self.root))
@@ -108,6 +119,26 @@ class Vault:
             if types is not None and memory.type.value not in types:
                 continue
             yield memory
+
+    def _is_under_reserved_dir(self, path: Path) -> bool:
+        """True when any segment between the vault root and ``path`` starts with ``_``.
+
+        The vault root itself is allowed to have leading underscores (we only
+        check the parts *under* it). The check is one-shot: ``_meta`` at the
+        top level, ``_review`` under ``skills/``, ``_drafts`` anywhere — all
+        treated identically.
+        """
+        try:
+            rel_parts = path.resolve().relative_to(self.root).parts
+        except ValueError:
+            return False
+        # The file's own name is the last part; we only care about directory
+        # segments. Stripping the file lets a top-level memory file like
+        # `MEMORY.md` (no parent dir) work correctly.
+        for segment in rel_parts[:-1]:
+            if segment.startswith(RESERVED_DIR_PREFIX):
+                return True
+        return False
 
     def _resolve(self, path: Path | str) -> Path:
         p = Path(path)

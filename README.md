@@ -38,10 +38,13 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.9.0 — derived records.** Live on the maintainer's box;
-ingesting from multi-agent OpenClaw + Claude Code in real time.
-0.9.0 adds session distillation + project records on top of the
-0.8.1 retrieval pipeline. Shipping:
+**v0.9.x — derived records + post-cleanup operator workflow.**
+Live on the maintainer's box; ingesting from multi-agent OpenClaw +
+Claude Code in real time. 0.9.0 added session distillation + project
+records on top of the 0.8.1 retrieval pipeline; the unreleased
+post-cleanup branch adds a single-command verification report, an
+explicit per-type ranking policy, and a fix that keeps skill review
+tickets out of vault scans. Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
   markdown-canonical vault. Index is rebuildable from the files.
@@ -60,6 +63,22 @@ ingesting from multi-agent OpenClaw + Claude Code in real time.
   did X" queries that today fail to surface project work that
   exists in the vault. See
   [docs/distillation-verification.md](./docs/distillation-verification.md).
+- **Post-cleanup operator workflow (unreleased)** — `memstem hygiene
+  verify` is a single read-only command that summarizes vault state
+  after a cleanup + backfill sweep: per-type counts, distillation
+  coverage, undistilled-eligible sessions remaining, dedup /
+  noise findings cleanup-retro would still flag, open skill review
+  tickets, and parser/validation skips. Optional `--json-out`
+  emits a machine-readable payload for CI / monitoring. Replaces
+  ad-hoc SQLite inspection. See the [post-cleanup playbook in
+  docs/operations.md](./docs/operations.md#post-cleanup-operator-playbook).
+- **Explicit ranking policy (unreleased)** — `SearchConfig.type_bias`
+  multiplies each result's score by a small per-type weight so
+  default search clearly prefers curated/derived records (distillation
+  1.10, memory/skill/project 1.05) over raw conversational sessions
+  (0.85). Bounds are intentionally tight (`[0.85, 1.10]`) — the bias
+  breaks ties without overriding relevance. Tunable per-vault in
+  `_meta/config.yaml`; an empty mapping recovers pre-0.10 behaviour.
 - **Quality pipeline** — write-time noise filter, exact-body hash dedup
   (Layer 1), TTL tagging for transient kinds, boot-echo hash filter —
   keeps the vault from being polluted by AI-session firehose.
@@ -76,7 +95,7 @@ Cross-platform CI runs Linux (gating) plus macOS and Windows
 (experimental, `continue-on-error: true` — sqlite-vec needs
 `enable_load_extension`, which `actions/setup-python`'s macOS build
 doesn't ship; native Windows is WSL2-only by design for v0.x).
-1087 tests passing. See [CHANGELOG.md](./CHANGELOG.md) for the
+1150 tests passing. See [CHANGELOG.md](./CHANGELOG.md) for the
 release-by-release history and [ROADMAP.md](./ROADMAP.md) for what's
 next.
 
@@ -303,7 +322,11 @@ recommendations + cost expectations.
 
 ## Verifying it works
 
-`memstem doctor` is the single source of truth for "is the install healthy?":
+Two complementary commands cover "is the install healthy?" and "is
+the vault state right after a cleanup + backfill sweep?".
+
+`memstem doctor` is the install-level check — Python, vault, index,
+embedder, and the configured adapter targets all reachable:
 
 ```text
 $ memstem doctor
@@ -321,6 +344,53 @@ Memstem doctor (vault=/home/ubuntu/memstem-vault):
 All checks passed.
 ```
 
+`memstem hygiene verify` is the operator-level check — vault state
+after `cleanup-retro` + `distill-sessions --backfill`. Read-only,
+safe on production. Reports total memories, per-type breakdown,
+distillation coverage, dedup / noise findings still detectable,
+open skill review tickets, and any parser/validation skips
+encountered during the walk. `--json-out` writes the same payload as
+JSON for CI / monitoring scrapers:
+
+```text
+$ memstem hygiene verify
+============================================================
+MEMSTEM VERIFY
+============================================================
+Vault:                    /home/ubuntu/memstem-vault
+Total memories:           1722
+
+By type:
+  type             total  deprecated  valid_to
+  --------------------------------------------------
+  session            665           1         1
+  memory             546         229         2
+  distillation       224           0         0
+  skill              193           0         0
+  daily               80           0         0
+  project             14           0         0
+
+Cleanup state:
+  Deprecated records:                   230
+  Records with valid_to:                3
+  Active dedup collision groups:        6
+  Active dedup → would deprecate:       11
+  Active dedup skill groups (review):   6
+  Noise drops still detectable:         0
+  Noise transients still detectable:    1
+  Skill review tickets open:            6
+
+Derived records:
+  Sessions covered by distillation:     224
+  Undistilled eligible sessions left:   1
+
+Parser/validation skips during scan: 0
+```
+
+The full operator playbook (run cleanup, run backfill, run verify,
+interpret findings, resolve skill review tickets, tune ranking) is
+in [docs/operations.md — Post-cleanup operator playbook](./docs/operations.md#post-cleanup-operator-playbook).
+
 ## Platform support
 
 | OS | v0.1 support | Notes |
@@ -333,6 +403,7 @@ All checks passed.
 
 - [Architecture](./ARCHITECTURE.md) — system design and rationale
 - [Roadmap](./ROADMAP.md) — release plan (Phases 1–5)
+- [Operations](./docs/operations.md) — production smoke test, post-cleanup operator playbook, ranking-policy reference
 - [Frontmatter spec](./docs/frontmatter-spec.md) — the markdown schema
 - [MCP API](./docs/mcp-api.md) — tool definitions
 - [Decisions](./docs/decisions/) — Architecture Decision Records

@@ -162,6 +162,42 @@ class TestWalk:
         results = list(vault.walk())
         assert len(results) == 1
 
+    def test_walk_skips_skill_review_dir(
+        self, tmp_vault: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Review tickets under ``skills/_review/`` are operator artifacts
+        (no frontmatter, no schema) and must be skipped silently — no
+        validation warnings, no records yielded.
+        """
+        vault = Vault(tmp_vault)
+        vault.write(_make_memory("memories/real.md"))
+        _write_raw(
+            tmp_vault,
+            "skills/_review/20260505T132055Z-foo.md",
+            "# Skill collision review ticket\n\nGenerated: 2026-05-05\n",
+        )
+        with caplog.at_level(logging.WARNING):
+            results = list(vault.walk())
+        assert len(results) == 1
+        assert not any("review" in record.message.lower() for record in caplog.records), (
+            "review ticket files must not produce validation warnings"
+        )
+
+    def test_walk_skips_any_underscore_prefixed_dir(self, tmp_vault: Path) -> None:
+        """The convention is ``_<name>/`` = operator-only. Any directory
+        whose name begins with ``_`` is reserved metadata and must be
+        skipped, even nested ones. This keeps the rule future-proof for
+        ``_drafts/``, ``_audit/``, etc.
+        """
+        vault = Vault(tmp_vault)
+        vault.write(_make_memory("memories/real.md"))
+        _write_raw(tmp_vault, "_drafts/x.md", "no frontmatter")
+        _write_raw(tmp_vault, "skills/_audit/y.md", "no frontmatter")
+        _write_raw(tmp_vault, "memories/_scratch/z.md", "no frontmatter")
+        results = list(vault.walk())
+        assert len(results) == 1
+        assert results[0].frontmatter.title == "test"
+
     def test_walk_skips_invalid_frontmatter_with_warning(
         self, tmp_vault: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

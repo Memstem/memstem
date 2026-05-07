@@ -362,6 +362,7 @@ def build_server(
             bm25_weight=sc.bm25_weight,
             vector_weight=sc.vector_weight,
             importance_weight=sc.importance_weight,
+            type_bias=sc.type_bias,
             log_client=log_client,
             log_max_rows=hc.query_log_max_rows,
         )

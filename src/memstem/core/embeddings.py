@@ -48,7 +48,65 @@ DEFAULT_CHUNK_CHARS = 2048
 
 
 class EmbeddingError(Exception):
-    """Raised when an embedding call fails."""
+    """Raised when an embedding call fails permanently.
+
+    ``EmbeddingError`` covers failures the worker should treat as
+    final for the current attempt: invalid input (4xx), unexpected
+    response shape, configuration errors. The worker increments the
+    record's ``retry_count`` and eventually gives up.
+
+    Use :class:`TransientEmbeddingError` for failures that are likely
+    to clear on their own (network blips, timeouts, 5xx).
+    """
+
+
+class TransientEmbeddingError(EmbeddingError):
+    """Raised when an embedding call fails for a transient reason.
+
+    Network errors, read timeouts, partial response bodies, and 5xx
+    responses go here. The worker treats these specially: it does not
+    bump the record's ``retry_count`` (so a 30-second OpenAI hiccup
+    doesn't burn through ``max_retries`` for every record in flight)
+    and it backs off before its next tick. A run of consecutive
+    transients still triggers exponential backoff; a permanent
+    embedder problem is detected because ``mark_embed_error`` is never
+    called and a separate consecutive-transient counter eventually
+    surfaces in logs.
+
+    Subclasses :class:`EmbeddingError` so existing ``except
+    EmbeddingError`` handlers still catch it as a fallback. Specific
+    handlers should catch :class:`TransientEmbeddingError` first.
+    """
+
+
+def _classify_http_error(exc: httpx.HTTPError) -> type[EmbeddingError]:
+    """Pick the right exception class for an httpx failure.
+
+    Transient (network blips, server-side problems): return
+    :class:`TransientEmbeddingError`. Permanent (4xx client errors,
+    other unrecognised httpx failures): return :class:`EmbeddingError`.
+    The caller still constructs the message and ``raise ... from exc``.
+
+    httpx exception hierarchy reference: ``httpx.HTTPError`` is the
+    base for both ``RequestError`` (network/transport, no response)
+    and ``HTTPStatusError`` (got a response, status was 4xx/5xx).
+    """
+    # 5xx server errors: transient. 4xx client errors: permanent (the
+    # request will keep failing the same way until the input changes).
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        if response is not None and 500 <= response.status_code < 600:
+            return TransientEmbeddingError
+        return EmbeddingError
+    # All RequestError subclasses (TimeoutException, ConnectError,
+    # ReadError, RemoteProtocolError, etc.) describe transport-level
+    # failures — the request never got a clean response. These are the
+    # canonical "retry me later" cases.
+    if isinstance(exc, httpx.RequestError):
+        return TransientEmbeddingError
+    # Unknown HTTPError subclass: be conservative and treat as
+    # permanent so we don't loop forever on a misclassified bug.
+    return EmbeddingError
 
 
 def chunk_text(text: str, max_chars: int = DEFAULT_CHUNK_CHARS) -> list[str]:
@@ -164,7 +222,7 @@ class OllamaEmbedder(Embedder):
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise EmbeddingError(f"Ollama request failed: {exc}") from exc
+            raise _classify_http_error(exc)(f"Ollama request failed: {exc}") from exc
 
         data = response.json()
         embeddings = data.get("embeddings")
@@ -239,9 +297,11 @@ class OpenAIEmbedder(Embedder):
             # detail (oversize input, invalid token, etc.) that the bare
             # HTTP status line hides.
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
-            raise EmbeddingError(f"OpenAI request failed: {exc} — body: {detail}") from exc
+            raise _classify_http_error(exc)(
+                f"OpenAI request failed: {exc} — body: {detail}"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise EmbeddingError(f"OpenAI request failed: {exc}") from exc
+            raise _classify_http_error(exc)(f"OpenAI request failed: {exc}") from exc
 
         data = response.json()
         items = data.get("data")
@@ -370,9 +430,11 @@ class GeminiEmbedder(Embedder):
             # detail (oversize input, invalid token, etc.) that the
             # bare HTTP status line hides.
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
-            raise EmbeddingError(f"Gemini request failed: {exc} — body: {detail}") from exc
+            raise _classify_http_error(exc)(
+                f"Gemini request failed: {exc} — body: {detail}"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise EmbeddingError(f"Gemini request failed: {exc}") from exc
+            raise _classify_http_error(exc)(f"Gemini request failed: {exc}") from exc
 
         data = response.json()
         embeddings = data.get("embeddings")
@@ -449,9 +511,11 @@ class VoyageEmbedder(Embedder):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
-            raise EmbeddingError(f"Voyage request failed: {exc} — body: {detail}") from exc
+            raise _classify_http_error(exc)(
+                f"Voyage request failed: {exc} — body: {detail}"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise EmbeddingError(f"Voyage request failed: {exc}") from exc
+            raise _classify_http_error(exc)(f"Voyage request failed: {exc}") from exc
 
         data = response.json()
         items = data.get("data")
@@ -516,6 +580,7 @@ __all__ = [
     "GeminiEmbedder",
     "OllamaEmbedder",
     "OpenAIEmbedder",
+    "TransientEmbeddingError",
     "VoyageEmbedder",
     "chunk_text",
     "embed_for",

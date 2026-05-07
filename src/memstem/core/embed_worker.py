@@ -22,6 +22,7 @@ from typing import Any
 from memstem.core.embeddings import (
     Embedder,
     EmbeddingError,
+    TransientEmbeddingError,
     chunk_text,
 )
 from memstem.core.index import Index, body_hash
@@ -46,6 +47,12 @@ class EmbedWorker:
     are abandoned cleanly.
     """
 
+    # Cap on the per-tick transient-error backoff. Without a cap, a long
+    # provider outage would push the sleep into hours; this keeps the
+    # worker checking back at least once a minute so a recovering
+    # provider gets picked up promptly.
+    MAX_TRANSIENT_BACKOFF: float = 60.0
+
     def __init__(
         self,
         *,
@@ -68,6 +75,22 @@ class EmbedWorker:
         self.backoff_base = backoff_base
         self.worker_id = worker_id
         self.embedding_signature = embedding_signature
+        # Consecutive transient-error count, used for exponential backoff
+        # between ticks. Reset to 0 on any successful tick.
+        self._transient_streak = 0
+
+    def _transient_sleep(self) -> float:
+        """Seconds to sleep after a tick that hit a transient error.
+
+        Exponential backoff in ``backoff_base``: idle_sleep,
+        idle_sleep*base, idle_sleep*base^2, …, capped at
+        :attr:`MAX_TRANSIENT_BACKOFF`. Resets to ``idle_sleep`` once the
+        worker sees a successful tick (``_transient_streak == 0``).
+        """
+        if self._transient_streak <= 0:
+            return self.idle_sleep
+        delay = self.idle_sleep * (self.backoff_base ** (self._transient_streak - 1))
+        return min(delay, self.MAX_TRANSIENT_BACKOFF)
 
     async def run(self) -> None:
         """Run forever (until cancelled). Logs progress and errors."""
@@ -83,48 +106,92 @@ class EmbedWorker:
                 await asyncio.sleep(self.idle_sleep)
                 continue
             if processed == 0:
-                await asyncio.sleep(self.idle_sleep)
+                # Either the queue was empty (no streak, plain idle) or
+                # the only attempts failed transiently (streak active,
+                # back off exponentially so a 30-second OpenAI hiccup
+                # doesn't translate to N-workers-times-M-records of
+                # wasted round trips per second).
+                await asyncio.sleep(self._transient_sleep())
 
     async def tick(self) -> int:
         """One pass of the worker loop. Returns records actually embedded.
 
         Public for tests — call ``await worker.tick()`` to drain a batch
         without entering the long-running loop.
+
+        Tracks a per-worker consecutive-transient streak via
+        ``_embed_one``'s return value:
+        - ``True`` (success) → reset the streak; the run loop sleeps
+          its normal ``idle_sleep`` next cycle.
+        - ``False`` after a transient embedder error → bump the
+          streak; the run loop sleeps with exponential backoff.
+        - ``False`` after a permanent error → leave the streak alone
+          (don't punish the queue for a single bad record).
         """
         pending = self.index.queue_pending(limit=self.batch_size)
         if not pending:
             return 0
 
         embedded = 0
+        any_transient = False
         for memory_id in pending:
-            ok = await asyncio.to_thread(self._embed_one, memory_id)
+            ok, transient = await asyncio.to_thread(self._embed_one, memory_id)
             if ok:
                 embedded += 1
+            elif transient:
+                any_transient = True
+
+        if embedded > 0:
+            # Any successful embed clears the backoff. Even if some
+            # records in the same batch hit transients, we know the
+            # provider is at least partially healthy.
+            self._transient_streak = 0
+        elif any_transient:
+            self._transient_streak += 1
         return embedded
 
-    def _embed_one(self, memory_id: str) -> bool:
+    def _embed_one(self, memory_id: str) -> tuple[bool, bool]:
         """Embed one record. Sync — runs under :func:`asyncio.to_thread`
-        so HTTP and SQLite I/O don't block the event loop."""
+        so HTTP and SQLite I/O don't block the event loop.
+
+        Returns ``(ok, transient)``:
+        - ``ok`` is ``True`` iff the record was successfully embedded.
+        - ``transient`` is ``True`` iff the failure was transient
+          (network blip, 5xx) and the caller should back off rather
+          than count this against ``retry_count``.
+        """
         try:
             body, chunks = self._read_for_embed(memory_id)
         except _RecordMissingError:
             # Vault file gone — drop the queue entry; nothing to embed.
             self.index.dequeue_embed(memory_id)
-            return False
+            return False, False
 
         if not chunks:
             # Empty body still counts as a successful "embed" — record
             # the state so the pipeline doesn't keep re-enqueueing it.
             self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
             self.index.dequeue_embed(memory_id)
-            return True
+            return True, False
 
         try:
             vectors = self.embedder.embed_batch(chunks)
+        except TransientEmbeddingError as exc:
+            # Network blip / 5xx / read timeout. The next tick can try
+            # the same record again without burning a retry slot — a
+            # 30-second OpenAI hiccup shouldn't permanently fail every
+            # in-flight record.
+            logger.warning(
+                "embed worker %d: transient failure for %s: %s (will retry, retry_count unchanged)",
+                self.worker_id,
+                memory_id,
+                exc,
+            )
+            return False, True
         except EmbeddingError as exc:
             logger.warning("embed worker %d: failed for %s: %s", self.worker_id, memory_id, exc)
             self.index.mark_embed_error(memory_id, str(exc), max_retries=self.max_retries)
-            return False
+            return False, False
         except Exception as exc:
             logger.warning(
                 "embed worker %d: unexpected error for %s: %s",
@@ -133,7 +200,7 @@ class EmbedWorker:
                 exc,
             )
             self.index.mark_embed_error(memory_id, repr(exc), max_retries=self.max_retries)
-            return False
+            return False, False
 
         try:
             self.index.upsert_vectors(memory_id, chunks, vectors)
@@ -145,11 +212,11 @@ class EmbedWorker:
                 exc,
             )
             self.index.mark_embed_error(memory_id, str(exc), max_retries=self.max_retries)
-            return False
+            return False, False
 
         self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
         self.index.dequeue_embed(memory_id)
-        return True
+        return True, False
 
     def _read_for_embed(self, memory_id: str) -> tuple[str, list[str]]:
         """Read the memory's body from the vault and split it into chunks.

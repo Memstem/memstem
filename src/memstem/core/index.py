@@ -31,6 +31,32 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 11
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
+# SQLite extended error code for `FOREIGN KEY constraint failed` (787 = base
+# SQLITE_CONSTRAINT (19) | (3 << 8)). See https://www.sqlite.org/rescode.html
+_SQLITE_CONSTRAINT_FOREIGNKEY = 787
+
+
+def _is_foreign_key_violation(exc: sqlite3.Error) -> bool:
+    """Return True iff `exc` represents a SQLite FK constraint violation.
+
+    Most of the time Python's sqlite3 module surfaces FK violations as
+    :class:`sqlite3.IntegrityError`, which would be caught by a narrow
+    ``except sqlite3.IntegrityError:`` clause. But in some
+    version/transaction-state combinations (observed on Python 3.12 +
+    SQLite 3.45 in Ari's deployment) the same violation is raised as the
+    parent :class:`sqlite3.DatabaseError` instead. Handlers that need to
+    swallow the FK case specifically should match by extended error code
+    when available, falling back to a message check for the few cases
+    where ``sqlite_errorcode`` isn't populated. Other ``DatabaseError``
+    causes (corruption, schema mismatch, etc.) should still propagate.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code == _SQLITE_CONSTRAINT_FOREIGNKEY:
+        return True
+    # Fallback for older bindings / wrapped exceptions where the extended
+    # code didn't make it through. SQLite's own message is stable.
+    return "FOREIGN KEY constraint failed" in str(exc)
+
 
 def body_hash(body: str) -> str:
     """Stable hash of a body string used to detect content changes.
@@ -711,6 +737,16 @@ class Index:
         worker may have written for this id — vec0 doesn't enforce FK
         and would otherwise leak orphans until the next reconcile
         pass that touches the same path.
+
+        Implementation note: we catch :class:`sqlite3.DatabaseError`
+        (the parent class) and filter via
+        :func:`_is_foreign_key_violation`. SQLite reports the FK
+        violation as :class:`sqlite3.IntegrityError` in most cases, but
+        the same violation has been observed surfacing as the parent
+        ``DatabaseError`` on some Python 3.12 + sqlite 3.45
+        builds — narrow ``except IntegrityError`` would let the worker
+        crash there. Anything else (corruption, schema mismatch, etc.)
+        re-raises.
         """
         now = datetime.now(tz=UTC).isoformat()
         with self._lock, self.db:
@@ -726,7 +762,9 @@ class Index:
                     """,
                     (memory_id, content_hash, embed_signature, now),
                 )
-            except sqlite3.IntegrityError:
+            except sqlite3.DatabaseError as exc:
+                if not _is_foreign_key_violation(exc):
+                    raise
                 self.db.execute(
                     "DELETE FROM memories_vec WHERE memory_id = ?",
                     (memory_id,),

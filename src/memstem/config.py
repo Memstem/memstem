@@ -93,6 +93,29 @@ class EmbeddingConfig(BaseModel):
         return cls(provider=provider_lc, **profile)  # type: ignore[arg-type]
 
 
+DEFAULT_TYPE_BIAS: dict[str, float] = {
+    "distillation": 1.10,
+    "memory": 1.05,
+    "skill": 1.05,
+    "project": 1.05,
+    "decision": 1.05,
+    "person": 1.0,
+    "daily": 1.0,
+    "session": 0.85,
+}
+"""Default per-type ranking multiplier applied after RRF + importance.
+
+The intent is to make default search clearly prefer **curated and derived**
+records (distillations, extracted memories, skills, project records) over
+**raw** records (conversational sessions). Values are intentionally bounded
+in ``[0.85, 1.10]`` — small enough that a clearly-better raw match still
+wins on relevance, large enough to break ties in favour of derived content.
+
+Operators tune this via ``search.type_bias`` in ``_meta/config.yaml``;
+unspecified types fall back to ``1.0`` (neutral). Setting every type to
+``1.0`` recovers the pre-bias behaviour exactly."""
+
+
 class SearchConfig(BaseModel):
     """Hybrid search configuration."""
 
@@ -110,6 +133,18 @@ class SearchConfig(BaseModel):
     drop it (``0.05``) to keep raw retrieval relevance dominant. The
     documented bound is ``0.0`` to ``1.0``; values outside cause a noisy
     boost without a clear meaning."""
+
+    type_bias: dict[str, float] = Field(default_factory=lambda: dict(DEFAULT_TYPE_BIAS))
+    """Per-type multiplier applied after the importance boost.
+
+    The full final score is::
+
+        final = rrf * (1 + importance_weight * importance) * type_bias[type]
+
+    Unlisted types default to ``1.0`` (neutral). This is the policy knob
+    that makes "prefer distillations and curated memories over raw
+    sessions" explicit and tunable. To disable it entirely, set every
+    type to ``1.0`` (or supply an empty mapping)."""
 
 
 class HygieneConfig(BaseModel):
