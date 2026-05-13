@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime
@@ -405,6 +406,21 @@ def _apply_shared_tag(record: MemoryRecord) -> MemoryRecord:
 
 
 class _EventHandler(FileSystemEventHandler):
+    """Coalesces rapid-fire file events via per-path debounce timers.
+
+    Active sessions and growing daily logs often save 20-50 times before
+    quiescing; without debouncing, each save triggers a full re-read,
+    re-chunk, and re-embed of the whole file. The debounce window collapses
+    those bursts into one enqueue per file once writes settle.
+
+    Override the default 30-second window via the
+    ``MEMSTEM_WATCH_DEBOUNCE_SECONDS`` environment variable, read at
+    instance construction. Setting it to 0 restores the previous
+    fire-on-every-event behaviour (useful in tests).
+    """
+
+    DEFAULT_DEBOUNCE_SECONDS = 30.0
+
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
@@ -413,6 +429,13 @@ class _EventHandler(FileSystemEventHandler):
         super().__init__()
         self._loop = loop
         self._queue = queue
+        self._pending: dict[Path, asyncio.TimerHandle] = {}
+        self._debounce_seconds = float(
+            os.environ.get(
+                "MEMSTEM_WATCH_DEBOUNCE_SECONDS",
+                str(self.DEFAULT_DEBOUNCE_SECONDS),
+            )
+        )
 
     def _enqueue(self, src: str) -> None:
         path = Path(src)
@@ -420,7 +443,20 @@ class _EventHandler(FileSystemEventHandler):
         # session trajectories (filtered further by _classify_*_path).
         if path.suffix != ".md" and not path.name.endswith(TRAJECTORY_SUFFIX):
             return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, path)
+        if self._debounce_seconds <= 0:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, path)
+            return
+        self._loop.call_soon_threadsafe(self._schedule, path)
+
+    def _schedule(self, path: Path) -> None:
+        prior = self._pending.get(path)
+        if prior is not None:
+            prior.cancel()
+        self._pending[path] = self._loop.call_later(self._debounce_seconds, self._fire, path)
+
+    def _fire(self, path: Path) -> None:
+        self._pending.pop(path, None)
+        self._queue.put_nowait(path)
 
     def on_created(self, event: FileSystemEvent) -> None:
         if not event.is_directory:

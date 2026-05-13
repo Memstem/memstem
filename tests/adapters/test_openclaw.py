@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.openclaw import (
     OpenClawAdapter,
@@ -149,7 +151,9 @@ class TestReconcile:
 
 
 class TestWatch:
-    async def test_picks_up_new_file(self, tmp_path: Path) -> None:
+    async def test_picks_up_new_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Disable the debounce window so the test doesn't have to wait for it.
+        monkeypatch.setenv("MEMSTEM_WATCH_DEBOUNCE_SECONDS", "0")
         adapter = OpenClawAdapter()
         watcher = adapter.watch([tmp_path])
 
@@ -777,7 +781,10 @@ class TestWorkspaceTrajectoryReconcile:
 
 
 class TestWorkspaceWatch:
-    async def test_picks_up_memory_md_change(self, tmp_path: Path) -> None:
+    async def test_picks_up_memory_md_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_WATCH_DEBOUNCE_SECONDS", "0")
         ari_root = tmp_path / "ari"
         ari_root.mkdir()
         adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
@@ -796,7 +803,10 @@ class TestWorkspaceWatch:
         assert "agent:ari" in record.tags
         assert "core" in record.tags
 
-    async def test_ignores_unrelated_files_in_workspace(self, tmp_path: Path) -> None:
+    async def test_ignores_unrelated_files_in_workspace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_WATCH_DEBOUNCE_SECONDS", "0")
         ari_root = tmp_path / "ari"
         ari_root.mkdir()
         adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
