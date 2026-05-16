@@ -1,0 +1,10 @@
+# Append to ~/.codex/config.toml to expose Memstem as an MCP server
+# inside Codex. Uses the `memstem mcp` stdio command, which speaks the
+# same protocol as the daemon's network MCP endpoints but spawns
+# per-session over stdio — no port to manage.
+#
+# See clients/codex/README.md for setup instructions.
+
+[mcp_servers.memstem]
+command = "memstem"
+args = ["mcp"]
