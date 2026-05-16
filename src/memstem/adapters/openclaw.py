@@ -112,6 +112,52 @@ def _format_turn(role: str, text: str) -> str:
     return f"**{role.title()}:** {text}"
 
 
+def _text_from_content(content: Any) -> str:
+    """Flatten a message ``content`` (string or block list) to plain text.
+
+    Only ``text`` blocks carry conversational content. ``thinking``,
+    ``tool_use``, ``tool_result`` and encrypted reasoning blocks are
+    operational and excluded.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            t = block.get("text")
+            if isinstance(t, str) and t.strip():
+                parts.append(t.strip())
+    return "\n\n".join(parts).strip()
+
+
+def _turns_from_snapshot(snapshot: list[Any]) -> list[str]:
+    """Reconstruct user/assistant text turns from a ``messagesSnapshot``.
+
+    The OpenClaw WS / control-UI path records conversation state here
+    rather than in ``prompt.submitted.data.prompt`` (which on that path
+    carries only empty heartbeat pulses). Tool results, compaction
+    summaries and synthetic/empty turns are skipped.
+    """
+    turns: list[str] = []
+    for msg in snapshot:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _text_from_content(msg.get("content"))
+        if not text:
+            continue
+        turn = _format_turn(role, text)
+        if turn and (not turns or turns[-1] != turn):
+            turns.append(turn)
+    return turns
+
+
 def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
     """Parse an OpenClaw `*.trajectory.jsonl` into a transcript summary.
 
@@ -120,7 +166,13 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
 
     - ``prompt.submitted``: ``data.prompt`` is the user turn.
     - ``model.completed``: ``data.assistantTexts`` is a list of strings
-      (the assistant's text responses).
+      (the assistant's text responses), and ``data.messagesSnapshot``
+      is the canonical conversation message list.
+
+    The WS / control-UI path does not populate ``prompt.submitted``
+    with real user text (only empty heartbeat pulses), so when a
+    richer ``messagesSnapshot`` is present it is the authoritative
+    source and supersedes the ``prompt.submitted`` reconstruction.
 
     Other events (tool calls, context compilation, session boundary
     markers) are skipped — they're operational metadata that adds
@@ -135,6 +187,7 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
         return None
 
     turns: list[str] = []
+    best_snapshot: list[Any] | None = None
     title: str | None = None
     session_id: str | None = None
     first_timestamp: str | None = None
@@ -190,6 +243,19 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
                 turn = _format_turn("assistant", joined)
                 if turn:
                     turns.append(turn)
+            snapshot = data.get("messagesSnapshot") if isinstance(data, dict) else None
+            if isinstance(snapshot, list) and (
+                best_snapshot is None or len(snapshot) > len(best_snapshot)
+            ):
+                best_snapshot = snapshot
+
+    # messagesSnapshot is the canonical conversation. On the WS / control-UI
+    # path prompt.submitted carries only empty heartbeats, so the snapshot
+    # recovers the real turns the prompt.submitted pass missed.
+    if best_snapshot is not None:
+        snapshot_turns = _turns_from_snapshot(best_snapshot)
+        if len(snapshot_turns) > len(turns):
+            turns = snapshot_turns
 
     if not session_id:
         # Trajectory filenames are `<id>.trajectory.jsonl`; strip both suffixes.
