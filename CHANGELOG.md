@@ -30,6 +30,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wiring Codex itself to retrieve from Memstem via the existing
   `memstem mcp` stdio server.
 
+### Fixed
+
+- **Daemon crash under unstable embedder providers**
+  (`sqlite3.InterfaceError: bad parameter or other API misuse`). The
+  embed worker took `Index._lock` for its reads, but several other
+  call sites (`Pipeline._lookup_id_or_none`, `Pipeline._existing_path`,
+  `Search._materialize`, the HTTP server's path lookup) ran
+  `index.db.execute(...)` directly without taking the lock. With both
+  the worker thread (`asyncio.to_thread`) and the asyncio thread
+  hitting the shared `sqlite3.Connection`, native SQLite returned
+  `SQLITE_MISUSE`. The race was effectively invisible under healthy
+  network conditions (the worker spent >95% of its cycle inside
+  embedder I/O), but every cluster of OpenAI 503s/timeouts shifted
+  the worker into a tight SQL-bound spin and the collision rate
+  spiked. Pipeline lookups now go through new public
+  `Index.lookup_record_mapping` / existing `Index.get_path`, both
+  lock-holding; HTTP server and `Search._materialize` use the same
+  path. Defense in depth: `Index.get_path` coerces its argument to
+  `str`.
+- **`Index.query_vec` crash with multi-chunk memories under type
+  filter** (`sqlite3.ProgrammingError: Incorrect number of bindings
+  supplied`). The placeholder list was built from a deduplicating set
+  comprehension over `memory_id`s, but the parameter list was the
+  raw (non-deduped) list — when over-fetch returned duplicate
+  memory_ids the two diverged. Visible in logs as
+  `vec query failed; falling back to BM25: ... uses N ... M
+  supplied`. Both lists now derive from one deduped sequence.
+- **Embed worker no longer crashes on malformed vault frontmatter**.
+  `EmbedWorker._read_for_embed` only caught `MemoryNotFoundError`;
+  a file with empty or broken frontmatter raised
+  `InvalidFrontmatterError` up to `run()` and was logged as an
+  "embed worker crashed" stack on every tick until the file was
+  fixed. The worker now treats this as a permanent failure for that
+  record — marks it `failed=1` with a clear `last_error` so it
+  surfaces in `memstem doctor` instead of hot-looping the same bad
+  file.
+
 ## [0.10.0] — 2026-05-07
 
 The "embed worker resilience" release. Two production bugs spotted on

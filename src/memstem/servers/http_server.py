@@ -210,10 +210,16 @@ def build_app(
             return _serialize_memory(memory)
         except MemoryNotFoundError:
             pass
-        row = index.db.execute("SELECT path FROM memories WHERE id = ?", (id_or_path,)).fetchone()
-        if row is None:
+        # Route through `Index.get_path` so the read holds
+        # `Index._lock`. The daemon-embedded HTTP server shares its
+        # sqlite connection with the embed worker; a bare
+        # `index.db.execute(...)` here races the worker thread and
+        # surfaces as `InterfaceError: bad parameter or other API
+        # misuse`.
+        path = index.get_path(id_or_path)
+        if path is None:
             raise HTTPException(status_code=404, detail=f"no memory for {id_or_path!r}")
-        memory = vault.read(row["path"])
+        memory = vault.read(path)
         if log_client is not None:
             log_get(
                 index.db,

@@ -499,20 +499,22 @@ class Search:
         for hit in hits:
             if len(pool) >= pool_target:
                 break
-            row = self.index.db.execute(
-                "SELECT path FROM memories WHERE id = ?",
-                (hit.memory_id,),
-            ).fetchone()
-            if row is None:
+            # Route through `Index.get_path` so the read holds
+            # `Index._lock`. Bare `index.db.execute(...)` here used
+            # to race the embed worker's locked calls in the daemon
+            # process and trip `InterfaceError: bad parameter or other
+            # API misuse` on the worker thread.
+            path = self.index.get_path(hit.memory_id)
+            if path is None:
                 logger.warning("hit %s missing from memories table", hit.memory_id)
                 continue
             try:
-                memory = self.vault.read(row["path"])
+                memory = self.vault.read(path)
             except MemoryNotFoundError:
                 logger.warning(
                     "hit %s references missing vault file %s",
                     hit.memory_id,
-                    row["path"],
+                    path,
                 )
                 continue
             if not include_expired and self._is_expired(memory, now):
