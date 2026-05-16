@@ -8,6 +8,8 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
+from _pytest.monkeypatch import MonkeyPatch
+
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.codex import (
     CodexAdapter,
@@ -392,7 +394,10 @@ class TestReconcile:
 
 
 class TestWatch:
-    async def test_emits_record_on_new_session(self, tmp_path: Path) -> None:
+    async def test_emits_record_on_new_session(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_CODEX_WATCH_DEBOUNCE_SECONDS", "0")
         sessions = tmp_path / "sessions" / "2026" / "05" / "16"
         sessions.mkdir(parents=True)
         adapter = CodexAdapter(sessions_root=tmp_path / "sessions")
@@ -411,7 +416,10 @@ class TestWatch:
         assert record.metadata["type"] == "session"
         assert "rollout-new.jsonl" in record.ref
 
-    async def test_emits_record_on_new_skill(self, tmp_path: Path) -> None:
+    async def test_emits_record_on_new_skill(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_CODEX_WATCH_DEBOUNCE_SECONDS", "0")
         skills = tmp_path / "skills"
         skills.mkdir()
         adapter = CodexAdapter(skills_root=skills)
@@ -433,7 +441,10 @@ class TestWatch:
         assert record.metadata["type"] == "skill"
         assert record.title == "freshly-added"
 
-    async def test_watch_ignores_system_skills(self, tmp_path: Path) -> None:
+    async def test_watch_ignores_system_skills(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_CODEX_WATCH_DEBOUNCE_SECONDS", "0")
         skills = tmp_path / "skills"
         (skills / ".system").mkdir(parents=True)
         adapter = CodexAdapter(skills_root=skills)
