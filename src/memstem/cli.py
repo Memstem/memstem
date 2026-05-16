@@ -60,6 +60,7 @@ from memstem.integration import (
     claude_md_targets_for_openclaw,
     mcp_env_from_embedding,
     openclaw_config_for_workspace,
+    register_codex_mcp_server,
     register_mcp_server,
     register_openclaw_mcp_server,
     remove_flipclaw_hook,
@@ -82,6 +83,8 @@ DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude.json"
 DEFAULT_LEGACY_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 DEFAULT_CLAUDE_USER_MD = Path.home() / ".claude" / "CLAUDE.md"
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
+DEFAULT_CODEX_CONFIG_TOML = DEFAULT_CODEX_HOME / "config.toml"
+DEFAULT_CODEX_AGENTS_MD = DEFAULT_CODEX_HOME / "AGENTS.md"
 
 
 app = typer.Typer(
@@ -1079,6 +1082,27 @@ def connect_clients(
             ),
         ),
     ] = None,
+    codex: Annotated[
+        bool,
+        typer.Option(
+            "--codex/--no-codex",
+            help="Register Memstem in ~/.codex/config.toml and patch ~/.codex/AGENTS.md",
+        ),
+    ] = True,
+    codex_config_path: Annotated[
+        str | None,
+        typer.Option(
+            "--codex-config",
+            help="Override the Codex config.toml path (default: ~/.codex/config.toml)",
+        ),
+    ] = None,
+    codex_agents_md_path: Annotated[
+        str | None,
+        typer.Option(
+            "--codex-agents-md",
+            help="Override the Codex AGENTS.md path (default: ~/.codex/AGENTS.md)",
+        ),
+    ] = None,
     remove_flipclaw: Annotated[
         bool,
         typer.Option(
@@ -1121,18 +1145,21 @@ def connect_clients(
         typer.Option(help="Vault path override (used to read OpenClaw workspaces)"),
     ] = None,
 ) -> None:
-    """Wire Memstem into Claude Code and OpenClaw client config files.
+    """Wire Memstem into Claude Code, OpenClaw, and Codex client config files.
 
     Adds the MCP server registration to ~/.claude.json (the location
     current Claude Code releases read for MCP discovery), removes any
     stale entry from the legacy ~/.claude/settings.json, registers
-    `mcp.servers.memstem` in each OpenClaw agent's openclaw.json so
-    Memstem MCP tools are available to the agent at runtime, ensures
-    the Memstem directive block is present in each CLAUDE.md, and
-    (with --remove-flipclaw) disables the legacy FlipClaw bridge hook.
+    `mcp.servers.memstem` in each OpenClaw agent's openclaw.json,
+    registers `[mcp_servers.memstem]` in ~/.codex/config.toml so
+    Codex CLI sees Memstem MCP, ensures the Memstem directive block
+    is present in each CLAUDE.md (and ~/.codex/AGENTS.md), and (with
+    --remove-flipclaw) disables the legacy FlipClaw bridge hook.
 
     Each edit writes a `.bak` next to the file before changing it.
-    Re-running is safe: every step is idempotent.
+    Re-running is safe: every step is idempotent. The Codex step is
+    skipped (not erroring) when ~/.codex/ doesn't exist, so the
+    command stays safe on hosts where Codex CLI isn't installed.
     """
     cfg = _load_config(_resolve_vault_path(vault))
     settings_target = Path(settings_path).expanduser() if settings_path else DEFAULT_CLAUDE_SETTINGS
@@ -1142,6 +1169,12 @@ def connect_clients(
         else DEFAULT_LEGACY_CLAUDE_SETTINGS
     )
     user_md = Path(claude_md_path).expanduser() if claude_md_path else DEFAULT_CLAUDE_USER_MD
+    codex_config_target = (
+        Path(codex_config_path).expanduser() if codex_config_path else DEFAULT_CODEX_CONFIG_TOML
+    )
+    codex_agents_md_target = (
+        Path(codex_agents_md_path).expanduser() if codex_agents_md_path else DEFAULT_CODEX_AGENTS_MD
+    )
 
     typer.echo(f"connect-clients ({'dry-run' if dry_run else 'apply'}):\n")
 
@@ -1197,6 +1230,23 @@ def connect_clients(
         typer.echo("\nNo OpenClaw CLAUDE.md targets resolved from --openclaw arguments.")
     elif cfg.adapters.openclaw.agent_workspaces:
         typer.echo("\nNo CLAUDE.md found in any configured OpenClaw workspace.")
+
+    if codex:
+        codex_home = codex_config_target.parent
+        if not codex_home.exists():
+            typer.echo(f"\nCodex: {codex_home} not found, skipping (pass --no-codex to silence).")
+        else:
+            typer.echo(f"\nCodex config: {codex_config_target}")
+            change = register_codex_mcp_server(codex_config_target, env=mcp_env, dry_run=dry_run)
+            _print_change(change, dry_run)
+
+            typer.echo(f"\nCodex instructions: {codex_agents_md_target}")
+            change = apply_directive(
+                codex_agents_md_target, dry_run=dry_run, create_if_missing=True
+            )
+            _print_change(change, dry_run)
+    else:
+        typer.echo("\nSkipping Codex (--no-codex).")
 
     if remove_flipclaw:
         typer.echo(f"\nRemoving FlipClaw SessionEnd hook from {settings_target}:")

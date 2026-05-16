@@ -18,6 +18,7 @@ from memstem.integration import (
     claude_md_targets_for_openclaw,
     mcp_env_from_embedding,
     openclaw_config_for_workspace,
+    register_codex_mcp_server,
     register_mcp_server,
     register_openclaw_mcp_server,
     remove_flipclaw_hook,
@@ -664,3 +665,171 @@ class TestRegisterOpenclawMcpServerWithEnv:
         before = dict(DEFAULT_OPENCLAW_MCP_SERVER_ENTRY)
         register_openclaw_mcp_server(cfg, env={"X": "y"})
         assert DEFAULT_OPENCLAW_MCP_SERVER_ENTRY == before
+
+
+class TestRegisterCodexMcpServer:
+    def test_creates_file_when_missing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "codex" / "config.toml"
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "created"
+        assert cfg.is_file()
+        text = cfg.read_text()
+        assert "[mcp_servers.memstem]" in text
+        assert 'command = "memstem"' in text
+        assert 'args = ["mcp"]' in text
+        # No env block when env is empty/None.
+        assert "[mcp_servers.memstem.env]" not in text
+
+    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "nested" / "codex" / "config.toml"
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "created"
+        assert cfg.parent.is_dir()
+
+    def test_appends_to_existing_config(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            'personality = "pragmatic"\n\n[projects."/home/x"]\ntrust_level = "trusted"\n',
+            encoding="utf-8",
+        )
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "updated"
+        text = cfg.read_text()
+        # Existing keys preserved verbatim.
+        assert 'personality = "pragmatic"' in text
+        assert '[projects."/home/x"]' in text
+        # Memstem block appended.
+        assert "[mcp_servers.memstem]" in text
+
+    def test_preserves_other_mcp_servers(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[mcp_servers.context7]\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]\n',
+            encoding="utf-8",
+        )
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "updated"
+        text = cfg.read_text()
+        # Other server intact.
+        assert "[mcp_servers.context7]" in text
+        assert 'args = ["-y", "@upstash/context7-mcp"]' in text
+        # Memstem added.
+        assert "[mcp_servers.memstem]" in text
+
+    def test_noop_when_already_registered(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        register_codex_mcp_server(cfg)
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "noop"
+
+    def test_updates_when_block_differs(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[mcp_servers.memstem]\ncommand = "old-binary"\nargs = ["mcp"]\n',
+            encoding="utf-8",
+        )
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "updated"
+        text = cfg.read_text()
+        # Stale binary replaced.
+        assert 'command = "old-binary"' not in text
+        assert 'command = "memstem"' in text
+        # Only one memstem block remains.
+        assert text.count("[mcp_servers.memstem]") == 1
+
+    def test_env_block_written_when_env_provided(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        change = register_codex_mcp_server(
+            cfg, env={"OPENAI_API_KEY": "sk-test", "GEMINI_API_KEY": "gem-test"}
+        )
+        assert change.action == "created"
+        text = cfg.read_text()
+        assert "[mcp_servers.memstem.env]" in text
+        assert 'OPENAI_API_KEY = "sk-test"' in text
+        assert 'GEMINI_API_KEY = "gem-test"' in text
+        # Deterministic key order so noop detection works across runs.
+        oai_idx = text.index("OPENAI_API_KEY")
+        gem_idx = text.index("GEMINI_API_KEY")
+        assert gem_idx < oai_idx  # alphabetical
+
+    def test_env_block_round_trip_is_noop(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        env = {"OPENAI_API_KEY": "sk-test"}
+        register_codex_mcp_server(cfg, env=env)
+        change = register_codex_mcp_server(cfg, env=env)
+        assert change.action == "noop"
+
+    def test_env_block_replaced_when_key_changes(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        register_codex_mcp_server(cfg, env={"OPENAI_API_KEY": "sk-old"})
+        change = register_codex_mcp_server(cfg, env={"OPENAI_API_KEY": "sk-new"})
+        assert change.action == "updated"
+        text = cfg.read_text()
+        assert "sk-old" not in text
+        assert 'OPENAI_API_KEY = "sk-new"' in text
+        # Both [mcp_servers.memstem] and [mcp_servers.memstem.env] appear once.
+        assert text.count("[mcp_servers.memstem]") == 1
+        assert text.count("[mcp_servers.memstem.env]") == 1
+
+    def test_env_block_removed_when_env_cleared(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        register_codex_mcp_server(cfg, env={"OPENAI_API_KEY": "sk-old"})
+        change = register_codex_mcp_server(cfg, env=None)
+        assert change.action == "updated"
+        text = cfg.read_text()
+        assert "[mcp_servers.memstem.env]" not in text
+        assert "sk-old" not in text
+
+    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('personality = "pragmatic"\n', encoding="utf-8")
+        before = cfg.read_text()
+        change = register_codex_mcp_server(cfg, dry_run=True)
+        assert change.action == "updated"
+        assert change.diff  # populated in dry-run
+        assert cfg.read_text() == before  # file untouched
+
+    def test_dry_run_create_does_not_write(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        change = register_codex_mcp_server(cfg, dry_run=True)
+        assert change.action == "created"
+        assert not cfg.exists()
+
+    def test_writes_backup_on_update(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('personality = "pragmatic"\n', encoding="utf-8")
+        change = register_codex_mcp_server(cfg)
+        assert change.backup_path is not None
+        assert change.backup_path.is_file()
+        assert change.backup_path.read_text() == 'personality = "pragmatic"\n'
+
+    def test_no_backup_on_create(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "created"
+        assert change.backup_path is None
+
+    def test_handles_existing_config_with_no_trailing_newline(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('personality = "pragmatic"', encoding="utf-8")  # no \n
+        change = register_codex_mcp_server(cfg)
+        assert change.action == "updated"
+        text = cfg.read_text()
+        # Memstem block is on its own paragraph, not jammed onto the personality line.
+        assert 'personality = "pragmatic"\n' in text
+        assert "\n[mcp_servers.memstem]" in text
+
+    def test_repeated_round_trips_dont_drift(self, tmp_path: Path) -> None:
+        """Running register N times in a row should not accumulate whitespace
+        or duplicate blocks."""
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[mcp_servers.context7]\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]\n',
+            encoding="utf-8",
+        )
+        register_codex_mcp_server(cfg)
+        snapshot = cfg.read_text()
+        for _ in range(5):
+            change = register_codex_mcp_server(cfg)
+            assert change.action == "noop"
+            assert cfg.read_text() == snapshot
