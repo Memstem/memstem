@@ -289,11 +289,40 @@ class ClaudeCodeAdapterConfig(BaseModel):
     """Additional CLAUDE.md or instructions files to ingest as memories."""
 
 
+class CodexAdapterConfig(BaseModel):
+    """Configuration for the Codex (OpenAI) adapter.
+
+    See ADR 0022. Each root is optional; a missing root is silently
+    skipped, so this adapter is safe to enable by default on hosts
+    without Codex installed.
+    """
+
+    codex_home: Path | None = None
+    """Root of the Codex install (defaults to ``~/.codex``).
+    The three roots below default to ``<codex_home>/{sessions,skills,memories}``
+    when unset, mirroring the standard Codex layout."""
+
+    sessions_root: Path | None = None
+    """Override for the JSONL sessions directory."""
+
+    skills_root: Path | None = None
+    """Override for the user-skills directory.
+    ``<skills_root>/.system/`` is always skipped (vendor-shipped skills)."""
+
+    memories_root: Path | None = None
+    """Override for the user-memories directory."""
+
+    ingest_sessions: bool = True
+    ingest_skills: bool = True
+    ingest_memories: bool = True
+
+
 class AdaptersConfig(BaseModel):
     """Per-adapter configuration block."""
 
     openclaw: OpenClawAdapterConfig = Field(default_factory=OpenClawAdapterConfig)
     claude_code: ClaudeCodeAdapterConfig = Field(default_factory=ClaudeCodeAdapterConfig)
+    codex: CodexAdapterConfig = Field(default_factory=CodexAdapterConfig)
 
 
 class Config(BaseModel):

@@ -62,6 +62,17 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
    - CHANGELOG entries rolled from `[Unreleased]` to `[0.1.0] - 2026-04-XX` (placeholder date — Brad fills in at tag time).
    - **Do NOT tag, do NOT push tags, do NOT publish to PyPI.** Those are Brad's calls after he validates cutover.
 
+7. [ ] **Codex adapter — `feat/codex-adapter` (added 2026-05-16)**
+   - New `src/memstem/adapters/codex.py` watching `~/.codex/sessions/`, `~/.codex/skills/`, `~/.codex/memories/`. One adapter, three record types (`session`, `skill`, `memory`).
+   - Skips `~/.codex/skills/.system/` (vendor skills) by design — see ADR 0022.
+   - Drops `developer`-role messages and `<environment_context>` user-stub messages from session JSONL parse (multi-KB boilerplate per session).
+   - Project tag derived from `session_meta.payload.cwd` (slugified) so Codex and Claude Code sessions for the same project group in search.
+   - `CodexAdapterConfig` block in `src/memstem/config.py`; `_build_codex_adapter` + daemon reconcile/watch wiring in `cli.py`.
+   - `tests/adapters/test_codex.py` covers parse, slug, reconcile, watch, `.system` exclusion.
+   - `clients/codex/` templates for manual setup (`AGENTS.md.example`, `config.toml.fragment`, `README.md`).
+   - ADR `docs/decisions/0022-codex-adapter.md` documents design + filter rules + rejected alternatives.
+   - **Follow-up:** `memstem connect-clients codex` to automate the `config.toml` + `AGENTS.md` wiring. Deferred to a separate PR.
+
 ### Brad-required (do NOT start)
 
 5. [ ] **Step 9 — cutover on the live box**: dry-run, audit a sample, `memstem migrate --apply`, `memstem connect-clients` (when PR #19 lands), `pm2 start memstem daemon`, soak. He explicitly gated this.

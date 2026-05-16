@@ -16,6 +16,7 @@ import yaml
 import memstem
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
+from memstem.adapters.codex import CodexAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
 from memstem.client import (
     DaemonClient,
@@ -80,6 +81,7 @@ DEFAULT_CLAUDE_CODE_PATHS = (Path.home() / ".claude" / "projects",)
 DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude.json"
 DEFAULT_LEGACY_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 DEFAULT_CLAUDE_USER_MD = Path.home() / ".claude" / "CLAUDE.md"
+DEFAULT_CODEX_HOME = Path.home() / ".codex"
 
 
 app = typer.Typer(
@@ -872,6 +874,45 @@ def _build_claude_adapter(cfg: Config) -> tuple[ClaudeCodeAdapter, list[Path]]:
     return ClaudeCodeAdapter(extra_files=extras), paths
 
 
+def _build_codex_adapter(cfg: Config) -> CodexAdapter:
+    """Build the Codex adapter from config (see ADR 0022).
+
+    Each ingestion path can be individually disabled via config. Missing
+    paths on disk are no-ops, so this adapter is safe to leave enabled
+    on hosts without Codex installed.
+    """
+    codex_cfg = cfg.adapters.codex
+    home = Path(codex_cfg.codex_home).expanduser() if codex_cfg.codex_home else DEFAULT_CODEX_HOME
+
+    sessions_root: Path | None = None
+    if codex_cfg.ingest_sessions:
+        sessions_root = (
+            Path(codex_cfg.sessions_root).expanduser()
+            if codex_cfg.sessions_root
+            else home / "sessions"
+        )
+
+    skills_root: Path | None = None
+    if codex_cfg.ingest_skills:
+        skills_root = (
+            Path(codex_cfg.skills_root).expanduser() if codex_cfg.skills_root else home / "skills"
+        )
+
+    memories_root: Path | None = None
+    if codex_cfg.ingest_memories:
+        memories_root = (
+            Path(codex_cfg.memories_root).expanduser()
+            if codex_cfg.memories_root
+            else home / "memories"
+        )
+
+    return CodexAdapter(
+        sessions_root=sessions_root,
+        skills_root=skills_root,
+        memories_root=memories_root,
+    )
+
+
 async def _run_daemon(
     vault_obj: Vault,
     index: Index,
@@ -882,6 +923,7 @@ async def _run_daemon(
     openclaw_paths: list[Path],
     claude_adapter: ClaudeCodeAdapter,
     claude_paths: list[Path],
+    codex_adapter: CodexAdapter | None = None,
     embedding_signature: str = "",
     http_config: Any = None,
     search_config: Any = None,
@@ -920,11 +962,19 @@ async def _run_daemon(
         claude_adapter.reconcile(claude_paths),
         label="claude-code",
     )
+    if codex_adapter is not None:
+        await _reconcile_into_pipeline(
+            pipeline,
+            codex_adapter.reconcile([]),
+            label="codex",
+        )
 
     tasks: list[asyncio.Task[Any]] = [
         asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
         asyncio.create_task(_drain_into_pipeline(pipeline, claude_adapter.watch(claude_paths))),
     ]
+    if codex_adapter is not None:
+        tasks.append(asyncio.create_task(_drain_into_pipeline(pipeline, codex_adapter.watch([]))))
     if embedder is not None:
         tasks.append(
             asyncio.create_task(
@@ -1168,6 +1218,7 @@ def daemon(
 
     openclaw_adapter, openclaw_paths = _build_openclaw_adapter(cfg)
     claude_adapter, claude_paths = _build_claude_adapter(cfg)
+    codex_adapter = _build_codex_adapter(cfg)
 
     typer.echo(f"daemon: vault={cfg.vault_path}")
     if openclaw_adapter.workspaces:
@@ -1184,6 +1235,17 @@ def daemon(
     typer.echo(f"  claude-code roots: {', '.join(str(p) for p in claude_paths)}")
     if claude_adapter.extra_files:
         typer.echo(f"  claude-code extras: {', '.join(str(p) for p in claude_adapter.extra_files)}")
+    codex_roots = [
+        f"{label}={p}"
+        for label, p in (
+            ("sessions", codex_adapter.sessions_root),
+            ("skills", codex_adapter.skills_root),
+            ("memories", codex_adapter.memories_root),
+        )
+        if p is not None
+    ]
+    if codex_roots:
+        typer.echo(f"  codex roots: {', '.join(codex_roots)}")
     if embedder is not None:
         typer.echo(
             f"  embedder: {cfg.embedding.provider} / {cfg.embedding.model} "
@@ -1207,6 +1269,7 @@ def daemon(
                 openclaw_paths=openclaw_paths,
                 claude_adapter=claude_adapter,
                 claude_paths=claude_paths,
+                codex_adapter=codex_adapter,
                 embedding_signature=_embedding_signature(cfg),
                 http_config=cfg.http,
                 search_config=cfg.search,

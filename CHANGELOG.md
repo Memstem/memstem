@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Codex adapter** (`src/memstem/adapters/codex.py`). Watches
+  `~/.codex/sessions/`, `~/.codex/skills/`, and `~/.codex/memories/`
+  under a configurable `codex_home` and emits `type: session`,
+  `type: skill`, and `type: memory` records. Sessions are parsed
+  from Codex's JSONL rollouts; the `developer`-role permissions
+  block and `<environment_context>` user-stub messages are dropped
+  at parse time so the index doesn't fill with boilerplate. Function
+  calls and outputs are summarized (`[function_call: <name>]`,
+  `[function_call_output]`) rather than ingested verbatim. Project
+  tag is derived from the session's `cwd` so Codex sessions group
+  with Claude Code sessions for the same project. The vendor-shipped
+  `~/.codex/skills/.system/` directory is hard-excluded. New
+  `CodexAdapterConfig` block under `adapters.codex` in
+  `_meta/config.yaml`; the adapter is enabled by default but no-ops
+  silently on hosts without Codex installed. See ADR 0022 for the
+  full design rationale.
+- **Codex client templates** under `clients/codex/`
+  (`AGENTS.md.example`, `config.toml.fragment`, `README.md`) for
+  wiring Codex itself to retrieve from Memstem via the existing
+  `memstem mcp` stdio server.
+
 ## [0.10.0] — 2026-05-07
 
 The "embed worker resilience" release. Two production bugs spotted on
