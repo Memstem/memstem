@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime
@@ -231,6 +232,10 @@ def _iter_jsonl_files(root: Path) -> Iterator[Path]:
 
 
 class _EventHandler(FileSystemEventHandler):
+    """Coalesces rapid-fire file events via per-path debounce timers."""
+
+    DEFAULT_DEBOUNCE_SECONDS = 30.0
+
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
@@ -241,12 +246,32 @@ class _EventHandler(FileSystemEventHandler):
         self._loop = loop
         self._queue = queue
         self._suffixes = suffixes
+        self._pending: dict[Path, asyncio.TimerHandle] = {}
+        self._debounce_seconds = float(
+            os.environ.get(
+                "MEMSTEM_CLAUDE_CODE_WATCH_DEBOUNCE_SECONDS",
+                str(self.DEFAULT_DEBOUNCE_SECONDS),
+            )
+        )
 
     def _enqueue(self, src: str) -> None:
         path = Path(src)
         if path.suffix not in self._suffixes:
             return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, path)
+        if self._debounce_seconds <= 0:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, path)
+            return
+        self._loop.call_soon_threadsafe(self._schedule, path)
+
+    def _schedule(self, path: Path) -> None:
+        prior = self._pending.get(path)
+        if prior is not None:
+            prior.cancel()
+        self._pending[path] = self._loop.call_later(self._debounce_seconds, self._fire, path)
+
+    def _fire(self, path: Path) -> None:
+        self._pending.pop(path, None)
+        self._queue.put_nowait(path)
 
     def on_created(self, event: FileSystemEvent) -> None:
         if not event.is_directory:

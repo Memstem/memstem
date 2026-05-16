@@ -8,6 +8,8 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
+from _pytest.monkeypatch import MonkeyPatch
+
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import (
     ClaudeCodeAdapter,
@@ -235,7 +237,8 @@ class TestReconcile:
 
 
 class TestWatch:
-    async def test_picks_up_new_session(self, tmp_path: Path) -> None:
+    async def test_picks_up_new_session(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("MEMSTEM_CLAUDE_CODE_WATCH_DEBOUNCE_SECONDS", "0")
         adapter = ClaudeCodeAdapter()
         watcher = adapter.watch([tmp_path])
 
@@ -292,7 +295,10 @@ class TestExtraFiles:
         assert len(records) == 1
         assert records[0].title == "CLAUDE"
 
-    async def test_watch_picks_up_extra_change(self, tmp_path: Path) -> None:
+    async def test_watch_picks_up_extra_change(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_CLAUDE_CODE_WATCH_DEBOUNCE_SECONDS", "0")
         extras_dir = tmp_path / ".claude"
         extras_dir.mkdir()
         extra = extras_dir / "CLAUDE.md"
