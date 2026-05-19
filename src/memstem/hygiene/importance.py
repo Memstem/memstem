@@ -183,15 +183,23 @@ def compute_importance_updates(
     """
     moment = now or datetime.now(tz=UTC)
     cursor = _read_cursor(index.db)
-    rows = index.db.execute(
-        """
-        SELECT id, ts, kind, memory_id, rank
-        FROM query_log
-        WHERE id > ?
-        ORDER BY id ASC
-        """,
-        (cursor,),
-    ).fetchall()
+    # Take index._lock for the query_log read — when this function is
+    # called from the in-daemon hygiene loop (ADR 0023), it runs in a
+    # worker thread sharing the connection with the embed workers, the
+    # watchers, and HTTP handlers. Without external serialization,
+    # sqlite3 raises ``InterfaceError: bad parameter or other API
+    # misuse`` on the prepared-statement cache (same root cause PR #103
+    # fixed for pipeline/search/http).
+    with index._lock:
+        rows = index.db.execute(
+            """
+            SELECT id, ts, kind, memory_id, rank
+            FROM query_log
+            WHERE id > ?
+            ORDER BY id ASC
+            """,
+            (cursor,),
+        ).fetchall()
     if not rows:
         return ImportancePlan(updates=[], last_seen_id=cursor)
 
@@ -217,17 +225,17 @@ def compute_importance_updates(
 
     updates: list[ImportanceUpdate] = []
     for memory_id, raw_bump in per_memory_weight.items():
-        path_row = index.db.execute(
-            "SELECT path FROM memories WHERE id = ?", (memory_id,)
-        ).fetchone()
-        if path_row is None:
+        # Use Index.get_path (takes the lock internally) rather than a
+        # raw db.execute — see comment above on ADR 0023 thread safety.
+        path = index.get_path(memory_id)
+        if path is None:
             # Memory was deleted between log-write and hygiene; the
             # ON DELETE CASCADE on query_log normally handles this, but
             # log/cascade is best-effort and we shouldn't crash on a
             # gap. Just skip.
             continue
         try:
-            memory = vault.read(path_row["path"])
+            memory = vault.read(path)
         except MemoryNotFoundError:
             continue
 
@@ -283,17 +291,17 @@ def apply_importance_updates(
     """
     n = 0
     for update in plan.updates:
-        path_row = index.db.execute(
-            "SELECT path FROM memories WHERE id = ?", (update.memory_id,)
-        ).fetchone()
-        if path_row is None:
+        # Use Index.get_path so this call is safe when invoked from the
+        # in-daemon hygiene loop's worker thread (ADR 0023).
+        path = index.get_path(update.memory_id)
+        if path is None:
             logger.warning(
                 "hygiene.importance: memory %s vanished before apply; skipping",
                 update.memory_id,
             )
             continue
         try:
-            memory = vault.read(path_row["path"])
+            memory = vault.read(path)
         except MemoryNotFoundError:
             logger.warning(
                 "hygiene.importance: vault file for %s missing; skipping",

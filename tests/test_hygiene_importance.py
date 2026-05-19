@@ -361,3 +361,45 @@ class TestHygieneCli:
         result = runner.invoke(app, ["hygiene", "importance", "--vault", str(root)])
         assert result.exit_code == 0
         assert "no bumps proposed" in result.stdout
+
+
+class TestThreadSafety:
+    """Regression for ADR 0023's in-daemon hygiene loop.
+
+    ``apply_importance_updates`` and ``compute_importance_updates`` used
+    to call ``index.db.execute(...)`` directly. That's fine for the
+    single-threaded CLI path, but the in-daemon loop runs both via
+    ``asyncio.to_thread`` while the embed workers and HTTP handlers
+    touch the same ``sqlite3.Connection`` on other threads. The shared
+    prepared-statement cache then raises ``sqlite3.InterfaceError: bad
+    parameter or other API misuse`` under contention (same root cause
+    PR #103 fixed for pipeline/search/http).
+
+    The fix routes id-lookups through ``Index.get_path`` and wraps the
+    ``query_log`` read in ``index._lock``. This test runs both from a
+    worker thread to lock that in.
+    """
+
+    def test_compute_and_apply_from_worker_thread(self, vault: Vault, index: Index) -> None:
+        import threading
+
+        m = _make_memory(body="alpha", vault=vault, importance=0.5)
+        index.upsert(m)
+        log_get(index.db, memory_id=str(m.id), client="mcp:get")
+
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                plan = compute_importance_updates(vault, index)
+                assert len(plan.updates) == 1
+                n = apply_importance_updates(vault, index, plan)
+                assert n == 1
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=10.0)
+        assert not t.is_alive(), "worker thread hung"
+        assert errors == [], f"unexpected errors: {errors!r}"
