@@ -449,6 +449,7 @@ def compute_distillation_plan(
     force: bool = False,
     prompt_template: str | None = None,
     now: datetime | None = None,
+    max_candidates: int | None = None,
 ) -> DistillationPlan:
     """Build the full distillation plan against the configured summarizer.
 
@@ -460,6 +461,14 @@ def compute_distillation_plan(
     The summarizer's :meth:`generate_cached` is called with ``db`` so
     repeated runs short-circuit on cached output. ``db=None`` skips
     the cache entirely (useful in tests / one-shot invocations).
+
+    ``max_candidates`` caps how many sessions get a summarizer call this
+    pass. The in-daemon hygiene loop (ADR 0023) uses this to bound LLM
+    spend per cycle — on a cold vault with thousands of eligible
+    sessions, the cap prevents one tick from running the LLM through
+    the entire backlog. ``None`` (the CLI default) means no cap.
+    Candidates are processed in the order :func:`find_session_candidates`
+    returns them.
     """
     candidates, stats = find_session_candidates(
         vault,
@@ -469,6 +478,9 @@ def compute_distillation_plan(
         include_already_distilled=force,
         now=now,
     )
+
+    if max_candidates is not None and max_candidates >= 0:
+        candidates = candidates[:max_candidates]
 
     proposals: list[DistillationProposal] = []
     for candidate in candidates:

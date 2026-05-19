@@ -268,25 +268,20 @@ class HygieneLoop:
             logger.info("hygiene[distill_sessions]: skipped — summarizer unavailable")
             return
 
+        # The cap is passed *into* the planner so the truncation happens
+        # before the LLM calls — otherwise compute_distillation_plan
+        # would call the summarizer on every eligible session and only
+        # then we'd discard the overflow. On a cold vault that's
+        # thousands of unnecessary calls (see ADR 0023 §Configuration).
         plan = compute_distillation_plan(
             self.vault,
             summarizer,
             db=self.index.db,
+            max_candidates=self.cfg.distill_max_per_cycle,
         )
         if not plan.proposals:
             logger.info("hygiene[distill_sessions]: no eligible sessions")
             return
-
-        # Apply at most distill_max_per_cycle to keep cycles bounded.
-        # The plan dataclass is frozen but proposals is a mutable list,
-        # so we trim in place rather than constructing a new plan.
-        if len(plan.proposals) > self.cfg.distill_max_per_cycle:
-            logger.info(
-                "hygiene[distill_sessions]: capping %d proposals to %d this cycle",
-                len(plan.proposals),
-                self.cfg.distill_max_per_cycle,
-            )
-            del plan.proposals[self.cfg.distill_max_per_cycle :]
 
         result = apply_distillations(self.vault, self.index, plan)
         logger.info(
