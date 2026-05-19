@@ -74,6 +74,27 @@ class TestHealth:
         r = client.get("/health")
         assert r.json()["vault"] == str(vault.root)
 
+    def test_hygiene_block_present(self, client: TestClient) -> None:
+        """ADR 0023: /health exposes a hygiene snapshot."""
+        body = client.get("/health").json()
+        assert "hygiene" in body
+        assert body["hygiene"]["loop_enabled"] is True  # default
+        assert "last_run" in body["hygiene"]
+        # On a fresh vault every stage's last_run is None
+        for stage_ts in body["hygiene"]["last_run"].values():
+            assert stage_ts is None
+        assert body["hygiene"]["running"] == []
+
+    def test_hygiene_block_reflects_recorded_run(self, client: TestClient, index: Index) -> None:
+        from datetime import UTC, datetime
+
+        from memstem.hygiene.state import STAGE_IMPORTANCE, set_last_run
+
+        ts = datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)
+        set_last_run(index.db, STAGE_IMPORTANCE, ts)
+        body = client.get("/health").json()
+        assert body["hygiene"]["last_run"][STAGE_IMPORTANCE] == ts.isoformat()
+
 
 class TestVersion:
     def test_returns_version_string(self, client: TestClient) -> None:
