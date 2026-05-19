@@ -328,10 +328,16 @@ class HygieneLoop:
             logger.info("hygiene[dedup_judge]: skipped — judge unavailable")
             return
 
+        # ``max_memories`` caps the O(N²) outer-loop walk so the cycle
+        # stays bounded on large vaults — without it, candidate
+        # generation on a few-thousand-record vault can run long enough
+        # that the stage lock TTL would expire mid-cycle (ADR 0023
+        # §Configuration).
         pairs = find_dedup_candidate_pairs(
             self.vault,
             self.index,
             min_cosine=self.cfg.dedup_threshold,
+            max_memories=self.cfg.dedup_max_outer_memories,
         )
         if not pairs:
             logger.info("hygiene[dedup_judge]: no candidate pairs")
