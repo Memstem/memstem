@@ -170,6 +170,59 @@ class HygieneConfig(BaseModel):
     each. Lower this on storage-constrained hosts; raise it for vaults
     that run hygiene infrequently."""
 
+    # ADR 0023 — in-daemon hygiene loop ----------------------------------
+
+    loop_enabled: bool = True
+    """Master switch for the in-daemon hygiene loop (ADR 0023). When
+    ``True``, the daemon spawns a background task that runs
+    ``distill-sessions``, ``dedup-judge``, ``importance``, and
+    ``project-records`` on the configured intervals. The CLI hygiene
+    commands continue to work either way. Set to ``False`` on
+    multi-tenant containers where the operator hasn't authorized LLM
+    spend."""
+
+    loop_poll_interval_seconds: int = 60
+    """How often the loop wakes to check stage timers."""
+
+    distill_interval_seconds: int = 6 * 3600
+    """Cadence for the ``distill-sessions`` stage."""
+
+    dedup_interval_seconds: int = 24 * 3600
+    """Cadence for the ``dedup-candidates`` + ``dedup-judge`` stages."""
+
+    importance_interval_seconds: int = 3600
+    """Cadence for the ``importance`` stage."""
+
+    project_records_interval_seconds: int = 24 * 3600
+    """Cadence for the ``project-records`` stage."""
+
+    distill_max_per_cycle: int = 50
+    """Cap on distillations applied per cycle. Prevents a cold vault
+    from running thousands of LLM calls on the first tick."""
+
+    dedup_max_per_cycle: int = 100
+    """Cap on candidate pairs judged per dedup cycle."""
+
+    summarizer_provider: str = "openai"
+    """Provider used by the loop for distillation + project-records.
+    ``"openai"`` (default), ``"ollama"``, or ``"noop"`` to record the
+    cycle without calling an LLM."""
+
+    summarizer_model: str | None = None
+    """Optional model override. ``None`` uses provider-default
+    (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for Ollama)."""
+
+    judge_provider: str = "noop"
+    """Provider used by the loop for ``dedup-judge``. Default is
+    ``"noop"`` — the loop logs candidate pairs as ``UNRELATED`` audit
+    rows for inventory but does not call an LLM until the operator
+    opts in by setting this to ``"ollama"``."""
+
+    stage_lock_max_age_seconds: int = 3600
+    """A ``running_since:<stage>`` lock older than this is treated as
+    crashed and cleared on the next acquire attempt. Keeps the loop
+    self-healing across daemon crashes mid-cycle."""
+
 
 class HttpServerConfig(BaseModel):
     """Local HTTP server configuration.

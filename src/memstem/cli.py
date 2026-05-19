@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -103,6 +106,45 @@ hygiene_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(hygiene_app)
+
+
+@contextmanager
+def _stage_lock(
+    db: sqlite3.Connection,
+    stage: str,
+    *,
+    max_age_seconds: int = 3600,
+) -> Iterator[None]:
+    """Coordinate CLI hygiene runs with the in-daemon hygiene loop (ADR 0023).
+
+    Acquires a per-stage lock row in ``hygiene_state`` before yielding.
+    If the lock is already held, prints a friendly diagnostic and raises
+    ``typer.Exit(2)``. On clean exit, records ``last_run:<stage>`` so the
+    loop doesn't immediately re-run the stage. Always releases the lock
+    on exit, whether the body raised or not.
+
+    Used only for CLI commands that *write* (apply / dedup-judge). Dry
+    runs read only and don't need the lock.
+    """
+    from memstem.hygiene.state import (
+        acquire_stage_lock,
+        release_stage_lock,
+        set_last_run,
+    )
+
+    if not acquire_stage_lock(db, stage, max_age_seconds=max_age_seconds):
+        typer.echo(
+            f"hygiene {stage}: another runner holds the lock — the "
+            "in-daemon loop may be mid-cycle. Re-try in a minute, or "
+            "check `memstem doctor` and the daemon logs.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        yield
+        set_last_run(db, stage, datetime.now(UTC))
+    finally:
+        release_stage_lock(db, stage)
 
 
 def _resolve_vault_path(override: str | None = None) -> Path:
@@ -1007,6 +1049,17 @@ async def _run_daemon(
             )
         )
 
+    # ADR 0023: in-daemon hygiene loop. Runs distill-sessions,
+    # dedup-judge, importance, and project-records on intervals
+    # configured under ``hygiene:`` in config.yaml. Disabled per
+    # config or short-circuited inside HygieneLoop.run() when
+    # ``hygiene.loop_enabled`` is false.
+    if hygiene_config is not None and getattr(hygiene_config, "loop_enabled", False):
+        from memstem.hygiene.loop import HygieneLoop
+
+        hygiene_loop = HygieneLoop(vault_obj, index, hygiene_config)
+        tasks.append(asyncio.create_task(hygiene_loop.run()))
+
     try:
         await asyncio.gather(*tasks)
     finally:
@@ -1422,6 +1475,7 @@ def hygiene_importance(
         apply_importance_updates,
         compute_importance_updates,
     )
+    from memstem.hygiene.state import STAGE_IMPORTANCE
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1434,7 +1488,8 @@ def hygiene_importance(
                 # Still advance the cursor so the next run starts from a
                 # fresh window — otherwise empty sweeps re-scan stale
                 # rows forever.
-                apply_importance_updates(vault_obj, index, plan)
+                with _stage_lock(index.db, STAGE_IMPORTANCE):
+                    apply_importance_updates(vault_obj, index, plan)
             return
         mode = "applying" if apply else "dry-run"
         typer.echo(f"hygiene importance ({mode}): {len(plan.updates)} bump(s) proposed")
@@ -1447,7 +1502,8 @@ def hygiene_importance(
                 f"[{reasons}]"
             )
         if apply:
-            n = apply_importance_updates(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_IMPORTANCE):
+                n = apply_importance_updates(vault_obj, index, plan)
             typer.echo(f"\nhygiene importance: applied {n} bump(s).")
         else:
             typer.echo("\nhygiene importance: dry-run; re-run with --apply to persist these bumps.")
@@ -1615,6 +1671,7 @@ def hygiene_distill_sessions(
         format_plan_summary,
         format_proposals,
     )
+    from memstem.hygiene.state import STAGE_DISTILL_SESSIONS
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1662,7 +1719,8 @@ def hygiene_distill_sessions(
             typer.echo("\n(no eligible sessions; re-run with --backfill or relax thresholds)")
             return
         if apply:
-            result = apply_distillations(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_DISTILL_SESSIONS):
+                result = apply_distillations(vault_obj, index, plan)
             typer.echo(
                 f"\napplied: {result.written} distillation(s) written, "
                 f"{result.skipped_no_summary} skipped (empty summary), "
@@ -1766,6 +1824,7 @@ def hygiene_project_records(
         format_plan_summary,
         format_proposals,
     )
+    from memstem.hygiene.state import STAGE_PROJECT_RECORDS
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1810,7 +1869,8 @@ def hygiene_project_records(
             typer.echo("\n(no qualifying project tags; relax --min-sessions or check your vault)")
             return
         if apply:
-            result = apply_project_records(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_PROJECT_RECORDS):
+                result = apply_project_records(vault_obj, index, plan)
             typer.echo(
                 f"\napplied: {result.written} new, "
                 f"{result.updated} updated, "
@@ -1990,6 +2050,7 @@ def hygiene_dedup_judge(
         judge_pairs,
         write_audit_rows,
     )
+    from memstem.hygiene.state import STAGE_DEDUP_JUDGE
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -2021,8 +2082,9 @@ def hygiene_dedup_judge(
             )
             judge = NoOpJudge()
 
-        results = judge_pairs(pairs, judge=judge)
-        n_written = write_audit_rows(index.db, results)
+        with _stage_lock(index.db, STAGE_DEDUP_JUDGE):
+            results = judge_pairs(pairs, judge=judge)
+            n_written = write_audit_rows(index.db, results)
         typer.echo(f"\nhygiene dedup-judge: wrote {n_written} audit row(s).")
         for result in results:
             typer.echo(
