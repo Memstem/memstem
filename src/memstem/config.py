@@ -224,6 +224,21 @@ class HygieneConfig(BaseModel):
     """Optional model override. ``None`` uses provider-default
     (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for Ollama)."""
 
+    summarizer_base_url: str | None = None
+    """Optional ``base_url`` override for the OpenAI-compatible
+    summarizer. Useful for self-hosted models (vLLM, TGI, LM Studio,
+    LiteLLM) that speak the OpenAI API shape. ``None`` uses the
+    provider default (``https://api.openai.com/v1`` for OpenAI,
+    ``http://localhost:11434`` for Ollama). Ignored when
+    ``summarizer_provider`` is ``noop``."""
+
+    summarizer_api_key_env: str = "OPENAI_API_KEY"
+    """Env var name to read the summarizer API key from. Self-hosted
+    OpenAI-compatible servers usually ignore the key value but require
+    *some* value, so callers can point this at a different env var
+    (e.g. ``MEMSTEM_GEMMA_KEY`` set to a dummy string) to avoid
+    polluting the canonical ``OPENAI_API_KEY``."""
+
     judge_provider: str = "noop"
     """Provider used by the loop for ``dedup-judge``. Default is
     ``"noop"`` — the loop logs candidate pairs as ``UNRELATED`` audit
