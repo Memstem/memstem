@@ -193,13 +193,23 @@ class HygieneLoop:
             if provider == "noop":
                 self._summarizer = NoOpSummarizer()
             elif provider == "openai":
-                self._summarizer = OpenAISummarizer(
-                    model=self.cfg.summarizer_model or DEFAULT_OPENAI_MODEL,
-                )
+                # Build kwargs so callers who don't set base_url get
+                # the OpenAISummarizer default (https://api.openai.com/v1)
+                # rather than the explicit ``None`` overriding it.
+                openai_kwargs: dict[str, object] = {
+                    "model": self.cfg.summarizer_model or DEFAULT_OPENAI_MODEL,
+                    "api_key_env": self.cfg.summarizer_api_key_env,
+                }
+                if self.cfg.summarizer_base_url:
+                    openai_kwargs["base_url"] = self.cfg.summarizer_base_url
+                self._summarizer = OpenAISummarizer(**openai_kwargs)  # type: ignore[arg-type]
             elif provider == "ollama":
-                self._summarizer = OllamaSummarizer(
-                    model=self.cfg.summarizer_model or DEFAULT_OLLAMA_MODEL,
-                )
+                ollama_kwargs: dict[str, object] = {
+                    "model": self.cfg.summarizer_model or DEFAULT_OLLAMA_MODEL,
+                }
+                if self.cfg.summarizer_base_url:
+                    ollama_kwargs["base_url"] = self.cfg.summarizer_base_url
+                self._summarizer = OllamaSummarizer(**ollama_kwargs)  # type: ignore[arg-type]
             else:
                 self._summarizer_unavailable_reason = (
                     f"unknown summarizer provider {self.cfg.summarizer_provider!r}; "
