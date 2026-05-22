@@ -233,6 +233,135 @@ class OllamaDedupJudge(DedupJudge):
         return str(body.get("response", ""))
 
 
+class OpenAIDedupJudge(DedupJudge):
+    """Live judge that calls an OpenAI-compatible chat-completions endpoint.
+
+    Companion to :class:`OllamaDedupJudge` for setups that either use
+    OpenAI's hosted models directly or a self-hosted OpenAI-shaped
+    inference server (vLLM, TGI, LM Studio, LiteLLM, etc.). The
+    ``base_url`` defaults to OpenAI itself; point it at a local vLLM
+    instance to drive a self-hosted model.
+
+    Behind explicit operator opt-in. Tests must NOT instantiate this —
+    they use :class:`NoOpJudge` or :class:`StubJudge`. The constructor
+    accepts an explicit ``client`` so the integration is mockable.
+
+    Auth: API key is read via :mod:`memstem.auth` — env var first,
+    ``~/.config/memstem/secrets.yaml`` second. For self-hosted servers
+    that ignore the value (vLLM and most TGI builds), set
+    ``api_key_env`` to any var holding a dummy string — the judge just
+    needs *something* to put in the ``Authorization: Bearer …`` header.
+
+    The model is expected to return JSON of the form
+    ``{"verdict": "...", "rationale": "..."}``. Anything else falls
+    back to :data:`Verdict.UNRELATED` with the raw text in the
+    rationale — we never crash a sweep on a malformed response.
+    """
+
+    name_prefix = "openai"
+
+    def __init__(
+        self,
+        *,
+        model: str = "gpt-5.4-mini",
+        api_key_env: str = "OPENAI_API_KEY",
+        base_url: str = "https://api.openai.com/v1",
+        prompt_template: str | None = None,
+        temperature: float = 0.0,
+        max_output_tokens: int = 256,
+        timeout: float = 60.0,
+        client: object = None,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.api_key_env = api_key_env
+        self.prompt_template = prompt_template or _load_prompt_template()
+        self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
+        self.timeout = timeout
+        self._client = client
+        self.name = f"{self.name_prefix}:{model}"
+
+    def _http_client(self) -> object:
+        if self._client is None:
+            # Lazy import keeps the module cheap when the OpenAI judge
+            # isn't in use. ``memstem.auth`` is a leaf module — no cycle.
+            import httpx
+
+            from memstem.auth import get_secret
+
+            api_key = get_secret("openai", env_var=self.api_key_env)
+            if not api_key:
+                raise RuntimeError(
+                    f"OpenAIDedupJudge needs an API key. Either export "
+                    f"${self.api_key_env}, run "
+                    f"`memstem auth set openai <key>`, or use "
+                    f"OllamaDedupJudge / NoOpJudge instead."
+                )
+            self._client = httpx.Client(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        return self._client
+
+    def judge_pair(self, pair: DedupCandidatePair) -> JudgeResult:
+        # Same prompt shape as OllamaDedupJudge — the candidate
+        # generator's pair carries titles + ids; full body lookup is a
+        # future extension on both judges.
+        prompt = self.prompt_template.format(
+            new_id=pair.a_id,
+            new_body=(pair.a_title or pair.a_id),
+            existing_id=pair.b_id,
+            existing_body=(pair.b_title or pair.b_id),
+        )
+        try:
+            response = self._call_model(prompt)
+            verdict, rationale = _parse_response(response)
+        except Exception as exc:
+            logger.warning("OpenAIDedupJudge: model call failed: %s", exc)
+            return JudgeResult(
+                new_id=pair.a_id,
+                existing_id=pair.b_id,
+                verdict=Verdict.UNRELATED,
+                rationale=f"model call failed: {exc}",
+                judge=self.name,
+            )
+        return JudgeResult(
+            new_id=pair.a_id,
+            existing_id=pair.b_id,
+            verdict=verdict,
+            rationale=rationale,
+            judge=self.name,
+        )
+
+    def _call_model(self, prompt: str) -> str:
+        client = self._http_client()
+        post = client.post  # type: ignore[attr-defined]
+        # `max_completion_tokens` rather than `max_tokens` because the
+        # GPT-5.x family rejects `max_tokens` outright. The newer name
+        # is accepted across the OpenAI family and most self-hosted
+        # shims (vLLM, LiteLLM) — see OpenAISummarizer for context.
+        result = post(
+            "/chat/completions",
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": self.temperature,
+                "max_completion_tokens": self.max_output_tokens,
+            },
+        )
+        result.raise_for_status()
+        body = result.json()
+        try:
+            return str(body["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"unexpected chat-completions response shape: {exc}") from exc
+
+
 def _load_prompt_template() -> str:
     """Read the canonical dedup judge prompt from the package data."""
     path = Path(__file__).parent.parent / "prompts" / "dedup_judge.txt"
@@ -356,6 +485,7 @@ __all__ = [
     "JudgeResult",
     "NoOpJudge",
     "OllamaDedupJudge",
+    "OpenAIDedupJudge",
     "StubJudge",
     "Verdict",
     "count_audit_rows",

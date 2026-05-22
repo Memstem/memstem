@@ -30,6 +30,7 @@ from memstem.hygiene.dedup_candidates import DedupCandidatePair
 from memstem.hygiene.dedup_judge import (
     NoOpJudge,
     OllamaDedupJudge,
+    OpenAIDedupJudge,
     StubJudge,
     Verdict,
     _parse_response,
@@ -318,6 +319,118 @@ class TestOllamaJudgeMocked:
         judge = OllamaDedupJudge(client=client, prompt_template="ignored")
         result = judge.judge_pair(_make_pair())
         assert result.verdict is Verdict.UNRELATED
+
+
+class TestOpenAIJudgeMocked:
+    """Exercise OpenAIDedupJudge without a real OpenAI / vLLM call.
+
+    Mirrors :class:`TestOllamaJudgeMocked` but with the OpenAI chat-
+    completions response shape (``{"choices":[{"message":{"content":…}}]}``).
+    """
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+            self.last_call: dict[str, object] | None = None
+
+        def post(
+            self,
+            url: str,
+            json: dict[str, object] | None = None,
+        ) -> TestOpenAIJudgeMocked._FakeResponse:
+            self.last_call = {"url": url, "json": json}
+            return TestOpenAIJudgeMocked._FakeResponse(self.payload)
+
+    @staticmethod
+    def _payload(content: str) -> dict[str, object]:
+        """Build a minimal chat-completions response shape."""
+        return {"choices": [{"message": {"content": content}}]}
+
+    def test_parses_well_formed_json(self) -> None:
+        client = self._FakeClient(
+            self._payload('{"verdict": "DUPLICATE", "rationale": "same fact"}')
+        )
+        judge = OpenAIDedupJudge(client=client, prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.DUPLICATE
+        assert result.rationale == "same fact"
+        assert result.judge.startswith("openai:")
+        assert client.last_call is not None
+        # Should hit the chat-completions endpoint with the expected shape.
+        assert client.last_call["url"] == "/chat/completions"
+        body = client.last_call["json"]
+        assert isinstance(body, dict)
+        assert body["model"] == "gpt-5.4-mini"  # default
+        assert body["messages"][0]["role"] == "user"
+        assert "max_completion_tokens" in body  # forward-compat for GPT-5.x
+
+    def test_handles_fenced_json(self) -> None:
+        client = self._FakeClient(
+            self._payload('```json\n{"verdict": "CONTRADICTS", "rationale": "values differ"}\n```')
+        )
+        judge = OpenAIDedupJudge(client=client, prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.CONTRADICTS
+
+    def test_garbage_response_falls_back_to_unrelated(self) -> None:
+        client = self._FakeClient(self._payload("I cannot decide that today"))
+        judge = OpenAIDedupJudge(client=client, prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.UNRELATED
+
+    def test_empty_response_falls_back_to_unrelated(self) -> None:
+        client = self._FakeClient(self._payload(""))
+        judge = OpenAIDedupJudge(client=client, prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.UNRELATED
+
+    def test_call_errors_are_caught(self) -> None:
+        class _BoomClient:
+            def post(self, *args: object, **kwargs: object) -> object:
+                raise RuntimeError("network down")
+
+        judge = OpenAIDedupJudge(client=_BoomClient(), prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.UNRELATED
+        assert "network down" in result.rationale
+
+    def test_unknown_verdict_string_is_unrelated(self) -> None:
+        client = self._FakeClient(self._payload('{"verdict": "MAYBE", "rationale": "shrug"}'))
+        judge = OpenAIDedupJudge(client=client, prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.UNRELATED
+
+    def test_malformed_choices_payload_is_caught(self) -> None:
+        # Some self-hosted shims return errors as non-OpenAI shapes;
+        # the judge should treat that like a transient failure.
+        client = self._FakeClient({"error": "oops"})
+        judge = OpenAIDedupJudge(client=client, prompt_template="ignored")
+        result = judge.judge_pair(_make_pair())
+        assert result.verdict is Verdict.UNRELATED
+        assert "model call failed" in result.rationale
+
+    def test_custom_base_url_and_model_reflected_in_name(self) -> None:
+        client = self._FakeClient(self._payload('{"verdict":"UNRELATED","rationale":"x"}'))
+        judge = OpenAIDedupJudge(
+            client=client,
+            prompt_template="ignored",
+            base_url="http://10.0.1.233:8000/v1",
+            model="gemma-4-e4b-it",
+        )
+        result = judge.judge_pair(_make_pair())
+        assert judge.base_url == "http://10.0.1.233:8000/v1"
+        assert judge.model == "gemma-4-e4b-it"
+        assert result.judge == "openai:gemma-4-e4b-it"
 
 
 class TestParseResponseHelper:
