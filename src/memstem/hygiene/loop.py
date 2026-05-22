@@ -226,18 +226,38 @@ class HygieneLoop:
     def _get_judge(self) -> DedupJudge | None:
         if self._judge is not None or self._judge_unavailable_reason is not None:
             return self._judge
-        from memstem.hygiene.dedup_judge import NoOpJudge, OllamaDedupJudge
+        from memstem.hygiene.dedup_judge import (
+            NoOpJudge,
+            OllamaDedupJudge,
+            OpenAIDedupJudge,
+        )
 
         provider = self.cfg.judge_provider.lower()
         try:
             if provider == "noop":
                 self._judge = NoOpJudge()
+            elif provider == "openai":
+                # Build kwargs so unset overrides fall through to the
+                # OpenAIDedupJudge defaults (api.openai.com + gpt-5.4-mini).
+                openai_kwargs: dict[str, object] = {
+                    "api_key_env": self.cfg.judge_api_key_env,
+                }
+                if self.cfg.judge_model:
+                    openai_kwargs["model"] = self.cfg.judge_model
+                if self.cfg.judge_base_url:
+                    openai_kwargs["base_url"] = self.cfg.judge_base_url
+                self._judge = OpenAIDedupJudge(**openai_kwargs)  # type: ignore[arg-type]
             elif provider == "ollama":
-                self._judge = OllamaDedupJudge()
+                ollama_judge_kwargs: dict[str, object] = {}
+                if self.cfg.judge_model:
+                    ollama_judge_kwargs["model"] = self.cfg.judge_model
+                if self.cfg.judge_base_url:
+                    ollama_judge_kwargs["base_url"] = self.cfg.judge_base_url
+                self._judge = OllamaDedupJudge(**ollama_judge_kwargs)  # type: ignore[arg-type]
             else:
                 self._judge_unavailable_reason = (
                     f"unknown judge provider {self.cfg.judge_provider!r}; "
-                    "expected one of: noop, ollama"
+                    "expected one of: noop, openai, ollama"
                 )
                 logger.warning("hygiene loop: %s", self._judge_unavailable_reason)
         except Exception as exc:

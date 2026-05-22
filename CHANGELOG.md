@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`OpenAIDedupJudge`** for the hygiene loop's dedup-judge stage —
+  companion to the existing `OllamaDedupJudge` for setups that drive
+  judging through an OpenAI-compatible chat-completions endpoint.
+  Includes self-hosted endpoints (vLLM, TGI, LM Studio, LiteLLM) via
+  the same `--base-url` override pattern the summarizer uses. Auth via
+  `memstem.auth.get_secret` — env var first, secrets file second; the
+  `api_key_env` field lets callers point at a dummy env var for
+  self-hosted servers that ignore the value. Mocked-client tests
+  cover happy path, fenced JSON, garbage / empty responses, malformed
+  payloads, and the call-failure fallback.
+- **`HygieneConfig` extensions**: `judge_provider` now accepts
+  `"openai"` in addition to `"noop"` and `"ollama"`. New optional
+  fields `judge_model`, `judge_base_url`, and `judge_api_key_env`
+  parallel the existing `summarizer_*` set. Defaults preserve the
+  pre-existing NoOp behavior — existing configs are unaffected.
+- **`memstem hygiene dedup-judge --provider {noop,openai,ollama}`**
+  CLI surface, with `--model`, `--base-url`, `--api-key-env`
+  applying uniformly across providers. The legacy
+  `--enable-llm` / `--ollama-url` / `--ollama-model` flags remain
+  supported as deprecated aliases that map to `--provider ollama`.
+
 ## [0.11.0] — 2026-05-19
 
 ### Added
