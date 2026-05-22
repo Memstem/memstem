@@ -430,7 +430,43 @@ class TestOpenAIJudgeMocked:
         result = judge.judge_pair(_make_pair())
         assert judge.base_url == "http://10.0.1.233:8000/v1"
         assert judge.model == "gemma-4-e4b-it"
-        assert result.judge == "openai:gemma-4-e4b-it"
+        # Self-hosted endpoint → openai-compat prefix, NOT openai.
+        # This keeps the audit log honest about which service actually
+        # produced the verdict (gemma-4-e4b-it isn't OpenAI Inc.'s
+        # model, even though we reach it via the OpenAI API shape).
+        assert result.judge == "openai-compat:gemma-4-e4b-it"
+        assert judge.name_prefix == "openai-compat"
+
+
+class TestOpenAINamePrefix:
+    """Verify _openai_name_prefix correctly distinguishes real OpenAI
+    from self-hosted endpoints that speak the OpenAI protocol."""
+
+    @pytest.mark.parametrize(
+        "base_url,expected",
+        [
+            # Real OpenAI Inc.
+            ("https://api.openai.com/v1", "openai"),
+            ("https://api.openai.com", "openai"),
+            ("http://api.openai.com/v1", "openai"),
+            # Azure-hosted OpenAI Service — also "real OpenAI" billing
+            ("https://my-resource.openai.azure.com/v1", "openai"),
+            ("https://eastus2.openai.azure.com/openai", "openai"),
+            # Self-hosted / third-party using the OpenAI protocol
+            ("http://10.0.1.233:8000/v1", "openai-compat"),
+            ("http://localhost:8000/v1", "openai-compat"),
+            ("https://api.together.xyz/v1", "openai-compat"),
+            ("https://api.groq.com/openai/v1", "openai-compat"),
+            ("https://api.mistral.ai/v1", "openai-compat"),
+            # Pathological: empty / malformed
+            ("", "openai-compat"),
+            ("not-a-url", "openai-compat"),
+        ],
+    )
+    def test_prefix_matches_endpoint(self, base_url: str, expected: str) -> None:
+        from memstem.hygiene.dedup_judge import _openai_name_prefix
+
+        assert _openai_name_prefix(base_url) == expected
 
 
 class TestParseResponseHelper:

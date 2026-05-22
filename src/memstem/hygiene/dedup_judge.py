@@ -233,6 +233,36 @@ class OllamaDedupJudge(DedupJudge):
         return str(body.get("response", ""))
 
 
+def _openai_name_prefix(base_url: str) -> str:
+    """Return the audit-log prefix for an OpenAI-shaped endpoint.
+
+    The :class:`OpenAIDedupJudge` (and :class:`OpenAISummarizer`) class
+    speaks the OpenAI chat-completions protocol, but the *endpoint* it
+    talks to can be either real OpenAI (api.openai.com or Azure's
+    OpenAI service) OR any compatible self-hosted server (vLLM, TGI,
+    LM Studio, Together, Groq, …). To keep the audit log honest about
+    which one actually produced a verdict, we vary the prefix:
+
+    - ``openai`` — base_url's host ends in ``openai.com`` or
+      ``openai.azure.com``. The verdict came from OpenAI Inc.'s
+      service (or Microsoft's Azure-hosted OpenAI service).
+    - ``openai-compat`` — anything else. The verdict came from a
+      self-hosted / third-party server using the OpenAI protocol;
+      ``base_url`` and ``model`` together identify what actually ran.
+
+    Used in ``self.name`` so it lands in the ``judge`` column of the
+    ``dedup_audit`` table and in the ``provenance.summarizer`` field
+    of distillation frontmatter. ``base_url`` may include a scheme,
+    port, and/or path — we only care about the host portion.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    if host.endswith("openai.com") or host.endswith("openai.azure.com"):
+        return "openai"
+    return "openai-compat"
+
+
 class OpenAIDedupJudge(DedupJudge):
     """Live judge that calls an OpenAI-compatible chat-completions endpoint.
 
@@ -241,6 +271,11 @@ class OpenAIDedupJudge(DedupJudge):
     inference server (vLLM, TGI, LM Studio, LiteLLM, etc.). The
     ``base_url`` defaults to OpenAI itself; point it at a local vLLM
     instance to drive a self-hosted model.
+
+    The ``self.name`` prefix is computed from the ``base_url`` so the
+    audit log can distinguish a verdict from OpenAI Inc. (``openai:``)
+    from one produced by a self-hosted model exposed via the OpenAI
+    API protocol (``openai-compat:``). See :func:`_openai_name_prefix`.
 
     Behind explicit operator opt-in. Tests must NOT instantiate this —
     they use :class:`NoOpJudge` or :class:`StubJudge`. The constructor
@@ -257,8 +292,6 @@ class OpenAIDedupJudge(DedupJudge):
     back to :data:`Verdict.UNRELATED` with the raw text in the
     rationale — we never crash a sweep on a malformed response.
     """
-
-    name_prefix = "openai"
 
     def __init__(
         self,
@@ -280,6 +313,10 @@ class OpenAIDedupJudge(DedupJudge):
         self.max_output_tokens = max_output_tokens
         self.timeout = timeout
         self._client = client
+        # name_prefix is dynamic so the audit log distinguishes real
+        # OpenAI from self-hosted-via-OpenAI-protocol. Kept as an
+        # instance attr for backward-compat with code that reads it.
+        self.name_prefix = _openai_name_prefix(self.base_url)
         self.name = f"{self.name_prefix}:{model}"
 
     def _http_client(self) -> object:
