@@ -332,7 +332,33 @@ def test_ollama_summarizer_honors_custom_model_and_temperature() -> None:
 
 def test_openai_summarizer_name_includes_model() -> None:
     s = smod.OpenAISummarizer(client=_MockClient(_MockResponse({"choices": []})))
+    # Default base_url is api.openai.com → "openai" prefix.
     assert s.name == f"openai:{smod.DEFAULT_OPENAI_MODEL}"
+    assert s.name_prefix == "openai"
+
+
+def test_openai_summarizer_self_hosted_name_uses_compat_prefix() -> None:
+    """Self-hosted endpoints (vLLM, TGI, etc.) speak the OpenAI API
+    protocol but aren't OpenAI Inc.'s service. The provenance label
+    should reflect that so distillation records honestly identify the
+    upstream service."""
+    s = smod.OpenAISummarizer(
+        base_url="http://10.0.1.233:8000/v1",
+        model="gemma-4-e4b-it",
+        client=_MockClient(_MockResponse({"choices": []})),
+    )
+    assert s.name == "openai-compat:gemma-4-e4b-it"
+    assert s.name_prefix == "openai-compat"
+
+
+def test_openai_summarizer_azure_endpoint_keeps_openai_prefix() -> None:
+    """Azure-hosted OpenAI Service is still OpenAI billing/quota —
+    treat it as ``openai:`` in provenance."""
+    s = smod.OpenAISummarizer(
+        base_url="https://my-resource.openai.azure.com/v1",
+        client=_MockClient(_MockResponse({"choices": []})),
+    )
+    assert s.name_prefix == "openai"
 
 
 def test_openai_summarizer_calls_chat_completions_endpoint() -> None:
