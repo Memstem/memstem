@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.5] — 2026-06-05
+
+### Fixed
+
+- **Reconcile skip now keys on `embed_state`, covering every record.**
+  The 0.12.3/0.12.4 skip keyed on the Layer-1 dedup table
+  (`body_hash_index`), which is incomplete — only ~81% of records on the
+  maintainer's vault had an entry, so the other ~19% never matched and
+  were reprocessed (each paying the ~30ms `memories_vec` scan via
+  `Pipeline.process`), keeping the catch-up at a minute-plus. The skip
+  now uses `Index.stored_body_hash`, reading `embed_state.body_hash` — a
+  `memory_id`-indexed regular table populated for every record (~5µs/
+  lookup, benchmarked). Combined with the `(source, ref)` record-map
+  lookup, an unchanged record is recognized in ~10µs with no vector
+  scan, so a normal restart's catch-up completes in well under a second
+  of CPU. Completes the 0.12.1–0.12.4 startup-availability work.
+
 ## [0.12.4] — 2026-06-05
 
 ### Fixed

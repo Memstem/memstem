@@ -39,14 +39,13 @@ from memstem.config import (
     OpenClawLayout,
     OpenClawWorkspace,
 )
-from memstem.core.dedup import find_existing_memory_for_hash, normalized_body_hash
 from memstem.core.embed_worker import drain_once, run_workers
 from memstem.core.embeddings import (
     Embedder,
     EmbeddingError,
     embed_for,
 )
-from memstem.core.index import Index
+from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
 from memstem.core.search import Search
 from memstem.core.storage import Vault
@@ -904,32 +903,35 @@ async def _reconcile_into_pipeline(
 def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     """True when the reconcile can skip this record (ADR 0024).
 
-    A record is unchanged when a record-map entry already exists for its
-    ``(source, ref)`` and the normalized body hash still maps to that same
-    memory id — i.e. identical content is already stored and indexed.
-    Skipping avoids the per-record markdown rewrite + index upsert that
-    made the startup reconcile an I/O storm on large vaults.
+    A record is unchanged when a record-map entry exists for its
+    ``(source, ref)`` and the body hash recorded in ``embed_state`` still
+    matches the incoming body — i.e. identical content is already stored
+    and embedded. Skipping avoids the per-record markdown rewrite + index
+    upsert that made the startup reconcile an I/O storm on large vaults.
 
-    Both checks hit small, indexed regular tables (record-map, body-hash
-    map) and are sub-millisecond. Deliberately NOT calling
-    ``Index.needs_reembed`` here: that does a
-    ``SELECT ... FROM memories_vec`` scan (~30ms/call on a large vault,
+    Both lookups hit small, ``memory_id``-/``(source, ref)``-indexed
+    regular tables and are ~5µs each (benchmarked). Deliberately NOT
+    calling ``Index.needs_reembed`` here: that does a
+    ``SELECT ... FROM memories_vec`` scan (~30ms/call on a large vault —
     no index on the vec virtual table's id column), which over a full
     reconcile is the very O(N²) stall this skip exists to remove. Embed
-    state is the embed worker's job, not the reconcile's — records that
-    need vectors were already enqueued at their original ingest and the
-    worker drains that persistent queue independently. Provider switches
-    (which invalidate every vector) go through ``memstem reindex``, not
-    the daemon reconcile.
+    state is the embed worker's job: records that need vectors were
+    enqueued at their original ingest and the worker drains that
+    persistent queue independently; provider switches go through
+    ``memstem reindex``.
 
-    New, changed, or never-stored records return False and fall through
-    to the normal ``Pipeline.process`` path.
+    Records that are new, changed, or not yet embedded (no recorded body
+    hash) return False and fall through to the normal ``Pipeline.process``
+    path.
     """
     index = pipeline.index
     existing_id = index.lookup_record_mapping(record.source, record.ref)
     if existing_id is None:
         return False
-    return find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) == existing_id
+    stored = index.stored_body_hash(existing_id)
+    if stored is None:
+        return False
+    return stored == body_hash(record.body)
 
 
 async def _reconcile_all(

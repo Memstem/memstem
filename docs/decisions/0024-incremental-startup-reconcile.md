@@ -34,14 +34,28 @@ skip records that are provably unchanged before calling
 
 1. a record-map entry exists for its `(source, ref)` — i.e. we've stored
    it before, **and**
-2. the normalized body hash of the incoming body still maps to that same
-   memory id (`find_existing_memory_for_hash == lookup_record_mapping`).
+2. the body hash recorded in `embed_state` for that memory id still
+   matches the incoming body (`Index.stored_body_hash == body_hash(body)`).
 
-For a skipped record we still call `Index.needs_reembed` and, if its
-vectors are missing/stale (e.g. the embedder was down at first ingest),
-`Index.enqueue_embed` — a cheap metadata check, no rewrite. Everything
-else (new record, changed body, never-stored) falls through to the
-normal `Pipeline.process`.
+Both lookups hit small, indexed regular tables (`record_map` by
+`(source, ref)`, `embed_state` by `memory_id`) and benchmark at ~5µs
+each. The skip deliberately does **not** call `Index.needs_reembed`: it
+runs `SELECT ... FROM memories_vec`, which is ~30ms/call on a large vault
+(the sqlite-vec virtual table has no index on its id column) — doing
+that per record *is* the O(N²) stall the skip exists to remove. Embed
+state is left to the embed worker, which drains its persistent queue
+independently (records needing vectors were enqueued at original
+ingest); provider switches go through `memstem reindex`. Everything else
+(new record, changed body, not-yet-embedded) falls through to the normal
+`Pipeline.process`.
+
+> An earlier iteration keyed the skip on the Layer-1 dedup table
+> (`body_hash_index`) and called `needs_reembed`. Both were wrong:
+> `needs_reembed`'s vec scan kept the reconcile O(N²), and
+> `body_hash_index` is incomplete (only records that passed through the
+> dedup-recording path), so ~19% of records never matched and churned
+> every restart. `embed_state` is keyed by `memory_id`, indexed, and
+> populated for every record — the reliable, cheap signal.
 
 The live watcher path (`_drain_into_pipeline → Pipeline.process`) is
 **unchanged**: real-time events are low-volume and must always apply
