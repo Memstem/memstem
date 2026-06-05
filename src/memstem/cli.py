@@ -884,6 +884,28 @@ async def _reconcile_into_pipeline(
     return count
 
 
+async def _reconcile_all(
+    pipeline: Pipeline,
+    streams: list[tuple[AsyncGenerator[MemoryRecord, None], str]],
+) -> None:
+    """Run every adapter's startup reconcile as one background task.
+
+    Kept off the daemon's critical path so the HTTP/MCP server, file
+    watchers, and embed workers bind and start immediately; the catch-up
+    for changes made while the daemon was down then streams in
+    concurrently. ``Pipeline.process`` is idempotent (exact-body dedup
+    plus ``needs_reembed``), so a record the live watcher also picks up
+    mid-reconcile is harmless. A failure in any stream is logged but
+    never propagates — the live watchers stay active regardless.
+    """
+    try:
+        for stream, label in streams:
+            await _reconcile_into_pipeline(pipeline, stream, label)
+        logger.info("startup reconcile complete for all adapters")
+    except Exception:
+        logger.exception("startup reconcile failed; live watchers remain active")
+
+
 def _build_openclaw_adapter(cfg: Config) -> tuple[OpenClawAdapter, list[Path]]:
     """Build the OpenClaw adapter from config; fall back to legacy paths.
 
@@ -997,22 +1019,17 @@ async def _run_daemon(
         boot_echo_hashes=boot_echo_hashes,
     )
 
-    await _reconcile_into_pipeline(
-        pipeline,
-        openclaw_adapter.reconcile(openclaw_paths),
-        label="openclaw",
-    )
-    await _reconcile_into_pipeline(
-        pipeline,
-        claude_adapter.reconcile(claude_paths),
-        label="claude-code",
-    )
+    # Build the catch-up reconcile streams but DON'T await them here:
+    # running them inline blocked the HTTP/MCP server from binding until
+    # the entire vault had been re-scanned (minutes, on a large vault).
+    # They run as a background task below instead, so the daemon serves
+    # immediately and catches up concurrently.
+    reconcile_streams: list[tuple[AsyncGenerator[MemoryRecord, None], str]] = [
+        (openclaw_adapter.reconcile(openclaw_paths), "openclaw"),
+        (claude_adapter.reconcile(claude_paths), "claude-code"),
+    ]
     if codex_adapter is not None:
-        await _reconcile_into_pipeline(
-            pipeline,
-            codex_adapter.reconcile([]),
-            label="codex",
-        )
+        reconcile_streams.append((codex_adapter.reconcile([]), "codex"))
 
     tasks: list[asyncio.Task[Any]] = [
         asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
@@ -1062,6 +1079,10 @@ async def _run_daemon(
 
         hygiene_loop = HygieneLoop(vault_obj, index, hygiene_config)
         tasks.append(asyncio.create_task(hygiene_loop.run()))
+
+    # Startup catch-up runs last and in the background so it never delays
+    # the server/watchers/workers coming up (see reconcile_streams above).
+    tasks.append(asyncio.create_task(_reconcile_all(pipeline, reconcile_streams)))
 
     try:
         await asyncio.gather(*tasks)

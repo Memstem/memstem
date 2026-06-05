@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.1] — 2026-06-05
+
+### Fixed
+
+- **Daemon no longer blocks the HTTP/MCP server on the startup
+  reconcile.** `memstem daemon` ran the full per-adapter reconcile
+  (re-scanning every source file to catch changes made while it was
+  down) to completion *before* binding the HTTP server, so on a large
+  vault the health / search / MCP endpoints were unreachable for
+  minutes after every restart. The reconcile now runs as a background
+  task alongside the watchers, embed workers, and HTTP server — the
+  daemon binds and serves immediately and catches up concurrently.
+  `Pipeline.process` is idempotent (exact-body dedup + `needs_reembed`),
+  so overlap with the live watchers is harmless, and a reconcile
+  failure is logged without taking the daemon down.
+
 ## [0.12.0] — 2026-06-05
 
 ### Added
