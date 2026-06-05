@@ -2,13 +2,15 @@
 
 The startup catch-up (`_reconcile_all`) runs as a background task so the
 HTTP/MCP server, watchers, and embed workers come up immediately. These
-tests pin the two behaviours that make that safe: it processes every
-stream, and a failure in one stream never propagates (the daemon's live
-watchers must stay up regardless).
+tests pin the behaviours that make that safe: it processes every stream,
+a failure in one stream never propagates (the daemon's live watchers
+must stay up regardless), and the CPU-bound walk cedes the event loop so
+the server isn't starved.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 
@@ -96,3 +98,29 @@ async def test_reconcile_all_swallows_stream_failure(vault: Vault, index: Index)
     )
     # The healthy stream's record still landed before the failure.
     assert index.lookup_record_mapping("openclaw", "/a/1.md") is not None
+
+
+async def test_reconcile_cedes_control_to_event_loop(vault: Vault, index: Index) -> None:
+    """A concurrent task must get a turn before the whole stream is done.
+
+    Regression guard for the 0.12.2 fix: without periodic `asyncio.sleep(0)`
+    the synchronous catch-up walk monopolizes the single-threaded event
+    loop, so the canary's lone `sleep(0)` would only resolve after all 150
+    records were processed (it would read 150). Cooperative yielding lets
+    it regain control partway through.
+    """
+    pipeline = Pipeline(vault, index)
+    records = [_record(f"/c/{i}.md", f"body number {i}") for i in range(150)]
+    processed_when_canary_ran: list[int] = []
+
+    async def canary() -> None:
+        await asyncio.sleep(0)  # hand control to the reconcile task first
+        processed_when_canary_ran.append(_memory_count(index))
+
+    await asyncio.gather(
+        _reconcile_all(pipeline, [(_stream(records), "openclaw")]),
+        canary(),
+    )
+
+    assert processed_when_canary_ran[0] < 150
+    assert _memory_count(index) == 150
