@@ -107,6 +107,15 @@ report plus an explicit per-type ranking policy. Shipping:
 - **`memstem auth`** for persistent embedder API keys
   (`~/.config/memstem/secrets.yaml`, mode 0600), so cron, PM2, systemd,
   and headless servers don't need per-shell exports.
+- **Secret handling (architecture and policy locked, implementation
+  in phases).** Memstem is being extended with a `SecretBackend`
+  interface, agent-side `vault.put` / `vault.get` tools, system-prompt
+  guidance, and an ingest-time regex pack that redacts known-format
+  secrets to vault placeholders before they enter the index. Scope and
+  limits are documented up front so customers know what Memstem will
+  and will not commit to — it is not a guaranteed secret scanner. See
+  [docs/secrets.md](./docs/secrets.md) for the full responsibility
+  boundary and shipping-status table.
 - **Operational tooling** — `memstem init`, `doctor`, `connect-clients`
   (idempotent wiring into `~/.claude.json` and each OpenClaw agent's
   `openclaw.json`), `migrate` (FlipClaw → Memstem one-shot), a
