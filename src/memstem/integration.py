@@ -1,6 +1,6 @@
-"""Wire Memstem into Claude Code and OpenClaw client config files.
+"""Wire Memstem into Claude Code, OpenClaw, and Codex client config files.
 
-Five idempotent edits:
+Six idempotent edits:
 
 1. `register_mcp_server` adds a `mcpServers.<name>` block to a Claude
    Code user config (`~/.claude.json` by default), preserving other
@@ -8,15 +8,19 @@ Five idempotent edits:
 2. `register_openclaw_mcp_server` adds a `mcp.servers.<name>` block to
    an OpenClaw agent's `openclaw.json`. Each agent has its own config,
    so this is called once per workspace.
-3. `remove_legacy_mcp_server` strips a stale `mcpServers.<name>` entry
+3. `register_codex_mcp_server` adds a `[mcp_servers.<name>]` TOML
+   section to Codex CLI's `~/.codex/config.toml`, with an optional
+   `[mcp_servers.<name>.env]` child table for embedder API keys.
+4. `remove_legacy_mcp_server` strips a stale `mcpServers.<name>` entry
    from `~/.claude/settings.json`. Earlier Memstem versions wrote the
    registration there; current Claude Code releases read MCP server
    definitions from `~/.claude.json` instead, so the legacy entry is
    inert and worth cleaning up.
-4. `apply_directive` keeps a versioned `<!-- memstem:directive v1 -->`
-   block in a CLAUDE.md file, replacing the existing block in place if
-   one is present and appending it otherwise.
-5. `remove_flipclaw_hook` strips the `claude-code-bridge.py` SessionEnd
+5. `apply_directive` keeps a versioned `<!-- memstem:directive v1 -->`
+   block in a CLAUDE.md (or Codex AGENTS.md) file, replacing the
+   existing block in place if one is present and appending it
+   otherwise.
+6. `remove_flipclaw_hook` strips the `claude-code-bridge.py` SessionEnd
    entry from `settings.json` so the legacy capture pipeline stops
    firing once Memstem is live.
 
@@ -74,6 +78,13 @@ DEFAULT_OPENCLAW_MCP_SERVER_ENTRY: dict[str, Any] = {
     "command": "memstem",
     "args": ["mcp"],
 }
+
+# Codex's `[mcp_servers.<name>]` block in ~/.codex/config.toml takes a
+# `command` string plus `args` list and an optional `[mcp_servers.<name>.env]`
+# child table for inlined env vars (used for embedder API keys, same
+# motivation as the Claude Code / OpenClaw env merge).
+DEFAULT_CODEX_MCP_COMMAND = "memstem"
+DEFAULT_CODEX_MCP_ARGS = ["mcp"]
 
 FLIPCLAW_BRIDGE_MARKER = "claude-code-bridge.py"
 
@@ -498,6 +509,153 @@ def register_openclaw_mcp_server(
         path=openclaw_config_path,
         action="updated",
         message=f"registered {server_name} in mcp.servers",
+        diff=diff,
+        backup_path=backup_path,
+    )
+
+
+def _extract_codex_memstem_block(text: str, server_name: str) -> tuple[str, str]:
+    """Split ``text`` into (everything-except-memstem, memstem-block).
+
+    The Codex config.toml stores each MCP server as ``[mcp_servers.<name>]``,
+    optionally followed by ``[mcp_servers.<name>.env]``. Both belong to the
+    Memstem registration. Lines belonging to those tables (and any trailing
+    blank lines immediately after) are removed and returned separately so
+    the caller can either compare for idempotency or rebuild.
+    """
+    memstem_headers = {
+        f"[mcp_servers.{server_name}]",
+        f"[mcp_servers.{server_name}.env]",
+    }
+    kept_lines: list[str] = []
+    removed_lines: list[str] = []
+    in_block = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]") and "=" not in stripped:
+            in_block = stripped in memstem_headers
+        # Inline-table keys like `foo = { ... }` don't open a new section;
+        # the heuristic above is safe because TOML section headers are
+        # always a bare `[...]` on their own line.
+        if in_block:
+            removed_lines.append(line)
+        else:
+            kept_lines.append(line)
+    # If the removed block was sandwiched between blank lines, strip ONE
+    # trailing blank from kept_lines so we don't accumulate empty lines on
+    # repeated round-trips.
+    if removed_lines and kept_lines and kept_lines[-1].strip() == "":
+        kept_lines.pop()
+    return "".join(kept_lines), "".join(removed_lines)
+
+
+def _render_codex_memstem_block(
+    server_name: str,
+    command: str,
+    args: list[str],
+    env: Mapping[str, str] | None,
+) -> str:
+    """Render the TOML block(s) for Memstem under ``[mcp_servers.<name>]``."""
+    args_repr = "[" + ", ".join(json.dumps(a) for a in args) + "]"
+    lines = [
+        f"[mcp_servers.{server_name}]",
+        f"command = {json.dumps(command)}",
+        f"args = {args_repr}",
+    ]
+    if env:
+        lines.append("")
+        lines.append(f"[mcp_servers.{server_name}.env]")
+        for k in sorted(env):
+            lines.append(f"{k} = {json.dumps(env[k])}")
+    return "\n".join(lines) + "\n"
+
+
+def register_codex_mcp_server(
+    config_toml_path: Path,
+    *,
+    server_name: str = DEFAULT_MCP_SERVER_NAME,
+    command: str = DEFAULT_CODEX_MCP_COMMAND,
+    args: list[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    dry_run: bool = False,
+) -> Change:
+    """Add ``[mcp_servers.<server_name>]`` to a Codex ``config.toml``.
+
+    Codex stores MCP server definitions as TOML tables. We don't take a
+    runtime dependency on a TOML writer — instead the function treats the
+    file as text and replaces (or appends) the contiguous run of lines that
+    make up the Memstem table(s). Other servers, top-level keys, and
+    comments outside the Memstem block are left exactly as they were.
+
+    Creates the file (and parent dir) if missing — a Codex install with no
+    user config yet is a normal state.
+
+    ``env`` populates an optional ``[mcp_servers.<server_name>.env]`` child
+    table — same motivation as on the Claude Code / OpenClaw side, propagating
+    the embedder API key into the spawned MCP child so it doesn't have to be
+    in Codex's launching shell.
+    """
+    args_list = list(args) if args is not None else list(DEFAULT_CODEX_MCP_ARGS)
+    desired_block = _render_codex_memstem_block(server_name, command, args_list, env)
+
+    if not config_toml_path.exists():
+        before = ""
+        after = desired_block
+        diff = _diff(str(config_toml_path), before, after)
+        if dry_run:
+            return Change(
+                path=config_toml_path,
+                action="created",
+                message=f"would create config.toml with {server_name} block",
+                diff=diff,
+            )
+        config_toml_path.parent.mkdir(parents=True, exist_ok=True)
+        config_toml_path.write_text(after, encoding="utf-8")
+        return Change(
+            path=config_toml_path,
+            action="created",
+            message=f"created config.toml with {server_name} block",
+            diff=diff,
+        )
+
+    before = config_toml_path.read_text(encoding="utf-8")
+    kept, existing_block = _extract_codex_memstem_block(before, server_name)
+
+    if existing_block.strip() == desired_block.strip():
+        return Change(
+            path=config_toml_path,
+            action="noop",
+            message=f"{server_name} already registered",
+        )
+
+    # Append the desired block, separated by a blank line if the surviving
+    # content doesn't already end with one.
+    if kept and not kept.endswith("\n"):
+        kept = kept + "\n"
+    sep = "" if (not kept or kept.endswith("\n\n")) else "\n"
+    after = kept + sep + desired_block
+
+    diff = _diff(str(config_toml_path), before, after)
+    if dry_run:
+        return Change(
+            path=config_toml_path,
+            action="updated",
+            message=(
+                f"would update {server_name} block"
+                if existing_block
+                else f"would append {server_name} block"
+            ),
+            diff=diff,
+        )
+
+    backup_path = _backup(config_toml_path)
+    config_toml_path.write_text(after, encoding="utf-8")
+    return Change(
+        path=config_toml_path,
+        action="updated",
+        message=(
+            f"updated {server_name} block" if existing_block else f"appended {server_name} block"
+        ),
         diff=diff,
         backup_path=backup_path,
     )

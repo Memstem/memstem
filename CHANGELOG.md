@@ -7,30 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+_Nothing yet._
 
-- **`OpenAIDedupJudge`** for the hygiene loop's dedup-judge stage —
-  companion to the existing `OllamaDedupJudge` for setups that drive
-  judging through an OpenAI-compatible chat-completions endpoint.
-  Includes self-hosted endpoints (vLLM, TGI, LM Studio, LiteLLM) via
-  the same `--base-url` override pattern the summarizer uses. Auth via
-  `memstem.auth.get_secret` — env var first, secrets file second; the
-  `api_key_env` field lets callers point at a dummy env var for
-  self-hosted servers that ignore the value. Mocked-client tests
-  cover happy path, fenced JSON, garbage / empty responses, malformed
-  payloads, and the call-failure fallback.
-- **`HygieneConfig` extensions**: `judge_provider` now accepts
-  `"openai"` in addition to `"noop"` and `"ollama"`. New optional
-  fields `judge_model`, `judge_base_url`, and `judge_api_key_env`
-  parallel the existing `summarizer_*` set. Defaults preserve the
-  pre-existing NoOp behavior — existing configs are unaffected.
-- **`memstem hygiene dedup-judge --provider {noop,openai,ollama}`**
-  CLI surface, with `--model`, `--base-url`, `--api-key-env`
-  applying uniformly across providers. The legacy
-  `--enable-llm` / `--ollama-url` / `--ollama-model` flags remain
-  supported as deprecated aliases that map to `--provider ollama`.
-
-## [0.11.0] — 2026-05-19
+## [0.11.0] — 2026-05-22
 
 ### Added
 
@@ -61,9 +40,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself, with per-stage failure isolation so a sqlite error or LLM
   timeout in one stage cannot affect ingestion, embedding, or the
   other hygiene stages.
-
-### Added (pre-existing items still in `[Unreleased]`)
-
+- **`OpenAIDedupJudge`** for the hygiene loop's dedup-judge stage —
+  companion to the existing `OllamaDedupJudge` for setups that drive
+  judging through an OpenAI-compatible chat-completions endpoint.
+  Includes self-hosted endpoints (vLLM, TGI, LM Studio, LiteLLM) via
+  the same `--base-url` override pattern the summarizer uses. Auth via
+  `memstem.auth.get_secret` — env var first, secrets file second; the
+  `api_key_env` field lets callers point at a dummy env var for
+  self-hosted servers that ignore the value. Mocked-client tests
+  cover happy path, fenced JSON, garbage / empty responses, malformed
+  payloads, and the call-failure fallback.
+- **`HygieneConfig` judge extensions**: `judge_provider` now accepts
+  `"openai"` in addition to `"noop"` and `"ollama"`. New optional
+  fields `judge_model`, `judge_base_url`, and `judge_api_key_env`
+  parallel the existing `summarizer_*` set. Defaults preserve the
+  pre-existing NoOp behavior — existing configs are unaffected.
+- **`memstem hygiene dedup-judge --provider {noop,openai,ollama}`**
+  CLI surface, with `--model`, `--base-url`, `--api-key-env`
+  applying uniformly across providers. The legacy
+  `--enable-llm` / `--ollama-url` / `--ollama-model` flags remain
+  supported as deprecated aliases that map to `--provider ollama`.
+- **Summarizer `base_url` + `api_key_env` plumbed through to the
+  hygiene loop.** `HygieneConfig` gains `summarizer_base_url`
+  (provider default when `None`) and `summarizer_api_key_env`
+  (default `OPENAI_API_KEY`); `HygieneLoop` now passes both through
+  when building the `OpenAISummarizer` / `OllamaSummarizer`. Lets the
+  in-daemon loop point distillation + project-records at a self-hosted
+  OpenAI-compatible endpoint (e.g. vLLM serving Gemma) without code
+  changes, and keeps self-hosted dummy keys out of the canonical
+  `OPENAI_API_KEY`.
 - **Codex adapter** (`src/memstem/adapters/codex.py`). Watches
   `~/.codex/sessions/`, `~/.codex/skills/`, and `~/.codex/memories/`
   under a configurable `codex_home` and emits `type: session`,
@@ -84,6 +89,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`AGENTS.md.example`, `config.toml.fragment`, `README.md`) for
   wiring Codex itself to retrieve from Memstem via the existing
   `memstem mcp` stdio server.
+
+### Changed
+
+- **Audit log + distillation provenance now distinguish OpenAI-Inc
+  from OpenAI-compatible endpoints.** `OpenAIDedupJudge` and
+  `OpenAISummarizer` compute their `name_prefix` from `base_url` at
+  init time instead of hardcoding `"openai"`: `api.openai.com` and
+  `*.openai.azure.com` stay `openai:<model>`; everything else (vLLM,
+  Together, Groq, …) becomes `openai-compat:<model>`. So a self-hosted
+  Gemma verdict reads as `openai-compat:gemma-4-e4b-it` rather than
+  masquerading as a real OpenAI call. Non-breaking — cache lookups key
+  off the literal name string, unchanged for the OpenAI-Inc case.
 
 ### Fixed
 
