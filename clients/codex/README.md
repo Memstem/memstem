@@ -4,15 +4,10 @@ Wires OpenAI's Codex CLI to use Memstem as its memory backend, so
 every Codex session can search across every agent's memories, skills,
 and prior sessions.
 
-This is the **manual** setup. A `memstem connect-clients codex`
-command that does the wiring automatically (the way the existing
-`connect-clients` handles Claude Code and OpenClaw) is planned as a
-follow-up.
-
 ## Prerequisites
 
 - Codex CLI installed and on `PATH` (`codex --version` works).
-- Memstem installed and on `PATH` (`memstem --version` works).
+- Memstem installed and on `PATH` (`memstem` works).
 - Memstem daemon running, or at least the vault initialized (`memstem
   init`).
 
@@ -21,7 +16,39 @@ apply by itself — see the remote-MCP architecture notes in the
 project README. The single-host case is what the templates here
 cover.
 
-## Step 1 — Register the Memstem MCP server
+## The easy way — `memstem connect-clients`
+
+The `memstem connect-clients` command (already used for Claude Code
+and OpenClaw) now wires Codex too. From any shell on the host where
+Memstem and Codex are installed:
+
+```bash
+memstem connect-clients               # wires Claude Code, OpenClaw, and Codex
+memstem connect-clients --dry-run     # preview the diff first (recommended)
+```
+
+The Codex step:
+
+- Registers `[mcp_servers.memstem]` in `~/.codex/config.toml` (creating
+  the file if it doesn't exist, preserving any other MCP servers you
+  already have configured).
+- Inserts the versioned `<!-- memstem:directive v1 -->` block into
+  `~/.codex/AGENTS.md`, the same directive Claude Code's CLAUDE.md
+  receives.
+- Bakes the embedder's API key into `[mcp_servers.memstem.env]` so the
+  spawned MCP child has it even when Codex's launching shell doesn't.
+- Skips itself silently when `~/.codex/` doesn't exist (i.e., on hosts
+  without Codex CLI installed). Pass `--no-codex` to skip explicitly.
+
+Re-running is safe; every edit is idempotent and a `.bak` is written
+next to each file before the first change.
+
+## The manual way
+
+If you'd rather wire things by hand (e.g., to drop the fragment into
+an unusual config layout, or to skip the directive injection):
+
+### Register the Memstem MCP server
 
 Append `config.toml.fragment` to your `~/.codex/config.toml`:
 
@@ -48,7 +75,7 @@ Verify Codex sees it:
 codex mcp list
 ```
 
-## Step 2 — Install the Memstem-first directive
+### Install the Memstem-first directive
 
 Copy `AGENTS.md.example` to `~/.codex/AGENTS.md`:
 
@@ -60,9 +87,11 @@ cp <PATH-TO-MEMSTEM-REPO>/clients/codex/AGENTS.md.example \
 If you already have a `~/.codex/AGENTS.md`, merge the relevant
 sections in by hand — Codex concatenates `AGENTS.md` files from the
 global level down through your project tree, so make sure the
-Memstem-first rule is somewhere in the chain.
+Memstem-first rule is somewhere in the chain. (`memstem connect-clients`
+handles this case automatically by injecting a versioned
+`<!-- memstem:directive v1 -->` block rather than replacing the file.)
 
-## Step 3 — Confirm ingestion
+## Confirm ingestion
 
 The Memstem daemon's Codex adapter watches:
 
@@ -84,7 +113,7 @@ memstem search "<topic from that session>"
 You should see the new session in the results, alongside any Claude
 Code or OpenClaw memories about the same topic.
 
-## Step 4 — Use it
+## Use it
 
 Start a Codex session and ask a retrieval-style question:
 
