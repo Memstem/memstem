@@ -177,7 +177,7 @@ Each flag is opt-in so you can dial back the scope:
 | `--openai-key KEY` | Store an OpenAI key via `memstem auth set openai`. Also reads `MEMSTEM_OPENAI_KEY`, then `OPENAI_API_KEY`. |
 | `--gemini-key KEY` | Same, for Gemini (env: `MEMSTEM_GEMINI_KEY`). |
 | `--voyage-key KEY` | Same, for Voyage (env: `MEMSTEM_VOYAGE_KEY`). |
-| `--connect-clients` | Run `memstem connect-clients` (`~/.claude.json` + CLAUDE.md edits, plus legacy-settings cleanup). Prints a dry-run diff before applying. |
+| `--connect-clients` | Run `memstem connect-clients` — wires Claude Code (`~/.claude.json` + CLAUDE.md), OpenClaw, and Codex (`~/.codex/config.toml` + AGENTS.md), plus legacy-settings cleanup. Prints a dry-run diff before applying. |
 | `--remove-flipclaw` | With `--connect-clients`, also strip the legacy `claude-code-bridge.py` SessionEnd hook. |
 | `--migrate` | Run `memstem migrate --apply` to import historical memory. |
 | `--start-daemon` | `pm2 start memstem` so ingestion survives reboots. |
@@ -220,7 +220,7 @@ Both build SQLite with extension support enabled. Once you're on a Homebrew or p
 
 Note: macOS CI is currently `continue-on-error: true` — the GitHub Actions `setup-python` build hits the same system-Python issue. We track full macOS CI green as a follow-up; the user-facing install path on a real Mac is reliable today via Homebrew or pyenv.
 
-`memstem connect-clients` is the cutover wiring step. It (a) adds an `mcpServers.memstem` entry to `~/.claude.json` so Claude Code sees Memstem MCP, (b) registers `mcp.servers.memstem` in each configured OpenClaw agent's `openclaw.json` so OpenClaw agents see it too, (c) strips any stale entry from the legacy `~/.claude/settings.json`, and (d) inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
+`memstem connect-clients` is the cutover wiring step. It (a) adds an `mcpServers.memstem` entry to `~/.claude.json` so Claude Code sees Memstem MCP, (b) registers `mcp.servers.memstem` in each configured OpenClaw agent's `openclaw.json` so OpenClaw agents see it too, (c) wires Codex CLI via an idempotent `[mcp_servers.memstem]` table in `~/.codex/config.toml` plus the same directive block in `~/.codex/AGENTS.md` (skipped when `~/.codex/` is absent; toggle with `--codex` / `--no-codex`), (d) strips any stale entry from the legacy `~/.claude/settings.json`, and (e) inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
 
 ## Querying from an agent
 
