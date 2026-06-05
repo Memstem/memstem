@@ -1,0 +1,62 @@
+# AGENTS.md — Memstem-aware Codex
+
+Drop this at `~/.codex/AGENTS.md` (or merge into your existing one) so
+every Codex session starts with the Memstem-first retrieval rule.
+Codex loads this file globally; project-level `AGENTS.md` files
+override it for cwd-specific instructions.
+
+## Memory Search Priority — Memstem First, Always
+
+**Memstem is the unified memory index across all your AI agents
+(Claude Code, Codex, OpenClaw, anything that drops files on disk).
+A grep on this one workspace cannot see cross-agent context.** Use
+this ladder for any retrieval-style question — past decisions,
+project status, prior work, "do we have a skill for X", "what did
+Claude Code do yesterday".
+
+### 1. PRIMARY — Memstem MCP tools
+
+If the `memstem` MCP server is configured in `~/.codex/config.toml`
+(see `clients/codex/config.toml.fragment` in the Memstem repo), call
+its tools directly:
+
+- `memstem_search` — hybrid lexical + semantic search
+- `memstem_get` — fetch a specific memory
+- `memstem_list_skills` / `memstem_get_skill`
+- `memstem_upsert` — write a new memory (rare; the capture pipeline
+  ingests Codex session JSONLs automatically, so deliberate writes
+  are usually only for synthesized insights)
+
+### 2. SECONDARY — `memstem` CLI
+
+If the MCP server is not reachable:
+
+```bash
+memstem search "your query"
+memstem get <id-or-path>
+```
+
+### 3. FALLBACK — direct file reads + grep
+
+Only when 1 and 2 are both unavailable, or when you already know the
+exact file or string.
+
+### Do NOT default to
+
+- `~/.codex/memories/` — Codex's built-in memory dir. Memstem is the
+  single source of truth; do not write here as a primary action.
+  Memstem will ingest anything that's already there, but new
+  knowledge should land in Memstem via `memstem_upsert` or be left
+  in session transcripts for the adapter to pick up.
+
+## Why this matters
+
+Codex sessions write to `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+on whatever host Codex is running on. The Memstem daemon on that
+host watches those files and ingests each session into the unified
+index — no Codex cooperation required.
+
+When you search Memstem from Codex, you get back results from every
+agent on every host you've connected to the same vault: Codex
+sessions from your laptop, Claude Code sessions from your dev server,
+OpenClaw notes from Ari, and your own authored memories and skills.

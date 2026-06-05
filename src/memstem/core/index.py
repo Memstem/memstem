@@ -847,15 +847,40 @@ class Index:
     def get_path(self, memory_id: str) -> str | None:
         """Return the vault-relative path for a memory id, or None if missing.
 
-        Properly serialized through the Index lock — the embed worker
-        used to call `index.db.execute` directly which races other
-        threads and intermittently triggers `sqlite3.InterfaceError:
-        bad parameter or other API misuse` when a concurrent operation
-        leaves the connection state inconsistent.
+        Properly serialized through the Index lock. Every read of
+        ``self.db`` from a daemon-process thread (embed worker via
+        :func:`asyncio.to_thread`, pipeline on the asyncio thread, MCP
+        request handlers) must go through a lock-holding Index method —
+        not bare ``index.db.execute(...)``. CPython's sqlite3 module
+        keeps a per-connection statement cache that hands the same
+        prepared statement object to concurrent callers; native SQLite
+        rejects that with ``SQLITE_MISUSE`` ("bad parameter or other API
+        misuse") even though both sides see well-formed Python params.
         """
         with self._lock:
-            row = self.db.execute("SELECT path FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            row = self.db.execute(
+                "SELECT path FROM memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
         return row["path"] if row else None
+
+    def lookup_record_mapping(self, source: str, ref: str) -> str | None:
+        """Return the memory_id (as ``str``) for a ``(source, ref)`` pair, or None.
+
+        The pipeline used to read this table via a bare
+        ``self.index.db.execute(...)`` on the asyncio thread. That
+        raced the embed worker's locked ``get_path`` on the same
+        :class:`sqlite3.Connection` and surfaced as the
+        ``InterfaceError: bad parameter or other API misuse`` crash
+        documented on :meth:`get_path`. Routing the lookup through
+        this method (which takes ``self._lock``) makes the call safe
+        from any thread.
+        """
+        with self._lock:
+            row = self.db.execute(
+                "SELECT memory_id FROM record_map WHERE source = ? AND ref = ?",
+                (source, ref),
+            ).fetchone()
+        return row["memory_id"] if row else None
 
     def queue_stats(self) -> dict[str, int]:
         """Return `{pending, failed, total}` for `memstem doctor`."""
@@ -932,15 +957,25 @@ class Index:
 
             if types:
                 type_set = set(types)
+                # Dedupe memory_ids first: a single memory with multiple
+                # chunks appears in `rows` once per chunk, but the type
+                # lookup only needs each id once. Pre-fix this used a
+                # set for placeholders and a list for parameters — when
+                # the over-fetch returned duplicates we ended up with
+                # fewer "?" than bindings and SQLite raised
+                # `ProgrammingError: Incorrect number of bindings
+                # supplied`. The MCP server saw this as
+                # `vec query failed; falling back to BM25`.
+                unique_ids = list({r["memory_id"] for r in rows})
                 id_rows = (
                     self.db.execute(
                         f"""
                     SELECT id, type FROM memories
-                    WHERE id IN ({",".join("?" for _ in {r["memory_id"] for r in rows})})
+                    WHERE id IN ({",".join("?" for _ in unique_ids)})
                     """,
-                        [r["memory_id"] for r in rows],
+                        unique_ids,
                     ).fetchall()
-                    if rows
+                    if unique_ids
                     else []
                 )
                 allowed = {r["id"] for r in id_rows if r["type"] in type_set}

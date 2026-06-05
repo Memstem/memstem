@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.11.0] — 2026-05-22
+
+### Added
+
+- **In-daemon hygiene loop** (ADR 0023). `memstem daemon` now runs the
+  four hygiene stages (`distill-sessions`, `dedup-judge`, `importance`,
+  `project-records`) as a background `asyncio` task alongside the
+  adapter watchers, embedder workers, and HTTP/MCP server. Each stage
+  ticks on its own configurable interval and writes its
+  `last_run` / `running_since` cursor to `hygiene_state`. The CLI
+  hygiene commands now acquire the same per-stage lock before writing,
+  so manual runs and the loop never compete. A new `hygiene` block on
+  `GET /health` exposes per-stage `last_run` timestamps and any
+  currently-running stages — useful for fleet monitoring.
+- **New `HygieneConfig` fields** (all with safe defaults):
+  `loop_enabled` (default `true`; set `false` on multi-tenant
+  containers where the customer hasn't authorized LLM spend),
+  `loop_poll_interval_seconds`, `distill_interval_seconds`,
+  `dedup_interval_seconds`, `importance_interval_seconds`,
+  `project_records_interval_seconds`, `distill_max_per_cycle`,
+  `dedup_max_per_cycle`, `summarizer_provider` / `summarizer_model`,
+  `judge_provider`, `stage_lock_max_age_seconds`. Existing vaults
+  pick up the defaults automatically; no migration required.
+- **New module `src/memstem/hygiene/state.py`** — lock + last-run
+  helpers (`acquire_stage_lock`, `release_stage_lock`,
+  `get_last_run`, `set_last_run`, `due_for_run`, `snapshot`) used by
+  both the in-daemon loop and the CLI commands.
+- **New module `src/memstem/hygiene/loop.py`** — the loop runner
+  itself, with per-stage failure isolation so a sqlite error or LLM
+  timeout in one stage cannot affect ingestion, embedding, or the
+  other hygiene stages.
+- **`OpenAIDedupJudge`** for the hygiene loop's dedup-judge stage —
+  companion to the existing `OllamaDedupJudge` for setups that drive
+  judging through an OpenAI-compatible chat-completions endpoint.
+  Includes self-hosted endpoints (vLLM, TGI, LM Studio, LiteLLM) via
+  the same `--base-url` override pattern the summarizer uses. Auth via
+  `memstem.auth.get_secret` — env var first, secrets file second; the
+  `api_key_env` field lets callers point at a dummy env var for
+  self-hosted servers that ignore the value. Mocked-client tests
+  cover happy path, fenced JSON, garbage / empty responses, malformed
+  payloads, and the call-failure fallback.
+- **`HygieneConfig` judge extensions**: `judge_provider` now accepts
+  `"openai"` in addition to `"noop"` and `"ollama"`. New optional
+  fields `judge_model`, `judge_base_url`, and `judge_api_key_env`
+  parallel the existing `summarizer_*` set. Defaults preserve the
+  pre-existing NoOp behavior — existing configs are unaffected.
+- **`memstem hygiene dedup-judge --provider {noop,openai,ollama}`**
+  CLI surface, with `--model`, `--base-url`, `--api-key-env`
+  applying uniformly across providers. The legacy
+  `--enable-llm` / `--ollama-url` / `--ollama-model` flags remain
+  supported as deprecated aliases that map to `--provider ollama`.
+- **Summarizer `base_url` + `api_key_env` plumbed through to the
+  hygiene loop.** `HygieneConfig` gains `summarizer_base_url`
+  (provider default when `None`) and `summarizer_api_key_env`
+  (default `OPENAI_API_KEY`); `HygieneLoop` now passes both through
+  when building the `OpenAISummarizer` / `OllamaSummarizer`. Lets the
+  in-daemon loop point distillation + project-records at a self-hosted
+  OpenAI-compatible endpoint (e.g. vLLM serving Gemma) without code
+  changes, and keeps self-hosted dummy keys out of the canonical
+  `OPENAI_API_KEY`.
+- **Codex adapter** (`src/memstem/adapters/codex.py`). Watches
+  `~/.codex/sessions/`, `~/.codex/skills/`, and `~/.codex/memories/`
+  under a configurable `codex_home` and emits `type: session`,
+  `type: skill`, and `type: memory` records. Sessions are parsed
+  from Codex's JSONL rollouts; the `developer`-role permissions
+  block and `<environment_context>` user-stub messages are dropped
+  at parse time so the index doesn't fill with boilerplate. Function
+  calls and outputs are summarized (`[function_call: <name>]`,
+  `[function_call_output]`) rather than ingested verbatim. Project
+  tag is derived from the session's `cwd` so Codex sessions group
+  with Claude Code sessions for the same project. The vendor-shipped
+  `~/.codex/skills/.system/` directory is hard-excluded. New
+  `CodexAdapterConfig` block under `adapters.codex` in
+  `_meta/config.yaml`; the adapter is enabled by default but no-ops
+  silently on hosts without Codex installed. See ADR 0022 for the
+  full design rationale.
+- **Codex client templates** under `clients/codex/`
+  (`AGENTS.md.example`, `config.toml.fragment`, `README.md`) for
+  wiring Codex itself to retrieve from Memstem via the existing
+  `memstem mcp` stdio server.
+
+### Changed
+
+- **Audit log + distillation provenance now distinguish OpenAI-Inc
+  from OpenAI-compatible endpoints.** `OpenAIDedupJudge` and
+  `OpenAISummarizer` compute their `name_prefix` from `base_url` at
+  init time instead of hardcoding `"openai"`: `api.openai.com` and
+  `*.openai.azure.com` stay `openai:<model>`; everything else (vLLM,
+  Together, Groq, …) becomes `openai-compat:<model>`. So a self-hosted
+  Gemma verdict reads as `openai-compat:gemma-4-e4b-it` rather than
+  masquerading as a real OpenAI call. Non-breaking — cache lookups key
+  off the literal name string, unchanged for the OpenAI-Inc case.
+
+### Fixed
+
+- **Daemon crash under unstable embedder providers**
+  (`sqlite3.InterfaceError: bad parameter or other API misuse`). The
+  embed worker took `Index._lock` for its reads, but several other
+  call sites (`Pipeline._lookup_id_or_none`, `Pipeline._existing_path`,
+  `Search._materialize`, the HTTP server's path lookup) ran
+  `index.db.execute(...)` directly without taking the lock. With both
+  the worker thread (`asyncio.to_thread`) and the asyncio thread
+  hitting the shared `sqlite3.Connection`, native SQLite returned
+  `SQLITE_MISUSE`. The race was effectively invisible under healthy
+  network conditions (the worker spent >95% of its cycle inside
+  embedder I/O), but every cluster of OpenAI 503s/timeouts shifted
+  the worker into a tight SQL-bound spin and the collision rate
+  spiked. Pipeline lookups now go through new public
+  `Index.lookup_record_mapping` / existing `Index.get_path`, both
+  lock-holding; HTTP server and `Search._materialize` use the same
+  path. Defense in depth: `Index.get_path` coerces its argument to
+  `str`.
+- **`Index.query_vec` crash with multi-chunk memories under type
+  filter** (`sqlite3.ProgrammingError: Incorrect number of bindings
+  supplied`). The placeholder list was built from a deduplicating set
+  comprehension over `memory_id`s, but the parameter list was the
+  raw (non-deduped) list — when over-fetch returned duplicate
+  memory_ids the two diverged. Visible in logs as
+  `vec query failed; falling back to BM25: ... uses N ... M
+  supplied`. Both lists now derive from one deduped sequence.
+- **Embed worker no longer crashes on malformed vault frontmatter**.
+  `EmbedWorker._read_for_embed` only caught `MemoryNotFoundError`;
+  a file with empty or broken frontmatter raised
+  `InvalidFrontmatterError` up to `run()` and was logged as an
+  "embed worker crashed" stack on every tick until the file was
+  fixed. The worker now treats this as a permanent failure for that
+  record — marks it `failed=1` with a clear `last_error` so it
+  surfaces in `memstem doctor` instead of hot-looping the same bad
+  file.
+
 ## [0.10.0] — 2026-05-07
 
 The "embed worker resilience" release. Two production bugs spotted on

@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,6 +19,7 @@ import yaml
 import memstem
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
+from memstem.adapters.codex import CodexAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
 from memstem.client import (
     DaemonClient,
@@ -59,6 +63,7 @@ from memstem.integration import (
     claude_md_targets_for_openclaw,
     mcp_env_from_embedding,
     openclaw_config_for_workspace,
+    register_codex_mcp_server,
     register_mcp_server,
     register_openclaw_mcp_server,
     remove_flipclaw_hook,
@@ -80,6 +85,9 @@ DEFAULT_CLAUDE_CODE_PATHS = (Path.home() / ".claude" / "projects",)
 DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude.json"
 DEFAULT_LEGACY_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 DEFAULT_CLAUDE_USER_MD = Path.home() / ".claude" / "CLAUDE.md"
+DEFAULT_CODEX_HOME = Path.home() / ".codex"
+DEFAULT_CODEX_CONFIG_TOML = DEFAULT_CODEX_HOME / "config.toml"
+DEFAULT_CODEX_AGENTS_MD = DEFAULT_CODEX_HOME / "AGENTS.md"
 
 
 app = typer.Typer(
@@ -101,6 +109,45 @@ hygiene_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(hygiene_app)
+
+
+@contextmanager
+def _stage_lock(
+    db: sqlite3.Connection,
+    stage: str,
+    *,
+    max_age_seconds: int = 3600,
+) -> Iterator[None]:
+    """Coordinate CLI hygiene runs with the in-daemon hygiene loop (ADR 0023).
+
+    Acquires a per-stage lock row in ``hygiene_state`` before yielding.
+    If the lock is already held, prints a friendly diagnostic and raises
+    ``typer.Exit(2)``. On clean exit, records ``last_run:<stage>`` so the
+    loop doesn't immediately re-run the stage. Always releases the lock
+    on exit, whether the body raised or not.
+
+    Used only for CLI commands that *write* (apply / dedup-judge). Dry
+    runs read only and don't need the lock.
+    """
+    from memstem.hygiene.state import (
+        acquire_stage_lock,
+        release_stage_lock,
+        set_last_run,
+    )
+
+    if not acquire_stage_lock(db, stage, max_age_seconds=max_age_seconds):
+        typer.echo(
+            f"hygiene {stage}: another runner holds the lock — the "
+            "in-daemon loop may be mid-cycle. Re-try in a minute, or "
+            "check `memstem doctor` and the daemon logs.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        yield
+        set_last_run(db, stage, datetime.now(UTC))
+    finally:
+        release_stage_lock(db, stage)
 
 
 def _resolve_vault_path(override: str | None = None) -> Path:
@@ -872,6 +919,45 @@ def _build_claude_adapter(cfg: Config) -> tuple[ClaudeCodeAdapter, list[Path]]:
     return ClaudeCodeAdapter(extra_files=extras), paths
 
 
+def _build_codex_adapter(cfg: Config) -> CodexAdapter:
+    """Build the Codex adapter from config (see ADR 0022).
+
+    Each ingestion path can be individually disabled via config. Missing
+    paths on disk are no-ops, so this adapter is safe to leave enabled
+    on hosts without Codex installed.
+    """
+    codex_cfg = cfg.adapters.codex
+    home = Path(codex_cfg.codex_home).expanduser() if codex_cfg.codex_home else DEFAULT_CODEX_HOME
+
+    sessions_root: Path | None = None
+    if codex_cfg.ingest_sessions:
+        sessions_root = (
+            Path(codex_cfg.sessions_root).expanduser()
+            if codex_cfg.sessions_root
+            else home / "sessions"
+        )
+
+    skills_root: Path | None = None
+    if codex_cfg.ingest_skills:
+        skills_root = (
+            Path(codex_cfg.skills_root).expanduser() if codex_cfg.skills_root else home / "skills"
+        )
+
+    memories_root: Path | None = None
+    if codex_cfg.ingest_memories:
+        memories_root = (
+            Path(codex_cfg.memories_root).expanduser()
+            if codex_cfg.memories_root
+            else home / "memories"
+        )
+
+    return CodexAdapter(
+        sessions_root=sessions_root,
+        skills_root=skills_root,
+        memories_root=memories_root,
+    )
+
+
 async def _run_daemon(
     vault_obj: Vault,
     index: Index,
@@ -882,6 +968,7 @@ async def _run_daemon(
     openclaw_paths: list[Path],
     claude_adapter: ClaudeCodeAdapter,
     claude_paths: list[Path],
+    codex_adapter: CodexAdapter | None = None,
     embedding_signature: str = "",
     http_config: Any = None,
     search_config: Any = None,
@@ -920,11 +1007,19 @@ async def _run_daemon(
         claude_adapter.reconcile(claude_paths),
         label="claude-code",
     )
+    if codex_adapter is not None:
+        await _reconcile_into_pipeline(
+            pipeline,
+            codex_adapter.reconcile([]),
+            label="codex",
+        )
 
     tasks: list[asyncio.Task[Any]] = [
         asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
         asyncio.create_task(_drain_into_pipeline(pipeline, claude_adapter.watch(claude_paths))),
     ]
+    if codex_adapter is not None:
+        tasks.append(asyncio.create_task(_drain_into_pipeline(pipeline, codex_adapter.watch([]))))
     if embedder is not None:
         tasks.append(
             asyncio.create_task(
@@ -956,6 +1051,17 @@ async def _run_daemon(
                 )
             )
         )
+
+    # ADR 0023: in-daemon hygiene loop. Runs distill-sessions,
+    # dedup-judge, importance, and project-records on intervals
+    # configured under ``hygiene:`` in config.yaml. Disabled per
+    # config or short-circuited inside HygieneLoop.run() when
+    # ``hygiene.loop_enabled`` is false.
+    if hygiene_config is not None and getattr(hygiene_config, "loop_enabled", False):
+        from memstem.hygiene.loop import HygieneLoop
+
+        hygiene_loop = HygieneLoop(vault_obj, index, hygiene_config)
+        tasks.append(asyncio.create_task(hygiene_loop.run()))
 
     try:
         await asyncio.gather(*tasks)
@@ -1029,6 +1135,27 @@ def connect_clients(
             ),
         ),
     ] = None,
+    codex: Annotated[
+        bool,
+        typer.Option(
+            "--codex/--no-codex",
+            help="Register Memstem in ~/.codex/config.toml and patch ~/.codex/AGENTS.md",
+        ),
+    ] = True,
+    codex_config_path: Annotated[
+        str | None,
+        typer.Option(
+            "--codex-config",
+            help="Override the Codex config.toml path (default: ~/.codex/config.toml)",
+        ),
+    ] = None,
+    codex_agents_md_path: Annotated[
+        str | None,
+        typer.Option(
+            "--codex-agents-md",
+            help="Override the Codex AGENTS.md path (default: ~/.codex/AGENTS.md)",
+        ),
+    ] = None,
     remove_flipclaw: Annotated[
         bool,
         typer.Option(
@@ -1071,18 +1198,21 @@ def connect_clients(
         typer.Option(help="Vault path override (used to read OpenClaw workspaces)"),
     ] = None,
 ) -> None:
-    """Wire Memstem into Claude Code and OpenClaw client config files.
+    """Wire Memstem into Claude Code, OpenClaw, and Codex client config files.
 
     Adds the MCP server registration to ~/.claude.json (the location
     current Claude Code releases read for MCP discovery), removes any
     stale entry from the legacy ~/.claude/settings.json, registers
-    `mcp.servers.memstem` in each OpenClaw agent's openclaw.json so
-    Memstem MCP tools are available to the agent at runtime, ensures
-    the Memstem directive block is present in each CLAUDE.md, and
-    (with --remove-flipclaw) disables the legacy FlipClaw bridge hook.
+    `mcp.servers.memstem` in each OpenClaw agent's openclaw.json,
+    registers `[mcp_servers.memstem]` in ~/.codex/config.toml so
+    Codex CLI sees Memstem MCP, ensures the Memstem directive block
+    is present in each CLAUDE.md (and ~/.codex/AGENTS.md), and (with
+    --remove-flipclaw) disables the legacy FlipClaw bridge hook.
 
     Each edit writes a `.bak` next to the file before changing it.
-    Re-running is safe: every step is idempotent.
+    Re-running is safe: every step is idempotent. The Codex step is
+    skipped (not erroring) when ~/.codex/ doesn't exist, so the
+    command stays safe on hosts where Codex CLI isn't installed.
     """
     cfg = _load_config(_resolve_vault_path(vault))
     settings_target = Path(settings_path).expanduser() if settings_path else DEFAULT_CLAUDE_SETTINGS
@@ -1092,6 +1222,12 @@ def connect_clients(
         else DEFAULT_LEGACY_CLAUDE_SETTINGS
     )
     user_md = Path(claude_md_path).expanduser() if claude_md_path else DEFAULT_CLAUDE_USER_MD
+    codex_config_target = (
+        Path(codex_config_path).expanduser() if codex_config_path else DEFAULT_CODEX_CONFIG_TOML
+    )
+    codex_agents_md_target = (
+        Path(codex_agents_md_path).expanduser() if codex_agents_md_path else DEFAULT_CODEX_AGENTS_MD
+    )
 
     typer.echo(f"connect-clients ({'dry-run' if dry_run else 'apply'}):\n")
 
@@ -1148,6 +1284,23 @@ def connect_clients(
     elif cfg.adapters.openclaw.agent_workspaces:
         typer.echo("\nNo CLAUDE.md found in any configured OpenClaw workspace.")
 
+    if codex:
+        codex_home = codex_config_target.parent
+        if not codex_home.exists():
+            typer.echo(f"\nCodex: {codex_home} not found, skipping (pass --no-codex to silence).")
+        else:
+            typer.echo(f"\nCodex config: {codex_config_target}")
+            change = register_codex_mcp_server(codex_config_target, env=mcp_env, dry_run=dry_run)
+            _print_change(change, dry_run)
+
+            typer.echo(f"\nCodex instructions: {codex_agents_md_target}")
+            change = apply_directive(
+                codex_agents_md_target, dry_run=dry_run, create_if_missing=True
+            )
+            _print_change(change, dry_run)
+    else:
+        typer.echo("\nSkipping Codex (--no-codex).")
+
     if remove_flipclaw:
         typer.echo(f"\nRemoving FlipClaw SessionEnd hook from {settings_target}:")
         change = remove_flipclaw_hook(settings_target, dry_run=dry_run)
@@ -1168,6 +1321,7 @@ def daemon(
 
     openclaw_adapter, openclaw_paths = _build_openclaw_adapter(cfg)
     claude_adapter, claude_paths = _build_claude_adapter(cfg)
+    codex_adapter = _build_codex_adapter(cfg)
 
     typer.echo(f"daemon: vault={cfg.vault_path}")
     if openclaw_adapter.workspaces:
@@ -1184,6 +1338,17 @@ def daemon(
     typer.echo(f"  claude-code roots: {', '.join(str(p) for p in claude_paths)}")
     if claude_adapter.extra_files:
         typer.echo(f"  claude-code extras: {', '.join(str(p) for p in claude_adapter.extra_files)}")
+    codex_roots = [
+        f"{label}={p}"
+        for label, p in (
+            ("sessions", codex_adapter.sessions_root),
+            ("skills", codex_adapter.skills_root),
+            ("memories", codex_adapter.memories_root),
+        )
+        if p is not None
+    ]
+    if codex_roots:
+        typer.echo(f"  codex roots: {', '.join(codex_roots)}")
     if embedder is not None:
         typer.echo(
             f"  embedder: {cfg.embedding.provider} / {cfg.embedding.model} "
@@ -1207,6 +1372,7 @@ def daemon(
                 openclaw_paths=openclaw_paths,
                 claude_adapter=claude_adapter,
                 claude_paths=claude_paths,
+                codex_adapter=codex_adapter,
                 embedding_signature=_embedding_signature(cfg),
                 http_config=cfg.http,
                 search_config=cfg.search,
@@ -1359,6 +1525,7 @@ def hygiene_importance(
         apply_importance_updates,
         compute_importance_updates,
     )
+    from memstem.hygiene.state import STAGE_IMPORTANCE
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1371,7 +1538,8 @@ def hygiene_importance(
                 # Still advance the cursor so the next run starts from a
                 # fresh window — otherwise empty sweeps re-scan stale
                 # rows forever.
-                apply_importance_updates(vault_obj, index, plan)
+                with _stage_lock(index.db, STAGE_IMPORTANCE):
+                    apply_importance_updates(vault_obj, index, plan)
             return
         mode = "applying" if apply else "dry-run"
         typer.echo(f"hygiene importance ({mode}): {len(plan.updates)} bump(s) proposed")
@@ -1384,7 +1552,8 @@ def hygiene_importance(
                 f"[{reasons}]"
             )
         if apply:
-            n = apply_importance_updates(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_IMPORTANCE):
+                n = apply_importance_updates(vault_obj, index, plan)
             typer.echo(f"\nhygiene importance: applied {n} bump(s).")
         else:
             typer.echo("\nhygiene importance: dry-run; re-run with --apply to persist these bumps.")
@@ -1552,6 +1721,7 @@ def hygiene_distill_sessions(
         format_plan_summary,
         format_proposals,
     )
+    from memstem.hygiene.state import STAGE_DISTILL_SESSIONS
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1599,7 +1769,8 @@ def hygiene_distill_sessions(
             typer.echo("\n(no eligible sessions; re-run with --backfill or relax thresholds)")
             return
         if apply:
-            result = apply_distillations(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_DISTILL_SESSIONS):
+                result = apply_distillations(vault_obj, index, plan)
             typer.echo(
                 f"\napplied: {result.written} distillation(s) written, "
                 f"{result.skipped_no_summary} skipped (empty summary), "
@@ -1703,6 +1874,7 @@ def hygiene_project_records(
         format_plan_summary,
         format_proposals,
     )
+    from memstem.hygiene.state import STAGE_PROJECT_RECORDS
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1747,7 +1919,8 @@ def hygiene_project_records(
             typer.echo("\n(no qualifying project tags; relax --min-sessions or check your vault)")
             return
         if apply:
-            result = apply_project_records(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_PROJECT_RECORDS):
+                result = apply_project_records(vault_obj, index, plan)
             typer.echo(
                 f"\napplied: {result.written} new, "
                 f"{result.updated} updated, "
@@ -1882,26 +2055,69 @@ def hygiene_dedup_judge(
             ),
         ),
     ] = None,
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help=(
+                "Judge provider: 'noop' (default; logs UNRELATED rows "
+                "without an LLM), 'openai' (OpenAI-compatible chat "
+                "completions — includes self-hosted vLLM/TGI/LM Studio "
+                "via --base-url), or 'ollama' (local Ollama)."
+            ),
+        ),
+    ] = "noop",
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Model id for the chosen provider. Defaults: "
+                "OpenAI=gpt-5.4-mini, Ollama=qwen2.5:7b."
+            ),
+        ),
+    ] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option(
+            "--base-url",
+            help=(
+                "Provider base URL. Defaults: OpenAI=https://api.openai.com/v1, "
+                "Ollama=http://localhost:11434. Set this to point the OpenAI "
+                "judge at a self-hosted vLLM/TGI instance."
+            ),
+        ),
+    ] = None,
+    api_key_env: Annotated[
+        str,
+        typer.Option(
+            "--api-key-env",
+            help=(
+                "Env var name to read the OpenAI judge's API key from. "
+                "Self-hosted servers usually ignore the value but require "
+                "*some* value, so you can point this at a dummy env var "
+                "to avoid polluting OPENAI_API_KEY."
+            ),
+        ),
+    ] = "OPENAI_API_KEY",
     enable_llm: Annotated[
         bool,
         typer.Option(
             "--enable-llm/--no-llm",
             help=(
-                "Use the configured Ollama model as the judge. Default "
-                "off — the audit log is populated with NoOpJudge "
-                "(verdict=UNRELATED for every pair) so the operator "
-                "can review what would be evaluated before paying "
-                "LLM cost."
+                "Deprecated alias: forces --provider=ollama with the "
+                "legacy --ollama-url / --ollama-model flags. Prefer "
+                "--provider explicitly."
             ),
         ),
     ] = False,
     ollama_url: Annotated[
         str,
-        typer.Option(help="Ollama base URL (used only with --enable-llm)."),
+        typer.Option(help="(Deprecated) Ollama base URL when --enable-llm is set."),
     ] = "http://localhost:11434",
     ollama_model: Annotated[
         str,
-        typer.Option(help="Ollama model id (used only with --enable-llm)."),
+        typer.Option(help="(Deprecated) Ollama model id when --enable-llm is set."),
     ] = "qwen2.5:7b",
 ) -> None:
     """Judge near-duplicate candidate pairs and append to the audit log.
@@ -1924,9 +2140,19 @@ def hygiene_dedup_judge(
         DedupJudge,
         NoOpJudge,
         OllamaDedupJudge,
+        OpenAIDedupJudge,
         judge_pairs,
         write_audit_rows,
     )
+    from memstem.hygiene.state import STAGE_DEDUP_JUDGE
+
+    # --enable-llm is the deprecated path. Resolve to a provider here
+    # so the rest of the function only branches on `provider`.
+    provider_lc = provider.lower()
+    if enable_llm and provider_lc == "noop":
+        provider_lc = "ollama"
+        model = model or ollama_model
+        base_url = base_url or ollama_url
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1945,21 +2171,43 @@ def hygiene_dedup_judge(
             return
 
         judge: DedupJudge
-        if enable_llm:
+        if provider_lc == "openai":
+            openai_kwargs: dict[str, object] = {"api_key_env": api_key_env}
+            if model:
+                openai_kwargs["model"] = model
+            if base_url:
+                openai_kwargs["base_url"] = base_url
+            judge = OpenAIDedupJudge(**openai_kwargs)  # type: ignore[arg-type]
             typer.echo(
                 f"hygiene dedup-judge: judging {len(pairs)} pair(s) via "
-                f"Ollama ({ollama_url}, model={ollama_model})"
+                f"OpenAI-compatible endpoint ({judge.base_url}, "
+                f"model={judge.model})"
             )
-            judge = OllamaDedupJudge(base_url=ollama_url, model=ollama_model)
-        else:
+        elif provider_lc == "ollama":
+            ollama_kwargs: dict[str, object] = {}
+            ollama_kwargs["model"] = model or ollama_model
+            ollama_kwargs["base_url"] = base_url or ollama_url
+            judge = OllamaDedupJudge(**ollama_kwargs)  # type: ignore[arg-type]
+            typer.echo(
+                f"hygiene dedup-judge: judging {len(pairs)} pair(s) via "
+                f"Ollama ({judge.base_url}, model={judge.model})"
+            )
+        elif provider_lc == "noop":
+            judge = NoOpJudge()
             typer.echo(
                 f"hygiene dedup-judge: writing {len(pairs)} NoOp audit row(s) "
-                "(use --enable-llm to invoke the configured Ollama judge)"
+                "(use --provider openai|ollama to invoke a real judge)"
             )
-            judge = NoOpJudge()
+        else:
+            typer.echo(
+                f"unknown judge provider {provider!r}. Known: noop, openai, ollama",
+                err=True,
+            )
+            raise typer.Exit(2)
 
-        results = judge_pairs(pairs, judge=judge)
-        n_written = write_audit_rows(index.db, results)
+        with _stage_lock(index.db, STAGE_DEDUP_JUDGE):
+            results = judge_pairs(pairs, judge=judge)
+            n_written = write_audit_rows(index.db, results)
         typer.echo(f"\nhygiene dedup-judge: wrote {n_written} audit row(s).")
         for result in results:
             typer.echo(

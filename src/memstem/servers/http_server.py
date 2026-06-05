@@ -162,12 +162,29 @@ def build_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Liveness probe + version. Used by clients to discover the daemon."""
+        """Liveness probe + version + hygiene snapshot (ADR 0023).
+
+        The ``hygiene`` block reports last-run timestamps per stage and
+        any stages currently mid-cycle. ``loop_enabled`` reflects the
+        config flag — useful for fleet monitoring to confirm customer
+        containers run with hygiene disabled while production agents
+        run with it on.
+        """
+        from memstem.hygiene.state import snapshot as hygiene_snapshot
+
+        hygiene_block: dict[str, Any] = {"loop_enabled": hc.loop_enabled}
+        try:
+            hygiene_block.update(hygiene_snapshot(index.db))
+        except Exception as exc:
+            # Hygiene state read shouldn't ever fail, but if it does we
+            # don't want the health endpoint to 500.
+            hygiene_block["error"] = f"{type(exc).__name__}: {exc}"
         return {
             "status": "ok",
             "version": memstem.__version__,
             "vault": str(vault.root),
             "embedder": embedder is not None,
+            "hygiene": hygiene_block,
         }
 
     @app.get("/version")
@@ -210,10 +227,16 @@ def build_app(
             return _serialize_memory(memory)
         except MemoryNotFoundError:
             pass
-        row = index.db.execute("SELECT path FROM memories WHERE id = ?", (id_or_path,)).fetchone()
-        if row is None:
+        # Route through `Index.get_path` so the read holds
+        # `Index._lock`. The daemon-embedded HTTP server shares its
+        # sqlite connection with the embed worker; a bare
+        # `index.db.execute(...)` here races the worker thread and
+        # surfaces as `InterfaceError: bad parameter or other API
+        # misuse`.
+        path = index.get_path(id_or_path)
+        if path is None:
             raise HTTPException(status_code=404, detail=f"no memory for {id_or_path!r}")
-        memory = vault.read(row["path"])
+        memory = vault.read(path)
         if log_client is not None:
             log_get(
                 index.db,

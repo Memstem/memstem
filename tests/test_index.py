@@ -938,6 +938,34 @@ class TestQueryVec:
         memories_only = index.query_vec(vec1, limit=5, types=["memory"])
         assert all(h.memory_id == str(m1.id) for h in memories_only)
 
+    def test_type_filter_with_multi_chunk_memories(self, index: Index) -> None:
+        """Regression: when type-filtering, ``query_vec`` builds the
+        ``IN (?,?,...)`` placeholder list from a dedupe set but passed
+        the raw non-deduped list as bindings. A memory with multiple
+        chunks produced fewer placeholders than parameters and crashed
+        with::
+
+            sqlite3.ProgrammingError: Incorrect number of bindings
+                supplied. The current statement uses N, and there are
+                M supplied.
+
+        Observed in production logs as
+        ``vec query failed; falling back to BM25: ... 63 ... 125``.
+        """
+        m1 = _make_memory(body="alpha")
+        index.upsert(m1)
+        # Give m1 three chunks so the vec over-fetch returns three rows
+        # for the same memory_id. Over-fetch in `query_vec` is
+        # `limit * 5` for type-filtered queries.
+        index.upsert_vectors(
+            str(m1.id),
+            ["c1", "c2", "c3"],
+            [_fake_embedding(1), _fake_embedding(2), _fake_embedding(3)],
+        )
+
+        hits = index.query_vec(_fake_embedding(1), limit=2, types=["memory"])
+        assert all(h.memory_id == str(m1.id) for h in hits)
+
 
 class TestConnectRequired:
     def test_db_property_raises_before_connect(self, tmp_path: Path) -> None:

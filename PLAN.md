@@ -62,6 +62,17 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
    - CHANGELOG entries rolled from `[Unreleased]` to `[0.1.0] - 2026-04-XX` (placeholder date — Brad fills in at tag time).
    - **Do NOT tag, do NOT push tags, do NOT publish to PyPI.** Those are Brad's calls after he validates cutover.
 
+7. [ ] **Codex adapter — `feat/codex-adapter` (added 2026-05-16)**
+   - New `src/memstem/adapters/codex.py` watching `~/.codex/sessions/`, `~/.codex/skills/`, `~/.codex/memories/`. One adapter, three record types (`session`, `skill`, `memory`).
+   - Skips `~/.codex/skills/.system/` (vendor skills) by design — see ADR 0022.
+   - Drops `developer`-role messages and `<environment_context>` user-stub messages from session JSONL parse (multi-KB boilerplate per session).
+   - Project tag derived from `session_meta.payload.cwd` (slugified) so Codex and Claude Code sessions for the same project group in search.
+   - `CodexAdapterConfig` block in `src/memstem/config.py`; `_build_codex_adapter` + daemon reconcile/watch wiring in `cli.py`.
+   - `tests/adapters/test_codex.py` covers parse, slug, reconcile, watch, `.system` exclusion.
+   - `clients/codex/` templates for manual setup (`AGENTS.md.example`, `config.toml.fragment`, `README.md`).
+   - ADR `docs/decisions/0022-codex-adapter.md` documents design + filter rules + rejected alternatives.
+   - **Follow-up:** `memstem connect-clients codex` to automate the `config.toml` + `AGENTS.md` wiring. Deferred to a separate PR.
+
 ### Brad-required (do NOT start)
 
 5. [ ] **Step 9 — cutover on the live box**: dry-run, audit a sample, `memstem migrate --apply`, `memstem connect-clients` (when PR #19 lands), `pm2 start memstem daemon`, soak. He explicitly gated this.
@@ -86,7 +97,7 @@ Pick them up in this order. They're all branch-from-main + PR + self-merge on gr
 - **Tests passing:** 220 (5 deselected — Ollama integration tests, all pass when run with `-m requires_ollama`)
 - **Coverage:** 88% overall; new modules typically 90%+
 - **CI:** green on every merged PR
-- **Decisions locked:** ADRs 0001–0007, 0009, 0010 are accepted in [`docs/decisions/`](./docs/decisions/). ADRs 0008 (tiered memory), 0011 (noise filter + fact extraction), 0012 (LLM-judge dedup) are proposed and awaiting Brad's review. ADR 0019 (no skill authoring) accepted 2026-04-30. ADRs 0020 (session distillation writer) and 0021 (project records) accepted 2026-05-01 — see RECALL-PLAN.md Block 4.
+- **Decisions locked:** ADRs 0001–0007, 0009, 0010 are accepted in [`docs/decisions/`](./docs/decisions/). ADRs 0008 (tiered memory), 0011 (noise filter + fact extraction), 0012 (LLM-judge dedup) are proposed and awaiting Brad's review. ADR 0019 (no skill authoring) accepted 2026-04-30. ADRs 0020 (session distillation writer) and 0021 (project records) accepted 2026-05-01 — see RECALL-PLAN.md Block 4. ADR 0022 (Codex adapter) accepted; ADR 0023 (in-daemon hygiene loop) accepted 2026-05-19 — replaces the never-installed cron layer.
 - **Live infra status:** Ollama 0.21.2 installed and running on `127.0.0.1:11434`, `nomic-embed-text` (768 dims) loaded.
 
 ### Merged PRs (full Phase 1 + extensions)

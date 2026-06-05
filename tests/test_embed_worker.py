@@ -8,7 +8,9 @@ to a real provider — the worker logic is what matters here.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+import threading
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -565,3 +567,187 @@ class TestEmbedStateOnSuccess:
             ).fetchone()
             is None
         )
+
+
+class TestConcurrencyRace:
+    """Regression: under contention the embed worker used to crash with
+    ``sqlite3.InterfaceError: bad parameter or other API misuse`` when
+    other threads in the same process touched the shared
+    :class:`sqlite3.Connection` without taking ``Index._lock``.
+
+    The pipeline's ID-lookup paths (called on the asyncio thread by the
+    watch loop) ran ``index.db.execute(...)`` directly. The embed worker
+    (running in ``asyncio.to_thread``) took the lock for its calls. Two
+    threads → same connection → unequal serialization → SQLite returns
+    SQLITE_MISUSE intermittently.
+
+    These tests run the contended access patterns side-by-side and
+    assert no thread sees an unexpected error. They reproduce the
+    crash deterministically against the pre-fix code.
+    """
+
+    def _seed(self, vault: Vault, index: Index, n: int) -> list[str]:
+        pipe = Pipeline(vault, index)
+        return [
+            str(_processed(pipe, _record(body=f"row {i}", ref=f"ref-{i}")).id) for i in range(n)
+        ]
+
+    @staticmethod
+    def _run_under_contention(
+        target: Callable[[], None],
+        contender: Callable[[], None],
+        duration: float = 1.5,
+    ) -> tuple[list[BaseException], list[BaseException]]:
+        target_errors: list[BaseException] = []
+        contender_errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def loop(fn: Callable[[], None], sink: list[BaseException]) -> None:
+            while not stop.is_set():
+                try:
+                    fn()
+                except BaseException as exc:
+                    sink.append(exc)
+                    return
+
+        threads = [
+            threading.Thread(target=loop, args=(target, target_errors), daemon=True),
+            threading.Thread(target=loop, args=(contender, contender_errors), daemon=True),
+            threading.Thread(target=loop, args=(contender, contender_errors), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline and not target_errors and not contender_errors:
+            time.sleep(0.02)
+        stop.set()
+        for t in threads:
+            t.join(timeout=2.0)
+        return target_errors, contender_errors
+
+    def test_pipeline_lookups_serialize_with_embed_worker(self, vault: Vault, index: Index) -> None:
+        """Pipeline ``_lookup_id_or_none`` / ``_existing_path`` MUST go
+        through the Index lock. Otherwise they race the embed worker's
+        ``get_path`` and SQLite returns SQLITE_MISUSE."""
+        ids = self._seed(vault, index, 50)
+        pipe = Pipeline(vault, index)
+
+        def worker_lookup() -> None:
+            for mid in ids:
+                index.get_path(mid)
+
+        def pipeline_lookup() -> None:
+            for i in range(len(ids)):
+                pipe._lookup_id_or_none("test", f"ref-{i}")
+                pipe._existing_path(uuid4())
+
+        target_errors, contender_errors = self._run_under_contention(worker_lookup, pipeline_lookup)
+        assert not target_errors, f"Index.get_path raised under contention: {target_errors[0]!r}"
+        assert not contender_errors, (
+            f"Pipeline lookup raised under contention: {contender_errors[0]!r}"
+        )
+
+    def test_index_lookup_record_mapping_is_serialized(self, vault: Vault, index: Index) -> None:
+        """The public Index lookup that pipeline now uses for
+        ``(source, ref) → memory_id`` must also be safe to call from
+        any thread without external locking."""
+        self._seed(vault, index, 25)
+
+        def worker_lookup() -> None:
+            index.queue_pending(limit=8)
+
+        def contender_lookup() -> None:
+            for i in range(25):
+                index.lookup_record_mapping("test", f"ref-{i}")
+
+        target_errors, contender_errors = self._run_under_contention(
+            worker_lookup, contender_lookup
+        )
+        assert not target_errors and not contender_errors, (
+            f"contention raised: target={target_errors!r} contender={contender_errors!r}"
+        )
+
+    def test_worker_survives_pipeline_writes_under_transient_failure(
+        self, vault: Vault, index: Index
+    ) -> None:
+        """End-to-end shape from the field report: while OpenAI returns
+        503/timeouts the worker spins tightly through the queue while
+        the pipeline's watcher keeps processing fresh records. Without
+        the fix the worker's threadpool job crashes with
+        InterfaceError; with the fix it just keeps spinning.
+        """
+        ids = self._seed(vault, index, 30)
+        embedder = _StubEmbedder()
+        embedder.transient_always = True
+
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=embedder,
+            batch_size=4,
+            max_retries=10,
+            idle_sleep=0,
+        )
+
+        pipe = Pipeline(vault, index)
+
+        async def spin_worker() -> None:
+            deadline = asyncio.get_event_loop().time() + 1.0
+            while asyncio.get_event_loop().time() < deadline:
+                await worker.tick()
+
+        def pipeline_thread() -> None:
+            for i in range(len(ids)):
+                pipe._lookup_id_or_none("test", f"ref-{i}")
+                pipe._existing_path(uuid4())
+
+        contender = threading.Thread(target=pipeline_thread, daemon=True)
+        contender.start()
+        try:
+            asyncio.run(spin_worker())
+        finally:
+            contender.join(timeout=2.0)
+        # If we got here without a sqlite3 exception bubbling out of
+        # the worker, the lock serialization holds. Worker loop logs
+        # transient embedder errors but does not crash.
+
+
+class TestReadForEmbedRecovery:
+    """A vault file with broken frontmatter must not crash the embed
+    worker. The pre-fix code only caught :class:`MemoryNotFoundError`,
+    so a malformed-but-existing record bubbled
+    :class:`memstem.core.storage.InvalidFrontmatterError` up to ``run()``
+    and the worker would log an "embed worker N crashed" stack on every
+    tick forever.
+    """
+
+    def test_invalid_frontmatter_marks_failed_instead_of_crashing(
+        self, vault: Vault, index: Index
+    ) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="alpha"))
+        # Stomp the file with an empty (but parseable) frontmatter block.
+        (vault.root / memory.path).write_text("---\n---\n\nbody\n", encoding="utf-8")
+
+        worker = EmbedWorker(
+            vault=vault,
+            index=index,
+            embedder=_StubEmbedder(),
+            batch_size=1,
+            idle_sleep=0,
+        )
+        # Must not raise. Must mark the queue entry failed so the
+        # worker advances rather than hot-looping the same bad record,
+        # but the failed state stays visible in `memstem doctor` so
+        # the operator knows a vault file needs attention.
+        embedded = asyncio.run(worker.tick())
+        assert embedded == 0
+        row = index.db.execute(
+            "SELECT failed, last_error FROM embed_queue WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchone()
+        assert row["failed"] == 1
+        assert "invalid frontmatter" in row["last_error"]
+
+        # Subsequent ticks skip the failed row instead of crashing.
+        assert asyncio.run(worker.tick()) == 0

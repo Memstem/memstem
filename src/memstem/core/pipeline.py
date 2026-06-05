@@ -195,25 +195,27 @@ class Pipeline:
         return memory
 
     def _lookup_id_or_none(self, source: str, ref: str) -> UUID | None:
-        row = self.index.db.execute(
-            "SELECT memory_id FROM record_map WHERE source = ? AND ref = ?",
-            (source, ref),
-        ).fetchone()
-        return UUID(row["memory_id"]) if row is not None else None
+        # Goes through `Index.lookup_record_mapping` so the read holds
+        # `Index._lock`. A bare `self.index.db.execute(...)` here used
+        # to race the embed worker's locked calls (same shared
+        # sqlite3.Connection across threads) and crashed the daemon
+        # with `InterfaceError: bad parameter or other API misuse`.
+        memory_id = self.index.lookup_record_mapping(source, ref)
+        return UUID(memory_id) if memory_id is not None else None
 
     def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
         return self._lookup_id_or_none(source, ref) or uuid4()
 
     def _existing_path(self, memory_id: UUID) -> Path | None:
-        row = self.index.db.execute(
-            "SELECT path FROM memories WHERE id = ?", (str(memory_id),)
-        ).fetchone()
-        if row is None:
+        # Same race fix as `_lookup_id_or_none`: route through the
+        # lock-holding `Index.get_path` instead of `index.db.execute`.
+        path = self.index.get_path(str(memory_id))
+        if path is None:
             return None
         # Confirm the on-disk file still exists; fall back to a fresh path if not.
         try:
-            self.vault.read(row["path"])
-            return Path(row["path"])
+            self.vault.read(path)
+            return Path(path)
         except MemoryNotFoundError:
             return None
 

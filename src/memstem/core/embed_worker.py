@@ -26,7 +26,7 @@ from memstem.core.embeddings import (
     chunk_text,
 )
 from memstem.core.index import Index, body_hash
-from memstem.core.storage import MemoryNotFoundError, Vault
+from memstem.core.storage import InvalidFrontmatterError, MemoryNotFoundError, Vault
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,23 @@ class EmbedWorker:
         except _RecordMissingError:
             # Vault file gone — drop the queue entry; nothing to embed.
             self.index.dequeue_embed(memory_id)
+            return False, False
+        except InvalidFrontmatterError as exc:
+            # Vault file exists but its frontmatter no longer validates
+            # (manual edit, half-written file, schema migration not yet
+            # applied). Re-reading on every tick would just keep
+            # crashing — surface it through the normal failed-record
+            # path so it stops the queue churn and shows up in
+            # `memstem doctor`. The next `memstem reindex` (or a fix
+            # to the file) re-enqueues with a clean retry_count.
+            logger.warning(
+                "embed worker %d: invalid frontmatter for %s: %s "
+                "(marking failed; fix the vault file then reset)",
+                self.worker_id,
+                memory_id,
+                exc,
+            )
+            self.index.mark_embed_error(memory_id, f"invalid frontmatter: {exc}", max_retries=1)
             return False, False
 
         if not chunks:
