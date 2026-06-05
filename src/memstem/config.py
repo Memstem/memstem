@@ -76,6 +76,13 @@ class EmbeddingConfig(BaseModel):
     Each record's chunks are batched in a single API call when the
     backend supports it."""
 
+    max_request_inputs: int | None = None
+    """Max inputs per embedding request (openai provider only). ``None``
+    auto-picks by endpoint: 100 for OpenAI Inc., 32 for self-hosted
+    OpenAI-compatible servers (vLLM/TGI/LM Studio), which cap lower — our
+    T4 vLLM box rejects >32. Set explicitly to override for a server that
+    allows more."""
+
     @classmethod
     def for_provider(cls, provider: str) -> EmbeddingConfig:
         """Build a config pre-populated with sensible defaults for ``provider``.

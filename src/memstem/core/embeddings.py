@@ -161,6 +161,20 @@ def _read_api_key(env_var: str, provider: str) -> str:
     return key
 
 
+def _is_real_openai_host(base_url: str) -> bool:
+    """True if ``base_url`` points at OpenAI Inc. (or Azure OpenAI).
+
+    Used to pick a safe default per-request input cap: OpenAI Inc.
+    handles large batches, but self-hosted OpenAI-compatible servers
+    (vLLM, TGI, LM Studio, …) often cap far lower (our T4 vLLM box
+    rejects >32). Mirrors ``hygiene.dedup_judge._openai_name_prefix``.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    return host.endswith("openai.com") or host.endswith("openai.azure.com")
+
+
 class Embedder(ABC):
     """Common interface for every embedding backend.
 
@@ -255,6 +269,14 @@ class OpenAIEmbedder(Embedder):
     # Gemini embedder's batching.
     MAX_BATCH_SIZE = 100
 
+    # Self-hosted OpenAI-compatible servers (vLLM, TGI, LM Studio, …)
+    # typically cap inputs-per-request far lower than OpenAI Inc. Our T4
+    # vLLM box rejects >32 with a 413, so a large record chunked into 100
+    # pieces fails to embed entirely. Default self-hosted endpoints to a
+    # conservative 32; callers can override per-vault via
+    # ``embedding.max_request_inputs``.
+    SELF_HOSTED_MAX_BATCH_SIZE = 32
+
     def __init__(
         self,
         model: str,
@@ -262,10 +284,20 @@ class OpenAIEmbedder(Embedder):
         api_key_env: str = DEFAULT_API_KEY_ENV,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        max_request_inputs: int | None = None,
     ) -> None:
         self.model = model
         self.dimensions = dimensions
         self.base_url = base_url.rstrip("/")
+        # Per-request input cap. Explicit config wins; otherwise pick by
+        # endpoint — OpenAI Inc. comfortably handles 100, self-hosted
+        # compatible servers get the conservative 32 (see above).
+        if max_request_inputs is not None:
+            self.max_batch = max_request_inputs
+        elif _is_real_openai_host(self.base_url):
+            self.max_batch = self.MAX_BATCH_SIZE
+        else:
+            self.max_batch = self.SELF_HOSTED_MAX_BATCH_SIZE
         api_key = _read_api_key(api_key_env, "OpenAI")
         self._client = httpx.Client(
             base_url=self.base_url,
@@ -280,8 +312,8 @@ class OpenAIEmbedder(Embedder):
         if not texts:
             return []
         results: list[list[float]] = []
-        for start in range(0, len(texts), self.MAX_BATCH_SIZE):
-            sub = texts[start : start + self.MAX_BATCH_SIZE]
+        for start in range(0, len(texts), self.max_batch):
+            sub = texts[start : start + self.max_batch]
             results.extend(self._embed_one_batch(sub))
         return results
 
@@ -548,6 +580,7 @@ def embed_for(config: EmbeddingConfig) -> Embedder:
             dimensions=config.dimensions,
             api_key_env=config.api_key_env or OpenAIEmbedder.DEFAULT_API_KEY_ENV,
             base_url=config.base_url or OpenAIEmbedder.DEFAULT_BASE_URL,
+            max_request_inputs=config.max_request_inputs,
         )
     if provider == "gemini":
         return GeminiEmbedder(
