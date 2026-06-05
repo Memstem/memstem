@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -106,6 +109,45 @@ hygiene_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(hygiene_app)
+
+
+@contextmanager
+def _stage_lock(
+    db: sqlite3.Connection,
+    stage: str,
+    *,
+    max_age_seconds: int = 3600,
+) -> Iterator[None]:
+    """Coordinate CLI hygiene runs with the in-daemon hygiene loop (ADR 0023).
+
+    Acquires a per-stage lock row in ``hygiene_state`` before yielding.
+    If the lock is already held, prints a friendly diagnostic and raises
+    ``typer.Exit(2)``. On clean exit, records ``last_run:<stage>`` so the
+    loop doesn't immediately re-run the stage. Always releases the lock
+    on exit, whether the body raised or not.
+
+    Used only for CLI commands that *write* (apply / dedup-judge). Dry
+    runs read only and don't need the lock.
+    """
+    from memstem.hygiene.state import (
+        acquire_stage_lock,
+        release_stage_lock,
+        set_last_run,
+    )
+
+    if not acquire_stage_lock(db, stage, max_age_seconds=max_age_seconds):
+        typer.echo(
+            f"hygiene {stage}: another runner holds the lock — the "
+            "in-daemon loop may be mid-cycle. Re-try in a minute, or "
+            "check `memstem doctor` and the daemon logs.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        yield
+        set_last_run(db, stage, datetime.now(UTC))
+    finally:
+        release_stage_lock(db, stage)
 
 
 def _resolve_vault_path(override: str | None = None) -> Path:
@@ -1010,6 +1052,17 @@ async def _run_daemon(
             )
         )
 
+    # ADR 0023: in-daemon hygiene loop. Runs distill-sessions,
+    # dedup-judge, importance, and project-records on intervals
+    # configured under ``hygiene:`` in config.yaml. Disabled per
+    # config or short-circuited inside HygieneLoop.run() when
+    # ``hygiene.loop_enabled`` is false.
+    if hygiene_config is not None and getattr(hygiene_config, "loop_enabled", False):
+        from memstem.hygiene.loop import HygieneLoop
+
+        hygiene_loop = HygieneLoop(vault_obj, index, hygiene_config)
+        tasks.append(asyncio.create_task(hygiene_loop.run()))
+
     try:
         await asyncio.gather(*tasks)
     finally:
@@ -1472,6 +1525,7 @@ def hygiene_importance(
         apply_importance_updates,
         compute_importance_updates,
     )
+    from memstem.hygiene.state import STAGE_IMPORTANCE
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1484,7 +1538,8 @@ def hygiene_importance(
                 # Still advance the cursor so the next run starts from a
                 # fresh window — otherwise empty sweeps re-scan stale
                 # rows forever.
-                apply_importance_updates(vault_obj, index, plan)
+                with _stage_lock(index.db, STAGE_IMPORTANCE):
+                    apply_importance_updates(vault_obj, index, plan)
             return
         mode = "applying" if apply else "dry-run"
         typer.echo(f"hygiene importance ({mode}): {len(plan.updates)} bump(s) proposed")
@@ -1497,7 +1552,8 @@ def hygiene_importance(
                 f"[{reasons}]"
             )
         if apply:
-            n = apply_importance_updates(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_IMPORTANCE):
+                n = apply_importance_updates(vault_obj, index, plan)
             typer.echo(f"\nhygiene importance: applied {n} bump(s).")
         else:
             typer.echo("\nhygiene importance: dry-run; re-run with --apply to persist these bumps.")
@@ -1665,6 +1721,7 @@ def hygiene_distill_sessions(
         format_plan_summary,
         format_proposals,
     )
+    from memstem.hygiene.state import STAGE_DISTILL_SESSIONS
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1712,7 +1769,8 @@ def hygiene_distill_sessions(
             typer.echo("\n(no eligible sessions; re-run with --backfill or relax thresholds)")
             return
         if apply:
-            result = apply_distillations(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_DISTILL_SESSIONS):
+                result = apply_distillations(vault_obj, index, plan)
             typer.echo(
                 f"\napplied: {result.written} distillation(s) written, "
                 f"{result.skipped_no_summary} skipped (empty summary), "
@@ -1816,6 +1874,7 @@ def hygiene_project_records(
         format_plan_summary,
         format_proposals,
     )
+    from memstem.hygiene.state import STAGE_PROJECT_RECORDS
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -1860,7 +1919,8 @@ def hygiene_project_records(
             typer.echo("\n(no qualifying project tags; relax --min-sessions or check your vault)")
             return
         if apply:
-            result = apply_project_records(vault_obj, index, plan)
+            with _stage_lock(index.db, STAGE_PROJECT_RECORDS):
+                result = apply_project_records(vault_obj, index, plan)
             typer.echo(
                 f"\napplied: {result.written} new, "
                 f"{result.updated} updated, "
@@ -1995,26 +2055,69 @@ def hygiene_dedup_judge(
             ),
         ),
     ] = None,
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help=(
+                "Judge provider: 'noop' (default; logs UNRELATED rows "
+                "without an LLM), 'openai' (OpenAI-compatible chat "
+                "completions — includes self-hosted vLLM/TGI/LM Studio "
+                "via --base-url), or 'ollama' (local Ollama)."
+            ),
+        ),
+    ] = "noop",
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Model id for the chosen provider. Defaults: "
+                "OpenAI=gpt-5.4-mini, Ollama=qwen2.5:7b."
+            ),
+        ),
+    ] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option(
+            "--base-url",
+            help=(
+                "Provider base URL. Defaults: OpenAI=https://api.openai.com/v1, "
+                "Ollama=http://localhost:11434. Set this to point the OpenAI "
+                "judge at a self-hosted vLLM/TGI instance."
+            ),
+        ),
+    ] = None,
+    api_key_env: Annotated[
+        str,
+        typer.Option(
+            "--api-key-env",
+            help=(
+                "Env var name to read the OpenAI judge's API key from. "
+                "Self-hosted servers usually ignore the value but require "
+                "*some* value, so you can point this at a dummy env var "
+                "to avoid polluting OPENAI_API_KEY."
+            ),
+        ),
+    ] = "OPENAI_API_KEY",
     enable_llm: Annotated[
         bool,
         typer.Option(
             "--enable-llm/--no-llm",
             help=(
-                "Use the configured Ollama model as the judge. Default "
-                "off — the audit log is populated with NoOpJudge "
-                "(verdict=UNRELATED for every pair) so the operator "
-                "can review what would be evaluated before paying "
-                "LLM cost."
+                "Deprecated alias: forces --provider=ollama with the "
+                "legacy --ollama-url / --ollama-model flags. Prefer "
+                "--provider explicitly."
             ),
         ),
     ] = False,
     ollama_url: Annotated[
         str,
-        typer.Option(help="Ollama base URL (used only with --enable-llm)."),
+        typer.Option(help="(Deprecated) Ollama base URL when --enable-llm is set."),
     ] = "http://localhost:11434",
     ollama_model: Annotated[
         str,
-        typer.Option(help="Ollama model id (used only with --enable-llm)."),
+        typer.Option(help="(Deprecated) Ollama model id when --enable-llm is set."),
     ] = "qwen2.5:7b",
 ) -> None:
     """Judge near-duplicate candidate pairs and append to the audit log.
@@ -2037,9 +2140,19 @@ def hygiene_dedup_judge(
         DedupJudge,
         NoOpJudge,
         OllamaDedupJudge,
+        OpenAIDedupJudge,
         judge_pairs,
         write_audit_rows,
     )
+    from memstem.hygiene.state import STAGE_DEDUP_JUDGE
+
+    # --enable-llm is the deprecated path. Resolve to a provider here
+    # so the rest of the function only branches on `provider`.
+    provider_lc = provider.lower()
+    if enable_llm and provider_lc == "noop":
+        provider_lc = "ollama"
+        model = model or ollama_model
+        base_url = base_url or ollama_url
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
@@ -2058,21 +2171,43 @@ def hygiene_dedup_judge(
             return
 
         judge: DedupJudge
-        if enable_llm:
+        if provider_lc == "openai":
+            openai_kwargs: dict[str, object] = {"api_key_env": api_key_env}
+            if model:
+                openai_kwargs["model"] = model
+            if base_url:
+                openai_kwargs["base_url"] = base_url
+            judge = OpenAIDedupJudge(**openai_kwargs)  # type: ignore[arg-type]
             typer.echo(
                 f"hygiene dedup-judge: judging {len(pairs)} pair(s) via "
-                f"Ollama ({ollama_url}, model={ollama_model})"
+                f"OpenAI-compatible endpoint ({judge.base_url}, "
+                f"model={judge.model})"
             )
-            judge = OllamaDedupJudge(base_url=ollama_url, model=ollama_model)
-        else:
+        elif provider_lc == "ollama":
+            ollama_kwargs: dict[str, object] = {}
+            ollama_kwargs["model"] = model or ollama_model
+            ollama_kwargs["base_url"] = base_url or ollama_url
+            judge = OllamaDedupJudge(**ollama_kwargs)  # type: ignore[arg-type]
+            typer.echo(
+                f"hygiene dedup-judge: judging {len(pairs)} pair(s) via "
+                f"Ollama ({judge.base_url}, model={judge.model})"
+            )
+        elif provider_lc == "noop":
+            judge = NoOpJudge()
             typer.echo(
                 f"hygiene dedup-judge: writing {len(pairs)} NoOp audit row(s) "
-                "(use --enable-llm to invoke the configured Ollama judge)"
+                "(use --provider openai|ollama to invoke a real judge)"
             )
-            judge = NoOpJudge()
+        else:
+            typer.echo(
+                f"unknown judge provider {provider!r}. Known: noop, openai, ollama",
+                err=True,
+            )
+            raise typer.Exit(2)
 
-        results = judge_pairs(pairs, judge=judge)
-        n_written = write_audit_rows(index.db, results)
+        with _stage_lock(index.db, STAGE_DEDUP_JUDGE):
+            results = judge_pairs(pairs, judge=judge)
+            n_written = write_audit_rows(index.db, results)
         typer.echo(f"\nhygiene dedup-judge: wrote {n_written} audit row(s).")
         for result in results:
             typer.echo(

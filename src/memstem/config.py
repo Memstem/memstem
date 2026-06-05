@@ -170,6 +170,104 @@ class HygieneConfig(BaseModel):
     each. Lower this on storage-constrained hosts; raise it for vaults
     that run hygiene infrequently."""
 
+    # ADR 0023 — in-daemon hygiene loop ----------------------------------
+
+    loop_enabled: bool = True
+    """Master switch for the in-daemon hygiene loop (ADR 0023). When
+    ``True``, the daemon spawns a background task that runs
+    ``distill-sessions``, ``dedup-judge``, ``importance``, and
+    ``project-records`` on the configured intervals. The CLI hygiene
+    commands continue to work either way. Set to ``False`` on
+    multi-tenant containers where the operator hasn't authorized LLM
+    spend."""
+
+    loop_poll_interval_seconds: int = 60
+    """How often the loop wakes to check stage timers."""
+
+    distill_interval_seconds: int = 6 * 3600
+    """Cadence for the ``distill-sessions`` stage."""
+
+    dedup_interval_seconds: int = 24 * 3600
+    """Cadence for the ``dedup-candidates`` + ``dedup-judge`` stages."""
+
+    importance_interval_seconds: int = 3600
+    """Cadence for the ``importance`` stage."""
+
+    project_records_interval_seconds: int = 24 * 3600
+    """Cadence for the ``project-records`` stage."""
+
+    distill_max_per_cycle: int = 50
+    """Cap on distillations applied per cycle. Prevents a cold vault
+    from running thousands of LLM calls on the first tick."""
+
+    dedup_max_per_cycle: int = 100
+    """Cap on candidate pairs judged per dedup cycle."""
+
+    dedup_max_outer_memories: int = 500
+    """Cap on the outer-loop scan in ``find_dedup_candidate_pairs``.
+    Candidate generation is O(N²) on the indexed memory count — a full
+    walk on a multi-thousand-record vault can take tens of minutes,
+    long enough to risk the stage lock going stale before the cycle
+    completes. The cap bounds that walk per tick; over multiple cycles
+    the full vault still gets covered because find_dedup_candidate_pairs
+    sorts by memory id and the cap means each cycle just sees the same
+    starting slice. (A follow-up could rotate the starting offset across
+    cycles; for now the same head-slice cap is enough to make the cycle
+    bounded.)"""
+
+    summarizer_provider: str = "openai"
+    """Provider used by the loop for distillation + project-records.
+    ``"openai"`` (default), ``"ollama"``, or ``"noop"`` to record the
+    cycle without calling an LLM."""
+
+    summarizer_model: str | None = None
+    """Optional model override. ``None`` uses provider-default
+    (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for Ollama)."""
+
+    summarizer_base_url: str | None = None
+    """Optional ``base_url`` override for the OpenAI-compatible
+    summarizer. Useful for self-hosted models (vLLM, TGI, LM Studio,
+    LiteLLM) that speak the OpenAI API shape. ``None`` uses the
+    provider default (``https://api.openai.com/v1`` for OpenAI,
+    ``http://localhost:11434`` for Ollama). Ignored when
+    ``summarizer_provider`` is ``noop``."""
+
+    summarizer_api_key_env: str = "OPENAI_API_KEY"
+    """Env var name to read the summarizer API key from. Self-hosted
+    OpenAI-compatible servers usually ignore the key value but require
+    *some* value, so callers can point this at a different env var
+    (e.g. ``MEMSTEM_GEMMA_KEY`` set to a dummy string) to avoid
+    polluting the canonical ``OPENAI_API_KEY``."""
+
+    judge_provider: str = "noop"
+    """Provider used by the loop for ``dedup-judge``. Default is
+    ``"noop"`` — the loop logs candidate pairs as ``UNRELATED`` audit
+    rows for inventory but does not call an LLM until the operator
+    opts in by setting this to ``"openai"`` or ``"ollama"``."""
+
+    judge_model: str | None = None
+    """Optional model override for the dedup judge. ``None`` uses
+    provider-default (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for
+    Ollama). Pointing this at a smaller / faster model is fine —
+    dedup-judge is a 4-way classification task, not high-reasoning."""
+
+    judge_base_url: str | None = None
+    """Optional ``base_url`` override for the dedup judge. Useful for
+    pointing the OpenAI judge at a self-hosted vLLM / TGI / LM Studio
+    instance. ``None`` uses the provider default. Ignored when
+    ``judge_provider`` is ``noop``."""
+
+    judge_api_key_env: str = "OPENAI_API_KEY"
+    """Env var name to read the dedup-judge API key from. Same logic
+    as ``summarizer_api_key_env`` — point it at a different env var
+    when the value is a dummy (self-hosted servers) to avoid
+    polluting the canonical ``OPENAI_API_KEY``."""
+
+    stage_lock_max_age_seconds: int = 3600
+    """A ``running_since:<stage>`` lock older than this is treated as
+    crashed and cleared on the next acquire attempt. Keeps the loop
+    self-healing across daemon crashes mid-cycle."""
+
 
 class HttpServerConfig(BaseModel):
     """Local HTTP server configuration.

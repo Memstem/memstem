@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`OpenAIDedupJudge`** for the hygiene loop's dedup-judge stage —
+  companion to the existing `OllamaDedupJudge` for setups that drive
+  judging through an OpenAI-compatible chat-completions endpoint.
+  Includes self-hosted endpoints (vLLM, TGI, LM Studio, LiteLLM) via
+  the same `--base-url` override pattern the summarizer uses. Auth via
+  `memstem.auth.get_secret` — env var first, secrets file second; the
+  `api_key_env` field lets callers point at a dummy env var for
+  self-hosted servers that ignore the value. Mocked-client tests
+  cover happy path, fenced JSON, garbage / empty responses, malformed
+  payloads, and the call-failure fallback.
+- **`HygieneConfig` extensions**: `judge_provider` now accepts
+  `"openai"` in addition to `"noop"` and `"ollama"`. New optional
+  fields `judge_model`, `judge_base_url`, and `judge_api_key_env`
+  parallel the existing `summarizer_*` set. Defaults preserve the
+  pre-existing NoOp behavior — existing configs are unaffected.
+- **`memstem hygiene dedup-judge --provider {noop,openai,ollama}`**
+  CLI surface, with `--model`, `--base-url`, `--api-key-env`
+  applying uniformly across providers. The legacy
+  `--enable-llm` / `--ollama-url` / `--ollama-model` flags remain
+  supported as deprecated aliases that map to `--provider ollama`.
+
+## [0.11.0] — 2026-05-19
+
+### Added
+
+- **In-daemon hygiene loop** (ADR 0023). `memstem daemon` now runs the
+  four hygiene stages (`distill-sessions`, `dedup-judge`, `importance`,
+  `project-records`) as a background `asyncio` task alongside the
+  adapter watchers, embedder workers, and HTTP/MCP server. Each stage
+  ticks on its own configurable interval and writes its
+  `last_run` / `running_since` cursor to `hygiene_state`. The CLI
+  hygiene commands now acquire the same per-stage lock before writing,
+  so manual runs and the loop never compete. A new `hygiene` block on
+  `GET /health` exposes per-stage `last_run` timestamps and any
+  currently-running stages — useful for fleet monitoring.
+- **New `HygieneConfig` fields** (all with safe defaults):
+  `loop_enabled` (default `true`; set `false` on multi-tenant
+  containers where the customer hasn't authorized LLM spend),
+  `loop_poll_interval_seconds`, `distill_interval_seconds`,
+  `dedup_interval_seconds`, `importance_interval_seconds`,
+  `project_records_interval_seconds`, `distill_max_per_cycle`,
+  `dedup_max_per_cycle`, `summarizer_provider` / `summarizer_model`,
+  `judge_provider`, `stage_lock_max_age_seconds`. Existing vaults
+  pick up the defaults automatically; no migration required.
+- **New module `src/memstem/hygiene/state.py`** — lock + last-run
+  helpers (`acquire_stage_lock`, `release_stage_lock`,
+  `get_last_run`, `set_last_run`, `due_for_run`, `snapshot`) used by
+  both the in-daemon loop and the CLI commands.
+- **New module `src/memstem/hygiene/loop.py`** — the loop runner
+  itself, with per-stage failure isolation so a sqlite error or LLM
+  timeout in one stage cannot affect ingestion, embedding, or the
+  other hygiene stages.
+
+### Added (pre-existing items still in `[Unreleased]`)
+
 - **Codex adapter** (`src/memstem/adapters/codex.py`). Watches
   `~/.codex/sessions/`, `~/.codex/skills/`, and `~/.codex/memories/`
   under a configurable `codex_home` and emits `type: session`,

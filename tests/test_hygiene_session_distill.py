@@ -436,6 +436,48 @@ class TestComputeDistillationPlan:
         plan = compute_distillation_plan(vault, stub, recency_days=None, force=True)
         assert len(plan.proposals) == 1
 
+    def test_max_candidates_truncates_before_llm_calls(self, vault: Vault) -> None:
+        """ADR 0023: ``max_candidates`` must cap the candidate list
+        *before* the planner calls the summarizer. Otherwise the
+        in-daemon hygiene loop's cap-after-the-fact would still pay for
+        thousands of LLM calls on a cold vault."""
+        # 5 eligible sessions, but cap at 2.
+        for i in range(5):
+            _write_session(vault, session_id=f"s{i}", turns=12)
+
+        class CountingSummarizer(StubSummarizer):
+            def __init__(self) -> None:
+                super().__init__()
+                self.call_count = 0
+
+            def generate(self, prompt: str) -> str:
+                self.call_count += 1
+                return super().generate(prompt)
+
+        stub = CountingSummarizer()
+        stub.set_default("summary")
+        plan = compute_distillation_plan(
+            vault,
+            stub,
+            recency_days=None,
+            max_candidates=2,
+        )
+        assert len(plan.proposals) == 2
+        assert stub.call_count == 2, f"expected at most 2 summarizer calls, got {stub.call_count}"
+
+    def test_max_candidates_zero_makes_no_calls(self, vault: Vault) -> None:
+        for i in range(3):
+            _write_session(vault, session_id=f"s{i}", turns=12)
+        stub = StubSummarizer()
+        stub.set_default("summary")
+        plan = compute_distillation_plan(
+            vault,
+            stub,
+            recency_days=None,
+            max_candidates=0,
+        )
+        assert plan.proposals == []
+
 
 class TestApplyDistillations:
     def test_apply_writes_distillation_files_and_indexes_them(
