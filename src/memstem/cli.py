@@ -39,13 +39,14 @@ from memstem.config import (
     OpenClawLayout,
     OpenClawWorkspace,
 )
+from memstem.core.dedup import find_existing_memory_for_hash, normalized_body_hash
 from memstem.core.embed_worker import drain_once, run_workers
 from memstem.core.embeddings import (
     Embedder,
     EmbeddingError,
     embed_for,
 )
-from memstem.core.index import Index, body_hash
+from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.search import Search
 from memstem.core.storage import Vault
@@ -880,19 +881,21 @@ async def _reconcile_into_pipeline(
         seen += 1
         if _reconcile_skip_unchanged(pipeline, record):
             skipped += 1
+            # Skips are two indexed lookups (~5µs); a long run of them
+            # still shouldn't monopolize the single-threaded event loop.
+            if seen % 200 == 0:
+                await asyncio.sleep(0)
         else:
             try:
                 pipeline.process(record)
                 count += 1
             except Exception as exc:
                 logger.warning("reconcile failed for %s/%s: %s", record.source, record.ref, exc)
-        # `pipeline.process` is synchronous and the adapters stream records
-        # without awaiting, so this loop would otherwise monopolize the
-        # single-threaded event loop and starve the HTTP/MCP server and
-        # request handlers — the server would never get a turn to bind.
-        # Cede control periodically so the daemon stays responsive while
-        # this background catch-up runs.
-        if seen % 100 == 0:
+            # A processed record did synchronous disk + index writes — the
+            # expensive, loop-blocking work. Cede control after each one so
+            # the HTTP/MCP server and request handlers stay responsive while
+            # this background catch-up runs (records stream in without
+            # awaiting, so without this the loop never yields).
             await asyncio.sleep(0)
     logger.info(
         "reconcile complete (%s): %d processed, %d unchanged-skipped", label, count, skipped
@@ -904,34 +907,39 @@ def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     """True when the reconcile can skip this record (ADR 0024).
 
     A record is unchanged when a record-map entry exists for its
-    ``(source, ref)`` and the body hash recorded in ``embed_state`` still
-    matches the incoming body — i.e. identical content is already stored
-    and embedded. Skipping avoids the per-record markdown rewrite + index
-    upsert that made the startup reconcile an I/O storm on large vaults.
+    ``(source, ref)`` and the normalized body hash still maps to that
+    same memory id in ``body_hash_index`` — i.e. identical content is
+    already stored. Skipping avoids the per-record markdown rewrite +
+    index upsert that made the startup reconcile an I/O storm on large
+    vaults.
 
-    Both lookups hit small, ``memory_id``-/``(source, ref)``-indexed
-    regular tables and are ~5µs each (benchmarked). Deliberately NOT
-    calling ``Index.needs_reembed`` here: that does a
-    ``SELECT ... FROM memories_vec`` scan (~30ms/call on a large vault —
-    no index on the vec virtual table's id column), which over a full
-    reconcile is the very O(N²) stall this skip exists to remove. Embed
-    state is the embed worker's job: records that need vectors were
-    enqueued at their original ingest and the worker drains that
-    persistent queue independently; provider switches go through
-    ``memstem reindex``.
+    Both lookups hit small, indexed regular tables and are ~5µs each
+    (benchmarked). The signal is ``body_hash_index`` rather than
+    ``embed_state`` deliberately: ``body_hash_index`` is written by
+    ``Pipeline.process`` itself (``record_body_hash``), so it converges
+    after a single reconcile regardless of embedder health, whereas
+    ``embed_state.body_hash`` is only written *after* the embed worker
+    succeeds — meaning while the embedder is degraded the skip would
+    never converge and every restart would re-churn. ``normalized_body_hash``
+    also makes the match whitespace-insensitive (the codex adapter, e.g.,
+    differs only by a trailing newline on re-parse).
 
-    Records that are new, changed, or not yet embedded (no recorded body
-    hash) return False and fall through to the normal ``Pipeline.process``
-    path.
+    The skip deliberately does NOT call ``Index.needs_reembed`` (that
+    scans ``memories_vec`` — ~30ms/call, the O(N²) stall this exists to
+    remove). Embed state is the embed worker's job; records needing
+    vectors were enqueued at their original ingest.
+
+    ``body_hash_index`` may not yet cover a record ingested before the
+    dedup layer existed; such a record returns False, is reprocessed once
+    (which records its hash), and is skipped thereafter — the table
+    self-completes over reconciles. New, changed, or never-stored records
+    also return False and fall through to ``Pipeline.process``.
     """
     index = pipeline.index
     existing_id = index.lookup_record_mapping(record.source, record.ref)
     if existing_id is None:
         return False
-    stored = index.stored_body_hash(existing_id)
-    if stored is None:
-        return False
-    return stored == body_hash(record.body)
+    return find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) == existing_id
 
 
 async def _reconcile_all(

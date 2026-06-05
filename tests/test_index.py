@@ -335,6 +335,17 @@ class TestEmbedState:
         index.record_embed_state(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
         assert not index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
 
+    def test_no_reembed_trusts_embed_state_without_vec_scan(self, index: Index) -> None:
+        """ADR 0024: needs_reembed is decided from embed_state alone (no
+        ``memories_vec`` scan). A matching, non-NULL embed_state row means
+        'embedded' even though this test never wrote vec rows — a non-NULL
+        body_hash is only recorded after the worker upserts the vector
+        (verified 4,463/4,463 on the live vault)."""
+        memory = _make_memory(body="hello")
+        index.upsert(memory)  # note: no upsert_vectors → zero rows in memories_vec
+        index.record_embed_state(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+        assert not index.needs_reembed(str(memory.id), body_hash("hello"), self.SIG_GEMINI)
+
     def test_null_signature_treated_as_compatible(self, index: Index) -> None:
         """Legacy backfilled rows have NULL signature; don't re-embed them
         for signature mismatch alone."""

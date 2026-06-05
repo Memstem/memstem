@@ -28,49 +28,63 @@ the embedder was up) vectors.
 
 ## Decision
 
-In the **reconcile path only** (`memstem.cli._reconcile_into_pipeline`),
-skip records that are provably unchanged before calling
-`Pipeline.process`. A record is "unchanged" when:
+Three coordinated changes:
 
-1. a record-map entry exists for its `(source, ref)` — i.e. we've stored
-   it before, **and**
-2. the body hash recorded in `embed_state` for that memory id still
-   matches the incoming body (`Index.stored_body_hash == body_hash(body)`).
+**1. `needs_reembed` reads `embed_state`, not `memories_vec`.**
+`Pipeline.process` calls `needs_reembed` on every ingested record. It
+began with `SELECT 1 FROM memories_vec WHERE memory_id = ?` to confirm a
+vector exists — but that scans the sqlite-vec virtual table (~30ms/call;
+no index on its id column), so it dominated both live ingestion and the
+reconcile. A non-NULL `embed_state.body_hash` is written only *after* the
+worker upserts the vector, so it is a faithful "has a vector" proxy —
+verified 4,463/4,463 on the live vault (vector-present ⇔ embed_state
+non-NULL, zero disagreements). `needs_reembed` now decides from the
+`memory_id`-indexed `embed_state` row alone (~5µs).
 
-Both lookups hit small, indexed regular tables (`record_map` by
-`(source, ref)`, `embed_state` by `memory_id`) and benchmark at ~5µs
-each. The skip deliberately does **not** call `Index.needs_reembed`: it
-runs `SELECT ... FROM memories_vec`, which is ~30ms/call on a large vault
-(the sqlite-vec virtual table has no index on its id column) — doing
-that per record *is* the O(N²) stall the skip exists to remove. Embed
-state is left to the embed worker, which drains its persistent queue
-independently (records needing vectors were enqueued at original
-ingest); provider switches go through `memstem reindex`. Everything else
-(new record, changed body, not-yet-embedded) falls through to the normal
-`Pipeline.process`.
+**2. Reconcile skips unchanged records** (reconcile path only,
+`_reconcile_into_pipeline`). A record is "unchanged" when a record-map
+entry exists for its `(source, ref)` *and* `normalized_body_hash(body)`
+still maps to that same memory id in `body_hash_index`. Both are ~5µs
+indexed lookups, with no `memories_vec` scan.
 
-> An earlier iteration keyed the skip on the Layer-1 dedup table
-> (`body_hash_index`) and called `needs_reembed`. Both were wrong:
-> `needs_reembed`'s vec scan kept the reconcile O(N²), and
-> `body_hash_index` is incomplete (only records that passed through the
-> dedup-recording path), so ~19% of records never matched and churned
-> every restart. `embed_state` is keyed by `memory_id`, indexed, and
-> populated for every record — the reliable, cheap signal.
+The signal is `body_hash_index`, **not** `embed_state`, on purpose:
+`body_hash_index` is written by `Pipeline.process` itself
+(`record_body_hash`), so the skip converges after a single reconcile
+**regardless of embedder health**. `embed_state.body_hash` is only
+written *after* the embed worker succeeds — so while the embedder is
+degraded (e.g. an OpenAI outage), an `embed_state`-keyed skip never
+converges and every restart re-churns. `normalized_body_hash` also makes
+the match whitespace-insensitive (the codex adapter, e.g., re-parses
+with only a trailing-newline difference).
+
+**3. Yield after every processed record.** `Pipeline.process` is
+synchronous disk + index I/O and the adapters stream records without
+awaiting, so the reconcile loop `await asyncio.sleep(0)` after each
+*processed* record (and every 200 skips) to keep the HTTP/MCP server and
+request handlers responsive while the background catch-up runs.
 
 The live watcher path (`_drain_into_pipeline → Pipeline.process`) is
-**unchanged**: real-time events are low-volume and must always apply
-their full effect (frontmatter updates, transient TTL re-stamping, etc.).
-This keeps the change isolated to the bulk path that actually has the
-performance problem, and leaves the battle-tested ingestion path
-untouched.
+otherwise **unchanged**: real-time events must always apply their full
+effect (frontmatter updates, transient TTL re-stamping). The change is
+isolated to the bulk path that has the performance problem.
 
 ## Consequences
 
-- A normal restart now reprocesses only what changed during downtime
-  (usually a handful of records), so the reconcile finishes in seconds
-  and the daemon is responsive immediately. Combined with the background
-  reconcile + cooperative yielding from 0.12.1/0.12.2, the startup
-  outage is eliminated.
+- Combined with the background reconcile + cooperative yielding from
+  0.12.1/0.12.2, the startup outage is eliminated: measured on a staging
+  copy of the live vault, the daemon's `/health` is responsive **~5s**
+  after restart (was 7–9 min hard-unavailable) and stays responsive
+  while the catch-up runs in the background.
+- **Known limitation — pre-dedup / noise-filtered records don't
+  converge.** A record ingested before the Layer-1 dedup table existed,
+  or one the noise filter now drops on re-ingest, has no `body_hash_index`
+  entry and `Pipeline.process` won't (re)write one for it, so the skip
+  never matches it and it is re-evaluated every reconcile. This is cheap
+  now (the ~30ms vec scan is gone) but not free. Fully eliminating it
+  needs an **mtime-based incremental reconcile** — track the last-run
+  time and skip source files whose mtime hasn't changed *before* parsing
+  them, independent of any index-side hash. Tracked as a follow-up to
+  this ADR.
 - **Edge case:** a source file whose *frontmatter* changed during
   downtime without its *body* changing (e.g. a metadata-only edit, an
   importance re-seed) is skipped by the reconcile and won't pick up that

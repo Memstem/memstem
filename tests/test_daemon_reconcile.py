@@ -18,20 +18,9 @@ import pytest
 
 from memstem.adapters.base import MemoryRecord
 from memstem.cli import _reconcile_all, _reconcile_skip_unchanged
-from memstem.core.index import Index, body_hash
+from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
-
-
-def _process_and_embed(pipeline: Pipeline, index: Index, record: MemoryRecord) -> None:
-    """Process a record and simulate the embed worker recording its body
-    hash in ``embed_state`` — the signal ``_reconcile_skip_unchanged``
-    keys on. A record that's stored but not yet embedded has no recorded
-    hash and is intentionally NOT skipped.
-    """
-    memory = pipeline.process(record)
-    assert memory is not None
-    index.record_embed_state(str(memory.id), body_hash(record.body), pipeline.embedding_signature)
 
 
 def _record(ref: str, body: str) -> MemoryRecord:
@@ -138,10 +127,26 @@ async def test_reconcile_cedes_control_to_event_loop(vault: Vault, index: Index)
 
 
 def test_skip_unchanged_true_for_identical_record(vault: Vault, index: Index) -> None:
-    """An already-stored + embedded, identical record is skipped (ADR 0024)."""
+    """An already-stored, identical record is skipped (ADR 0024).
+
+    The skip keys on ``body_hash_index``, which ``Pipeline.process``
+    records directly — so a record is skippable straight after ingest,
+    with no dependency on the embed worker having run.
+    """
     pipeline = Pipeline(vault, index)
-    _process_and_embed(pipeline, index, _record("/s/1.md", "the body never changed"))
+    pipeline.process(_record("/s/1.md", "the body never changed"))
     assert _reconcile_skip_unchanged(pipeline, _record("/s/1.md", "the body never changed")) is True
+
+
+def test_skip_unchanged_true_even_when_not_embedded(vault: Vault, index: Index) -> None:
+    """Stored but not yet embedded is still skipped — the signal is
+    ``body_hash_index`` (written by process), not ``embed_state`` (written
+    by the embed worker). This is what lets the skip converge while the
+    embedder is degraded.
+    """
+    pipeline = Pipeline(vault, index)
+    pipeline.process(_record("/s/3.md", "stored not embedded"))  # no embed worker run
+    assert _reconcile_skip_unchanged(pipeline, _record("/s/3.md", "stored not embedded")) is True
 
 
 def test_skip_unchanged_false_for_new_record(vault: Vault, index: Index) -> None:
@@ -153,29 +158,18 @@ def test_skip_unchanged_false_for_new_record(vault: Vault, index: Index) -> None
 def test_skip_unchanged_false_for_changed_body(vault: Vault, index: Index) -> None:
     """Same ref, different body → not unchanged → must be processed."""
     pipeline = Pipeline(vault, index)
-    _process_and_embed(pipeline, index, _record("/s/2.md", "original body"))
+    pipeline.process(_record("/s/2.md", "original body"))
     assert _reconcile_skip_unchanged(pipeline, _record("/s/2.md", "edited body")) is False
 
 
-def test_skip_false_for_stored_but_unembedded_record(vault: Vault, index: Index) -> None:
-    """Stored but not yet embedded (no recorded body hash) → not skipped."""
-    pipeline = Pipeline(vault, index)
-    pipeline.process(_record("/s/3.md", "stored not embedded"))  # no record_embed_state
-    assert _reconcile_skip_unchanged(pipeline, _record("/s/3.md", "stored not embedded")) is False
-
-
 async def test_reconcile_skips_unchanged_records_on_second_pass(vault: Vault, index: Index) -> None:
-    """After ingest+embed, a second reconcile recognizes every record as unchanged."""
+    """A second reconcile over identical content recognizes every record as
+    unchanged — converges after one pass, no embedder required."""
     pipeline = Pipeline(vault, index)
     records = [_record(f"/s/{i}.md", f"body {i}") for i in range(5)]
     await _reconcile_all(pipeline, [(_stream(records), "openclaw")])
     assert _memory_count(index) == 5
-    # Simulate the embed worker draining the queue.
-    for rec in records:
-        mid = index.lookup_record_mapping(rec.source, rec.ref)
-        assert mid is not None
-        index.record_embed_state(mid, body_hash(rec.body), pipeline.embedding_signature)
-    # Now every record is recognized as unchanged → the second pass skips all.
+    # The first pass recorded each body hash; the second pass skips all.
     assert all(_reconcile_skip_unchanged(pipeline, rec) for rec in records)
     await _reconcile_all(pipeline, [(_stream(list(records)), "openclaw")])
     assert _memory_count(index) == 5
