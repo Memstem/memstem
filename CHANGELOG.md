@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.6] — 2026-06-05
+
+### Fixed
+
+- **`needs_reembed` no longer scans `memories_vec`.** It now decides
+  purely from the `memory_id`-indexed `embed_state` row (~5µs) instead of
+  a `SELECT ... FROM memories_vec` scan (~30ms/call — the sqlite-vec
+  virtual table has no index on its id column). `Pipeline.process` calls
+  this on every ingested record, so the scan dominated both live
+  ingestion and the startup reconcile. A non-NULL `embed_state.body_hash`
+  is written only after the worker upserts the vector, so it is a
+  faithful "has a vector" proxy — verified 4,463/4,463 records on the
+  live vault (vector-present ⇔ embed_state-present, zero disagreements).
+- **Reconcile skip keys on `body_hash_index` (normalized), not
+  `embed_state`** — corrects the 0.12.5 signal. `body_hash_index` is
+  written by `Pipeline.process` itself, so the skip converges after one
+  reconcile regardless of embedder health; `embed_state.body_hash` is
+  only written after the embed worker succeeds, so while the embedder is
+  degraded the 0.12.5 skip never converged and every restart re-churned.
+  The normalized hash also makes the match whitespace-insensitive.
+- **Reconcile yields the event loop after every processed record** (not
+  every 100), so the background catch-up no longer starves the HTTP/MCP
+  server. Measured on a staging copy of the live vault: daemon
+  `/health` responsive in **~5s** after restart and responsive
+  throughout catch-up (was 7–9 min hard-unavailable before this series).
+
+### Known limitation
+
+- Records ingested before the Layer-1 dedup table existed, or that the
+  noise filter now drops on re-ingest, have no `body_hash_index` entry
+  and `Pipeline.process` won't (re)write one, so they are re-evaluated
+  every reconcile (cheap now — no vec scan — but not skipped). Fully
+  eliminating this needs an mtime-based incremental reconcile that skips
+  source files untouched since the last run before parsing them; tracked
+  as follow-up to ADR 0024.
+
 ## [0.12.5] — 2026-06-05
 
 ### Fixed

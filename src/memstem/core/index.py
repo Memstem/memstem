@@ -684,9 +684,9 @@ class Index:
     def needs_reembed(self, memory_id: str, content_hash: str, embed_signature: str) -> bool:
         """Return True if this memory needs (re-)embedding.
 
-        Checks three conditions in order:
-        - No rows in `memories_vec` for this id → never embedded.
-        - No `embed_state` row → first time we're being asked, embed.
+        Decided entirely from the ``embed_state`` row — a small,
+        ``memory_id``-indexed regular table — in order:
+        - No `embed_state` row, or a NULL `body_hash` → not embedded yet.
         - `body_hash` differs → content changed, vectors are stale.
         - `embed_signature` differs and stored value is non-NULL →
           embedder configuration changed.
@@ -696,19 +696,24 @@ class Index:
         with whatever the caller is asking about, so we don't pointlessly
         re-embed every record on the first daemon start after upgrading
         to schema v3.
+
+        ADR 0024: this used to begin with ``SELECT 1 FROM memories_vec``
+        to confirm a vector exists, but that scans the sqlite-vec virtual
+        table (~30ms/call on a large vault — no index on its id column),
+        and `process` calls this on every ingested record, so it
+        dominated both live ingestion and the startup reconcile. A
+        non-NULL ``embed_state.body_hash`` is written only after the
+        worker has upserted the vector, so it is a faithful proxy for
+        "has a vector" — verified across the maintainer's full vault
+        (4,463/4,463 records: vector-present ⇔ embed_state-present, zero
+        disagreements). Dropping the scan makes this ~5µs.
         """
         with self._lock:
-            vec = self.db.execute(
-                "SELECT 1 FROM memories_vec WHERE memory_id = ? LIMIT 1",
-                (memory_id,),
-            ).fetchone()
-            if vec is None:
-                return True
             state = self.db.execute(
                 "SELECT body_hash, embed_signature FROM embed_state WHERE memory_id = ?",
                 (memory_id,),
             ).fetchone()
-        if state is None:
+        if state is None or state["body_hash"] is None:
             return True
         if state["body_hash"] != content_hash:
             return True
