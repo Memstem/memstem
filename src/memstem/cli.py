@@ -874,12 +874,22 @@ async def _reconcile_into_pipeline(
     label: str,
 ) -> int:
     count = 0
+    seen = 0
     async for record in stream:
+        seen += 1
         try:
             pipeline.process(record)
             count += 1
         except Exception as exc:
             logger.warning("reconcile failed for %s/%s: %s", record.source, record.ref, exc)
+        # `pipeline.process` is synchronous and the adapters stream records
+        # without awaiting, so this loop would otherwise monopolize the
+        # single-threaded event loop and starve the HTTP/MCP server and
+        # request handlers — the server would never get a turn to bind.
+        # Cede control periodically so the daemon stays responsive while
+        # this background catch-up runs.
+        if seen % 25 == 0:
+            await asyncio.sleep(0)
     logger.info("reconcile complete (%s): %d records", label, count)
     return count
 
@@ -899,6 +909,9 @@ async def _reconcile_all(
     never propagates — the live watchers stay active regardless.
     """
     try:
+        # Let the server, watchers, and embed workers reach their first
+        # await (bind / start) before this CPU-bound walk begins.
+        await asyncio.sleep(0)
         for stream, label in streams:
             await _reconcile_into_pipeline(pipeline, stream, label)
         logger.info("startup reconcile complete for all adapters")

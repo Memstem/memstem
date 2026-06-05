@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.2] — 2026-06-05
+
+### Fixed
+
+- **Startup reconcile now actually yields the event loop** — completes
+  the 0.12.1 fix. Moving the reconcile to a background task wasn't
+  enough: `Pipeline.process` is synchronous and the adapters stream
+  records without awaiting, so the `async for` walk monopolized the
+  single-threaded event loop and the HTTP/MCP server still never got a
+  turn to bind until the whole catch-up finished (minutes, on a large
+  vault). The reconcile loop now `await asyncio.sleep(0)` every 25
+  records, and `_reconcile_all` yields once before it starts, so the
+  server binds within milliseconds and stays responsive while the
+  catch-up runs concurrently.
+
 ## [0.12.1] — 2026-06-05
 
 ### Fixed
