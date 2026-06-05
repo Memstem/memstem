@@ -32,19 +32,21 @@ Memstem solves this by:
 
 ## Architecture (one paragraph)
 
-Markdown files in a structured tree are the canonical store. A SQLite database with FTS5 and sqlite-vec is the rebuildable index. A daemon watches each connected AI's filesystem and ingests deltas. An MCP server exposes search, get, and skill retrieval to clients. A hygiene worker (Phase 2) dedupes, decays, and writes distillations from session transcripts.
+Markdown files in a structured tree are the canonical store. A SQLite database with FTS5 and sqlite-vec is the rebuildable index. A daemon watches each connected AI's filesystem and ingests deltas. An MCP server exposes search, get, and skill retrieval to clients. A hygiene loop runs inside the daemon — distilling sessions, judging duplicates, scoring importance, and building project records on configurable intervals.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./ROADMAP.md) for the phase plan.
 
 ## Status
 
-**v0.9.x — derived records + post-cleanup operator workflow.**
-Live on the maintainer's box; ingesting from multi-agent OpenClaw +
-Claude Code in real time. 0.9.0 added session distillation + project
-records on top of the 0.8.1 retrieval pipeline; the unreleased
-post-cleanup branch adds a single-command verification report, an
-explicit per-type ranking policy, and a fix that keeps skill review
-tickets out of vault scans. Shipping:
+**v0.11.0 — in-daemon hygiene loop + OpenAI-compatible LLM backends.**
+Live on the maintainer's box; ingesting from multi-agent OpenClaw,
+Claude Code, and Codex in real time. 0.11.0 moves the hygiene stages
+into the daemon so distillation, dedup judging, importance scoring, and
+project records run automatically, and lets the dedup judge + summarizer
+talk to any OpenAI-compatible endpoint (including a self-hosted vLLM box)
+rather than only OpenAI. 0.10.0 hardened the embed worker against
+unstable embedder providers and shipped the `hygiene verify` operator
+report plus an explicit per-type ranking policy. Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
   markdown-canonical vault. Index is rebuildable from the files.
@@ -63,7 +65,27 @@ tickets out of vault scans. Shipping:
   did X" queries that today fail to surface project work that
   exists in the vault. See
   [docs/distillation-verification.md](./docs/distillation-verification.md).
-- **Post-cleanup operator workflow (unreleased)** — `memstem hygiene
+- **In-daemon hygiene loop (new in 0.11.0)** — `memstem daemon` runs
+  the four hygiene stages (distill-sessions, dedup-judge, importance,
+  project-records) as background tasks alongside the watchers and embed
+  workers, each on its own configurable interval with per-stage locking
+  and failure isolation. `GET /health` exposes per-stage `last_run`
+  timestamps for fleet monitoring; set `loop_enabled: false` on
+  multi-tenant hosts where the customer hasn't authorized LLM spend.
+  See [ADR 0023](./docs/decisions/0023-in-daemon-hygiene-loop.md).
+- **OpenAI-compatible LLM backends for hygiene (new in 0.11.0)** — the
+  dedup judge and summarizer speak the OpenAI chat-completions protocol,
+  so dedup judging, distillation, and project-records can run against a
+  self-hosted vLLM / TGI / LM Studio / LiteLLM endpoint via a `base_url`
+  override — no per-customer cloud billing. The audit log and provenance
+  honestly label which service produced each verdict (`openai:gpt-…` for
+  OpenAI Inc., `openai-compat:gemma-…` for a self-hosted endpoint).
+- **Codex adapter (new in 0.11.0)** — third filesystem adapter (after
+  Claude Code and OpenClaw), watching `~/.codex/sessions|skills|memories`;
+  enabled by default and no-ops silently on hosts without Codex. Codex
+  sessions group by project tag alongside Claude Code's. See
+  [ADR 0022](./docs/decisions/0022-codex-adapter.md).
+- **Post-cleanup operator workflow** — `memstem hygiene
   verify` is a single read-only command that summarizes vault state
   after a cleanup + backfill sweep: per-type counts, distillation
   coverage, undistilled-eligible sessions remaining, dedup /
@@ -72,7 +94,7 @@ tickets out of vault scans. Shipping:
   emits a machine-readable payload for CI / monitoring. Replaces
   ad-hoc SQLite inspection. See the [post-cleanup playbook in
   docs/operations.md](./docs/operations.md#post-cleanup-operator-playbook).
-- **Explicit ranking policy (unreleased)** — `SearchConfig.type_bias`
+- **Explicit ranking policy** — `SearchConfig.type_bias`
   multiplies each result's score by a small per-type weight so
   default search clearly prefers curated/derived records (distillation
   1.10, memory/skill/project 1.05) over raw conversational sessions
@@ -95,7 +117,7 @@ Cross-platform CI runs Linux (gating) plus macOS and Windows
 (experimental, `continue-on-error: true` — sqlite-vec needs
 `enable_load_extension`, which `actions/setup-python`'s macOS build
 doesn't ship; native Windows is WSL2-only by design for v0.x).
-1150 tests passing. See [CHANGELOG.md](./CHANGELOG.md) for the
+1325 tests passing. See [CHANGELOG.md](./CHANGELOG.md) for the
 release-by-release history and [ROADMAP.md](./ROADMAP.md) for what's
 next.
 
@@ -333,7 +355,7 @@ $ memstem doctor
 Memstem doctor (vault=/home/ubuntu/memstem-vault):
 
   ✓ Python 3.11
-  ✓ memstem 0.9.0
+  ✓ memstem 0.11.0
   ✓ Vault: /home/ubuntu/memstem-vault
   ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly
