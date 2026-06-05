@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.0] — 2026-06-05
+
+### Added
+
+- **`memstem connect-clients` now wires Codex CLI** alongside Claude
+  Code and OpenClaw. New `register_codex_mcp_server` in
+  `src/memstem/integration.py` is an idempotent text appender for
+  `~/.codex/config.toml` — it replaces the contiguous
+  `[mcp_servers.memstem]` (and optional `.env`) run, preserves other
+  servers and unrelated keys, and no-ops on round-trips (no new TOML
+  dependency). A `--codex` / `--no-codex` flag (default on) wires both
+  `~/.codex/config.toml` (MCP entry with embedder env vars baked in,
+  like the Claude Code path) and `~/.codex/AGENTS.md` (the same
+  versioned `<!-- memstem:directive v1 -->` block via `apply_directive`);
+  it skips silently when `~/.codex/` doesn't exist. 16 new tests cover
+  create / preserve-others / no-op / update / env add-replace-remove /
+  dry-run / backup / N-run drift.
+
+### Fixed
+
+- **OpenClaw WS / control-UI sessions no longer ingest near-empty.**
+  The WS / control-UI path doesn't populate `prompt.submitted` with
+  real user text (only empty heartbeat pulses), so the parser produced
+  near-empty session records for any agent driven through the custom
+  UI. The adapter now reconstructs the conversation from the richest
+  `model.completed.messagesSnapshot` (user + assistant text blocks
+  only; thinking / tool / encrypted blocks excluded), superseding the
+  `prompt.submitted` reconstruction when richer.
+
+### Documentation
+
+- **Customer-facing secret-handling scope + responsibility note** —
+  clarifies which secrets Memstem stores, where, and the operator's
+  responsibilities for keys passed to embedders / hygiene LLM backends.
+
 ## [0.11.0] — 2026-05-22
 
 ### Added
