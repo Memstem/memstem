@@ -46,7 +46,7 @@ from memstem.core.embeddings import (
     EmbeddingError,
     embed_for,
 )
-from memstem.core.index import Index, body_hash
+from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.search import Search
 from memstem.core.storage import Vault
@@ -907,24 +907,29 @@ def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     A record is unchanged when a record-map entry already exists for its
     ``(source, ref)`` and the normalized body hash still maps to that same
     memory id — i.e. identical content is already stored and indexed.
-    Mirrors the unchanged-detection inside ``Pipeline.process``; skipping
-    avoids the per-record markdown rewrite + index upsert that made the
-    startup reconcile an I/O storm on large vaults.
+    Skipping avoids the per-record markdown rewrite + index upsert that
+    made the startup reconcile an I/O storm on large vaults.
 
-    Missing/stale vectors are still enqueued (a cheap metadata check, no
-    rewrite) so an embedder that was down at first ingest catches up. New,
-    changed, or never-stored records return False and fall through to the
-    normal ``Pipeline.process`` path.
+    Both checks hit small, indexed regular tables (record-map, body-hash
+    map) and are sub-millisecond. Deliberately NOT calling
+    ``Index.needs_reembed`` here: that does a
+    ``SELECT ... FROM memories_vec`` scan (~30ms/call on a large vault,
+    no index on the vec virtual table's id column), which over a full
+    reconcile is the very O(N²) stall this skip exists to remove. Embed
+    state is the embed worker's job, not the reconcile's — records that
+    need vectors were already enqueued at their original ingest and the
+    worker drains that persistent queue independently. Provider switches
+    (which invalidate every vector) go through ``memstem reindex``, not
+    the daemon reconcile.
+
+    New, changed, or never-stored records return False and fall through
+    to the normal ``Pipeline.process`` path.
     """
     index = pipeline.index
     existing_id = index.lookup_record_mapping(record.source, record.ref)
     if existing_id is None:
         return False
-    if find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) != existing_id:
-        return False
-    if index.needs_reembed(existing_id, body_hash(record.body), pipeline.embedding_signature):
-        index.enqueue_embed(existing_id)
-    return True
+    return find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) == existing_id
 
 
 async def _reconcile_all(

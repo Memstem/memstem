@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.4] — 2026-06-05
+
+### Fixed
+
+- **Startup reconcile skip no longer does a per-record vec scan.** The
+  0.12.3 unchanged-skip still called `Index.needs_reembed` for every
+  skipped record, which runs `SELECT ... FROM memories_vec` — ~30ms per
+  call on a large vault (the sqlite-vec virtual table has no index on
+  its id column), so the catch-up was still ~140s and the daemon stayed
+  unresponsive for over two minutes after restart. The skip now relies
+  only on the two sub-millisecond indexed lookups (record-map + body-hash
+  map). Embed state is left to the embed worker, which drains the
+  persistent queue independently (records needing vectors were already
+  enqueued at original ingest; provider switches go through `memstem
+  reindex`). Restart catch-up now completes in seconds and `/health`
+  responds immediately.
+
 ## [0.12.3] — 2026-06-05
 
 ### Fixed
