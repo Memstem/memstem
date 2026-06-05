@@ -540,6 +540,56 @@ class TestTrajectoryParser:
         assert parsed["workspace_dir"] == "/home/ubuntu/ari"
         assert parsed["agent_id"] == "main"
 
+    def test_ws_path_recovers_turns_from_messages_snapshot(self, tmp_path: Path) -> None:
+        # WS / control-UI path: prompt.submitted carries only empty heartbeat
+        # pulses; the real conversation lives in model.completed.messagesSnapshot.
+        traj = self._write_trajectory(
+            tmp_path / "ws.trajectory.jsonl",
+            [
+                {
+                    "type": "session.started",
+                    "ts": "2026-05-16T10:00:00.000Z",
+                    "sessionId": "ws01",
+                    "data": {"agentId": "main"},
+                },
+                {
+                    "type": "prompt.submitted",
+                    "ts": "2026-05-16T10:13:00.000Z",
+                    "source": "runtime",
+                    "data": {"prompt": ""},
+                },
+                {
+                    "type": "model.completed",
+                    "ts": "2026-05-16T10:43:00.000Z",
+                    "data": {
+                        "assistantTexts": [],
+                        "messagesSnapshot": [
+                            {
+                                "role": "user",
+                                "content": [{"type": "text", "text": "Build me a NinjaUp report."}],
+                            },
+                            {
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "thinking", "thinking": "secret reasoning"},
+                                    {"type": "text", "text": "Done — report created."},
+                                ],
+                            },
+                            {"role": "toolResult", "content": [{"type": "text", "text": "noise"}]},
+                        ],
+                    },
+                },
+            ],
+        )
+        parsed = _parse_trajectory_file(traj)
+        assert parsed is not None
+        assert "**User:** Build me a NinjaUp report." in parsed["body"]
+        assert "**Assistant:** Done — report created." in parsed["body"]
+        assert "secret reasoning" not in parsed["body"]
+        assert "noise" not in parsed["body"]
+        assert parsed["title"] == "Build me a NinjaUp report."
+        assert parsed["turn_count"] == 2
+
     def test_skips_operational_events(self, tmp_path: Path) -> None:
         # context.compiled, trace.artifacts, openclaw, etc. should not contribute turns.
         traj = self._write_trajectory(
