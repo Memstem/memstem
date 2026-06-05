@@ -717,6 +717,23 @@ class Index:
             return True
         return False
 
+    def stored_body_hash(self, memory_id: str) -> str | None:
+        """Return the recorded body hash for a record, or None.
+
+        Reads ``embed_state.body_hash`` — a small, ``memory_id``-indexed
+        regular table — so the startup reconcile can detect unchanged
+        records without the ``memories_vec`` scan that :meth:`needs_reembed`
+        performs (ADR 0024; that scan is ~30ms/call on a large vault).
+        Returns None when no embed-state row exists yet or its hash is
+        NULL (record never embedded), in which case the caller should fall
+        back to reprocessing.
+        """
+        with self._lock:
+            row = self.db.execute(
+                "SELECT body_hash FROM embed_state WHERE memory_id = ?", (memory_id,)
+            ).fetchone()
+        return row["body_hash"] if row is not None else None
+
     def record_embed_state(self, memory_id: str, content_hash: str, embed_signature: str) -> None:
         """Mark `memory_id` as freshly embedded with the given hash + signature.
 
