@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.7] — 2026-06-05
+
+### Fixed
+
+- **OpenAI-compatible embedder caps inputs-per-request by endpoint.**
+  `OpenAIEmbedder` split inputs into batches of 100 (OpenAI Inc.'s
+  comfortable limit), but self-hosted OpenAI-compatible servers cap much
+  lower — the self-hosted T4 (vLLM) rejects >32 with a `413`, so a large
+  record chunked into 100+ pieces failed to embed entirely (~4% of the
+  largest records, e.g. long accumulating logs). The per-request cap is
+  now chosen by endpoint: **100 for OpenAI Inc. / Azure OpenAI, 32 for
+  any other (self-hosted) host**, overridable via the new
+  `embedding.max_request_inputs`. Real-OpenAI users are unaffected;
+  self-hosted (T4) users now embed large records correctly.
+
 ## [0.12.6] — 2026-06-05
 
 ### Fixed

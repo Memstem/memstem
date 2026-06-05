@@ -246,6 +246,57 @@ class TestOpenAIEmbedder:
         assert seen["body"]["model"] == "text-embedding-3-small"
         assert seen["body"]["input"] == ["a", "b"]
 
+    def test_max_batch_defaults_by_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        real = OpenAIEmbedder(model="m", dimensions=4)  # default api.openai.com
+        compat = OpenAIEmbedder(model="m", dimensions=4, base_url="http://10.0.1.54:8080/v1")
+        override = OpenAIEmbedder(
+            model="m", dimensions=4, base_url="http://10.0.1.54:8080/v1", max_request_inputs=16
+        )
+        try:
+            assert real.max_batch == OpenAIEmbedder.MAX_BATCH_SIZE  # 100 for OpenAI Inc.
+            assert compat.max_batch == OpenAIEmbedder.SELF_HOSTED_MAX_BATCH_SIZE  # 32 self-hosted
+            assert override.max_batch == 16  # explicit config wins
+        finally:
+            real.close()
+            compat.close()
+            override.close()
+
+    def test_self_hosted_sub_batches_to_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A self-hosted endpoint (T4 caps at 32) embedding 70 chunks must
+        split into requests of <=32 — the fix for the 413 batch overflow."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        sizes: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            n = len(json.loads(request.content)["input"])
+            sizes.append(n)
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "model": "m",
+                    "data": [
+                        {"object": "embedding", "embedding": [0.0] * 4, "index": i}
+                        for i in range(n)
+                    ],
+                },
+            )
+
+        emb = OpenAIEmbedder(model="m", dimensions=4, base_url="http://10.0.1.54:8080/v1")
+        emb._client = httpx.Client(
+            base_url=emb.base_url,
+            transport=_mock_transport(handler),
+            headers={"Authorization": "Bearer sk-test", "Content-Type": "application/json"},
+        )
+        try:
+            vecs = emb.embed_batch([f"chunk{i}" for i in range(70)])
+        finally:
+            emb.close()
+        assert len(vecs) == 70
+        assert max(sizes) <= 32  # no request exceeded the T4's cap
+        assert sizes == [32, 32, 6]  # 70 split as 32 + 32 + 6
+
     def test_http_error_raises_embedding_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)
