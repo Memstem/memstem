@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from memstem.adapters.base import MemoryRecord
-from memstem.cli import _reconcile_all
+from memstem.cli import _reconcile_all, _reconcile_skip_unchanged
 from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
@@ -124,3 +124,35 @@ async def test_reconcile_cedes_control_to_event_loop(vault: Vault, index: Index)
 
     assert processed_when_canary_ran[0] < 150
     assert _memory_count(index) == 150
+
+
+def test_skip_unchanged_true_for_identical_record(vault: Vault, index: Index) -> None:
+    """An already-stored, identical record is skipped (ADR 0024)."""
+    pipeline = Pipeline(vault, index)
+    rec = _record("/s/1.md", "the body never changed")
+    pipeline.process(rec)
+    assert _reconcile_skip_unchanged(pipeline, _record("/s/1.md", "the body never changed")) is True
+
+
+def test_skip_unchanged_false_for_new_record(vault: Vault, index: Index) -> None:
+    """A never-stored record must be processed, not skipped."""
+    pipeline = Pipeline(vault, index)
+    assert _reconcile_skip_unchanged(pipeline, _record("/s/new.md", "brand new")) is False
+
+
+def test_skip_unchanged_false_for_changed_body(vault: Vault, index: Index) -> None:
+    """Same ref, different body → not unchanged → must be processed."""
+    pipeline = Pipeline(vault, index)
+    pipeline.process(_record("/s/2.md", "original body"))
+    assert _reconcile_skip_unchanged(pipeline, _record("/s/2.md", "edited body")) is False
+
+
+async def test_reconcile_skips_unchanged_records_on_second_pass(vault: Vault, index: Index) -> None:
+    """A full reconcile over already-stored records processes none of them."""
+    pipeline = Pipeline(vault, index)
+    records = [_record(f"/s/{i}.md", f"body {i}") for i in range(5)]
+    await _reconcile_all(pipeline, [(_stream(records), "openclaw")])
+    assert _memory_count(index) == 5
+    # Second pass over identical content: every record is skipped, count unchanged.
+    await _reconcile_all(pipeline, [(_stream(list(records)), "openclaw")])
+    assert _memory_count(index) == 5

@@ -39,13 +39,14 @@ from memstem.config import (
     OpenClawLayout,
     OpenClawWorkspace,
 )
+from memstem.core.dedup import find_existing_memory_for_hash, normalized_body_hash
 from memstem.core.embed_worker import drain_once, run_workers
 from memstem.core.embeddings import (
     Embedder,
     EmbeddingError,
     embed_for,
 )
-from memstem.core.index import Index
+from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
 from memstem.core.search import Search
 from memstem.core.storage import Vault
@@ -874,24 +875,56 @@ async def _reconcile_into_pipeline(
     label: str,
 ) -> int:
     count = 0
+    skipped = 0
     seen = 0
     async for record in stream:
         seen += 1
-        try:
-            pipeline.process(record)
-            count += 1
-        except Exception as exc:
-            logger.warning("reconcile failed for %s/%s: %s", record.source, record.ref, exc)
+        if _reconcile_skip_unchanged(pipeline, record):
+            skipped += 1
+        else:
+            try:
+                pipeline.process(record)
+                count += 1
+            except Exception as exc:
+                logger.warning("reconcile failed for %s/%s: %s", record.source, record.ref, exc)
         # `pipeline.process` is synchronous and the adapters stream records
         # without awaiting, so this loop would otherwise monopolize the
         # single-threaded event loop and starve the HTTP/MCP server and
         # request handlers — the server would never get a turn to bind.
         # Cede control periodically so the daemon stays responsive while
         # this background catch-up runs.
-        if seen % 25 == 0:
+        if seen % 100 == 0:
             await asyncio.sleep(0)
-    logger.info("reconcile complete (%s): %d records", label, count)
+    logger.info(
+        "reconcile complete (%s): %d processed, %d unchanged-skipped", label, count, skipped
+    )
     return count
+
+
+def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
+    """True when the reconcile can skip this record (ADR 0024).
+
+    A record is unchanged when a record-map entry already exists for its
+    ``(source, ref)`` and the normalized body hash still maps to that same
+    memory id — i.e. identical content is already stored and indexed.
+    Mirrors the unchanged-detection inside ``Pipeline.process``; skipping
+    avoids the per-record markdown rewrite + index upsert that made the
+    startup reconcile an I/O storm on large vaults.
+
+    Missing/stale vectors are still enqueued (a cheap metadata check, no
+    rewrite) so an embedder that was down at first ingest catches up. New,
+    changed, or never-stored records return False and fall through to the
+    normal ``Pipeline.process`` path.
+    """
+    index = pipeline.index
+    existing_id = index.lookup_record_mapping(record.source, record.ref)
+    if existing_id is None:
+        return False
+    if find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) != existing_id:
+        return False
+    if index.needs_reembed(existing_id, body_hash(record.body), pipeline.embedding_signature):
+        index.enqueue_embed(existing_id)
+    return True
 
 
 async def _reconcile_all(
