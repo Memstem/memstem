@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.12.3] — 2026-06-05
+
+### Fixed
+
+- **Startup reconcile is now incremental — skips unchanged records**
+  (ADR 0024). The catch-up walk re-processed *every* source record on
+  *every* restart, re-writing the markdown and re-upserting the index
+  rows even when nothing changed — thousands of synchronous disk writes
+  that kept the daemon I/O-bound (and the HTTP/MCP server starved) for
+  minutes. The reconcile path now skips records whose `(source, ref)` is
+  already stored with an identical normalized body, only re-processing
+  new / changed / never-stored records (and enqueuing a re-embed when
+  vectors are missing — a cheap metadata check, no rewrite). A normal
+  restart finishes the catch-up in seconds. The live watcher path is
+  unchanged; `memstem reindex` still always rewrites. Completes the
+  0.12.1 / 0.12.2 startup-availability work.
+
 ## [0.12.2] — 2026-06-05
 
 ### Fixed
