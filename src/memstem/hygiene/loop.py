@@ -193,13 +193,23 @@ class HygieneLoop:
             if provider == "noop":
                 self._summarizer = NoOpSummarizer()
             elif provider == "openai":
-                self._summarizer = OpenAISummarizer(
-                    model=self.cfg.summarizer_model or DEFAULT_OPENAI_MODEL,
-                )
+                # Build kwargs so callers who don't set base_url get
+                # the OpenAISummarizer default (https://api.openai.com/v1)
+                # rather than the explicit ``None`` overriding it.
+                openai_kwargs: dict[str, object] = {
+                    "model": self.cfg.summarizer_model or DEFAULT_OPENAI_MODEL,
+                    "api_key_env": self.cfg.summarizer_api_key_env,
+                }
+                if self.cfg.summarizer_base_url:
+                    openai_kwargs["base_url"] = self.cfg.summarizer_base_url
+                self._summarizer = OpenAISummarizer(**openai_kwargs)  # type: ignore[arg-type]
             elif provider == "ollama":
-                self._summarizer = OllamaSummarizer(
-                    model=self.cfg.summarizer_model or DEFAULT_OLLAMA_MODEL,
-                )
+                ollama_kwargs: dict[str, object] = {
+                    "model": self.cfg.summarizer_model or DEFAULT_OLLAMA_MODEL,
+                }
+                if self.cfg.summarizer_base_url:
+                    ollama_kwargs["base_url"] = self.cfg.summarizer_base_url
+                self._summarizer = OllamaSummarizer(**ollama_kwargs)  # type: ignore[arg-type]
             else:
                 self._summarizer_unavailable_reason = (
                     f"unknown summarizer provider {self.cfg.summarizer_provider!r}; "
@@ -216,18 +226,38 @@ class HygieneLoop:
     def _get_judge(self) -> DedupJudge | None:
         if self._judge is not None or self._judge_unavailable_reason is not None:
             return self._judge
-        from memstem.hygiene.dedup_judge import NoOpJudge, OllamaDedupJudge
+        from memstem.hygiene.dedup_judge import (
+            NoOpJudge,
+            OllamaDedupJudge,
+            OpenAIDedupJudge,
+        )
 
         provider = self.cfg.judge_provider.lower()
         try:
             if provider == "noop":
                 self._judge = NoOpJudge()
+            elif provider == "openai":
+                # Build kwargs so unset overrides fall through to the
+                # OpenAIDedupJudge defaults (api.openai.com + gpt-5.4-mini).
+                openai_kwargs: dict[str, object] = {
+                    "api_key_env": self.cfg.judge_api_key_env,
+                }
+                if self.cfg.judge_model:
+                    openai_kwargs["model"] = self.cfg.judge_model
+                if self.cfg.judge_base_url:
+                    openai_kwargs["base_url"] = self.cfg.judge_base_url
+                self._judge = OpenAIDedupJudge(**openai_kwargs)  # type: ignore[arg-type]
             elif provider == "ollama":
-                self._judge = OllamaDedupJudge()
+                ollama_judge_kwargs: dict[str, object] = {}
+                if self.cfg.judge_model:
+                    ollama_judge_kwargs["model"] = self.cfg.judge_model
+                if self.cfg.judge_base_url:
+                    ollama_judge_kwargs["base_url"] = self.cfg.judge_base_url
+                self._judge = OllamaDedupJudge(**ollama_judge_kwargs)  # type: ignore[arg-type]
             else:
                 self._judge_unavailable_reason = (
                     f"unknown judge provider {self.cfg.judge_provider!r}; "
-                    "expected one of: noop, ollama"
+                    "expected one of: noop, openai, ollama"
                 )
                 logger.warning("hygiene loop: %s", self._judge_unavailable_reason)
         except Exception as exc:

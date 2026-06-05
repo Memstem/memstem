@@ -366,8 +366,6 @@ class OpenAISummarizer(Summarizer):
     candidate" without crashing.
     """
 
-    name_prefix = "openai"
-
     def __init__(
         self,
         *,
@@ -386,6 +384,18 @@ class OpenAISummarizer(Summarizer):
         self.max_output_tokens = max_output_tokens
         self.timeout = timeout
         self._client = client
+        # name_prefix is dynamic so the distillation provenance
+        # distinguishes real OpenAI from a self-hosted endpoint that
+        # just *speaks* the OpenAI protocol (e.g. vLLM, TGI, LM Studio
+        # serving Gemma / Llama / etc.). See _openai_name_prefix
+        # in memstem.hygiene.dedup_judge for the matching helper.
+        from urllib.parse import urlparse
+
+        host = (urlparse(self.base_url).hostname or "").lower()
+        if host.endswith("openai.com") or host.endswith("openai.azure.com"):
+            self.name_prefix = "openai"
+        else:
+            self.name_prefix = "openai-compat"
         self.name = f"{self.name_prefix}:{model}"
 
     def _http_client(self) -> object:

@@ -224,11 +224,44 @@ class HygieneConfig(BaseModel):
     """Optional model override. ``None`` uses provider-default
     (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for Ollama)."""
 
+    summarizer_base_url: str | None = None
+    """Optional ``base_url`` override for the OpenAI-compatible
+    summarizer. Useful for self-hosted models (vLLM, TGI, LM Studio,
+    LiteLLM) that speak the OpenAI API shape. ``None`` uses the
+    provider default (``https://api.openai.com/v1`` for OpenAI,
+    ``http://localhost:11434`` for Ollama). Ignored when
+    ``summarizer_provider`` is ``noop``."""
+
+    summarizer_api_key_env: str = "OPENAI_API_KEY"
+    """Env var name to read the summarizer API key from. Self-hosted
+    OpenAI-compatible servers usually ignore the key value but require
+    *some* value, so callers can point this at a different env var
+    (e.g. ``MEMSTEM_GEMMA_KEY`` set to a dummy string) to avoid
+    polluting the canonical ``OPENAI_API_KEY``."""
+
     judge_provider: str = "noop"
     """Provider used by the loop for ``dedup-judge``. Default is
     ``"noop"`` — the loop logs candidate pairs as ``UNRELATED`` audit
     rows for inventory but does not call an LLM until the operator
-    opts in by setting this to ``"ollama"``."""
+    opts in by setting this to ``"openai"`` or ``"ollama"``."""
+
+    judge_model: str | None = None
+    """Optional model override for the dedup judge. ``None`` uses
+    provider-default (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for
+    Ollama). Pointing this at a smaller / faster model is fine —
+    dedup-judge is a 4-way classification task, not high-reasoning."""
+
+    judge_base_url: str | None = None
+    """Optional ``base_url`` override for the dedup judge. Useful for
+    pointing the OpenAI judge at a self-hosted vLLM / TGI / LM Studio
+    instance. ``None`` uses the provider default. Ignored when
+    ``judge_provider`` is ``noop``."""
+
+    judge_api_key_env: str = "OPENAI_API_KEY"
+    """Env var name to read the dedup-judge API key from. Same logic
+    as ``summarizer_api_key_env`` — point it at a different env var
+    when the value is a dummy (self-hosted servers) to avoid
+    polluting the canonical ``OPENAI_API_KEY``."""
 
     stage_lock_max_age_seconds: int = 3600
     """A ``running_since:<stage>`` lock older than this is treated as
