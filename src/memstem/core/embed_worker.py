@@ -26,6 +26,7 @@ from memstem.core.embeddings import (
     chunk_text,
 )
 from memstem.core.index import Index, body_hash
+from memstem.core.media import extract_image_refs, image_file_to_data_url
 from memstem.core.storage import InvalidFrontmatterError, MemoryNotFoundError, Vault
 
 logger = logging.getLogger(__name__)
@@ -161,7 +162,7 @@ class EmbedWorker:
           than count this against ``retry_count``.
         """
         try:
-            body, chunks = self._read_for_embed(memory_id)
+            body, text_chunks, image_urls = self._read_for_embed(memory_id)
         except _RecordMissingError:
             # Vault file gone — drop the queue entry; nothing to embed.
             self.index.dequeue_embed(memory_id)
@@ -184,7 +185,7 @@ class EmbedWorker:
             self.index.mark_embed_error(memory_id, f"invalid frontmatter: {exc}", max_retries=1)
             return False, False
 
-        if not chunks:
+        if not text_chunks and not image_urls:
             # Empty body still counts as a successful "embed" — record
             # the state so the pipeline doesn't keep re-enqueueing it.
             self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
@@ -192,7 +193,12 @@ class EmbedWorker:
             return True, False
 
         try:
-            vectors = self.embedder.embed_batch(chunks)
+            # Text chunks first, then any image media-chunks (ADR 0025); both
+            # land in the same vector space, ordered text-then-image so
+            # chunk_index 0 stays the first text chunk (MMR reads it).
+            vectors = self.embedder.embed_batch(text_chunks) if text_chunks else []
+            if image_urls:
+                vectors = vectors + self.embedder.embed_images(image_urls)
         except TransientEmbeddingError as exc:
             # Network blip / 5xx / read timeout. The next tick can try
             # the same record again without burning a retry slot — a
@@ -220,7 +226,11 @@ class EmbedWorker:
             return False, False
 
         try:
-            self.index.upsert_vectors(memory_id, chunks, vectors)
+            # upsert_vectors only length-matches chunks↔vectors (the vec
+            # table stores no chunk text), so image media-chunks get
+            # lightweight labels; their embedding is what matters.
+            all_chunks = text_chunks + [f"<image:{i}>" for i in range(len(image_urls))]
+            self.index.upsert_vectors(memory_id, all_chunks, vectors)
         except ValueError as exc:
             logger.warning(
                 "embed worker %d: vector upsert rejected for %s: %s",
@@ -235,20 +245,50 @@ class EmbedWorker:
         self.index.dequeue_embed(memory_id)
         return True, False
 
-    def _read_for_embed(self, memory_id: str) -> tuple[str, list[str]]:
-        """Read the memory's body from the vault and split it into chunks.
+    def _read_for_embed(self, memory_id: str) -> tuple[str, list[str], list[str]]:
+        """Read the memory body, split into text chunks, and gather data-URLs
+        for any local images it references (ADR 0025 media-chunks).
 
-        Returns ``(body, chunks)`` so the caller can hash the body for
-        ``embed_state`` while still using ``chunks`` for embedding.
+        Returns ``(body, text_chunks, image_data_urls)``. The body is
+        returned so the caller can hash it for ``embed_state``. Image
+        gathering is skipped entirely for text-only embedders.
         """
-        path = self.index.get_path(memory_id)
-        if path is None:
+        rel_path = self.index.get_path(memory_id)
+        if rel_path is None:
             raise _RecordMissingError(memory_id)
         try:
-            memory = self.vault.read(path)
+            memory = self.vault.read(rel_path)
         except MemoryNotFoundError as exc:
             raise _RecordMissingError(memory_id) from exc
-        return memory.body, chunk_text(memory.body)
+        text_chunks = chunk_text(memory.body)
+        image_urls = self._gather_image_urls(rel_path, memory.body)
+        return memory.body, text_chunks, image_urls
+
+    def _gather_image_urls(self, rel_path: str, body: str) -> list[str]:
+        """Data-URLs for local, in-vault images referenced by ``body``.
+
+        Only runs for multimodal embedders (``supports_images``). An image
+        must resolve to an existing file inside the vault root; remote,
+        missing, or vault-escaping paths are skipped. A single unreadable
+        image is logged and skipped rather than failing the whole record.
+        """
+        if not self.embedder.supports_images:
+            return []
+        base_dir = (self.vault.root / rel_path).parent
+        urls: list[str] = []
+        for ref in extract_image_refs(body, base_dir):
+            try:
+                if not ref.path.is_file() or not ref.path.is_relative_to(self.vault.root):
+                    continue
+                urls.append(image_file_to_data_url(ref.path))
+            except OSError as exc:
+                logger.warning(
+                    "embed worker %d: skipping unreadable image %s: %s",
+                    self.worker_id,
+                    ref.path,
+                    exc,
+                )
+        return urls
 
 
 class _RecordMissingError(Exception):

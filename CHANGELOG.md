@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references in a record body (markdown + `<img>`), resolve to data URLs, and render
   PDF pages to images. PDF rendering uses the optional `multimodal` extra
   (`pip install 'memstem[multimodal]'` → `pypdfium2` + `pillow`), lazily imported.
+- **Embed worker embeds referenced images as media-chunks.** When the configured
+  embedder is multimodal (`supports_images`), the worker now embeds a record's
+  local, in-vault images alongside its text chunks (text first, then images) into
+  the same vector space, so a text query can retrieve the parent record via its
+  screenshots. No schema change and no retrieval change — image chunks surface
+  through the existing memory-level vector-hit dedup. Text-only embedders are
+  unaffected. (ADR 0025, decision A: media-chunk of the parent record.)
 
 ## [0.12.7] — 2026-06-05
 
