@@ -83,6 +83,11 @@ class EmbeddingConfig(BaseModel):
     T4 vLLM box rejects >32. Set explicitly to override for a server that
     allows more."""
 
+    supports_images: bool = False
+    """Whether the embedder can embed images into the same vector space as
+    text. Only multimodal backends (e.g. Qwen3-VL served via vLLM) support
+    this; leave False for text-only models. See ADR 0025."""
+
     @classmethod
     def for_provider(cls, provider: str) -> EmbeddingConfig:
         """Build a config pre-populated with sensible defaults for ``provider``.

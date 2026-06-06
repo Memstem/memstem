@@ -185,6 +185,10 @@ class Embedder(ABC):
     """
 
     dimensions: int
+    supports_images: bool = False
+    """Whether this backend embeds images into the same vector space as text.
+    Text-only backends leave this False; multimodal backends (Qwen3-VL served
+    via vLLM) set it True and implement :meth:`embed_image`. See ADR 0025."""
 
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
@@ -195,6 +199,16 @@ class Embedder(ABC):
         a single API call when the provider supports it; fall back to
         sequential calls otherwise. Must raise :class:`EmbeddingError`
         on any failure so the queue worker can retry."""
+
+    def embed_image(self, image_data_url: str) -> list[float]:
+        """Embed a single image (a ``data:`` URL) into the shared text+image
+        vector space. Default: raise — only multimodal backends override this.
+        See ADR 0025."""
+        raise EmbeddingError(f"{type(self).__name__} does not support image embedding")
+
+    def embed_images(self, image_data_urls: list[str]) -> list[list[float]]:
+        """Embed a batch of images. Default: sequential :meth:`embed_image`."""
+        return [self.embed_image(u) for u in image_data_urls]
 
     def close(self) -> None:  # noqa: B027 — default no-op; subclasses override if needed
         """Release any HTTP/network resources. Default: no-op."""
@@ -285,9 +299,11 @@ class OpenAIEmbedder(Embedder):
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         max_request_inputs: int | None = None,
+        supports_images: bool = False,
     ) -> None:
         self.model = model
         self.dimensions = dimensions
+        self.supports_images = supports_images
         self.base_url = base_url.rstrip("/")
         # Per-request input cap. Explicit config wins; otherwise pick by
         # endpoint — OpenAI Inc. comfortably handles 100, self-hosted
@@ -343,6 +359,46 @@ class OpenAIEmbedder(Embedder):
         # provider doesn't guarantee it.
         ordered = sorted(items, key=lambda e: e.get("index", 0))
         return [list(map(float, e["embedding"])) for e in ordered]
+
+    def embed_image(self, image_data_url: str) -> list[float]:
+        """Embed an image via the multimodal ``messages`` payload.
+
+        vLLM-served multimodal embedders (Qwen3-VL) accept the OpenAI vision
+        shape on ``/embeddings``: a single user message whose content carries
+        an ``image_url`` (a ``data:`` URL works). Returns one vector in the
+        same space as :meth:`embed_batch` text vectors. See ADR 0025.
+        """
+        if not self.supports_images:
+            raise EmbeddingError(
+                f"embedder model {self.model!r} is not configured for images; "
+                "set embedding.supports_images=true for a multimodal model"
+            )
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": image_data_url}}],
+                }
+            ],
+            "encoding_format": "float",
+        }
+        try:
+            response = self._client.post("/embeddings", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise _classify_http_error(exc)(
+                f"image embedding failed: {exc} — body: {detail}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise _classify_http_error(exc)(f"image embedding failed: {exc}") from exc
+
+        data = response.json()
+        items = data.get("data")
+        if not isinstance(items, list) or not items:
+            raise EmbeddingError(f"unexpected image-embedding response: {data}")
+        return list(map(float, items[0]["embedding"]))
 
     def close(self) -> None:
         self._client.close()
@@ -560,6 +616,14 @@ class VoyageEmbedder(Embedder):
         self._client.close()
 
 
+def image_bytes_to_data_url(data: bytes, mime: str = "image/png") -> str:
+    """Build a ``data:`` URL from raw image bytes for
+    :meth:`Embedder.embed_image`. See ADR 0025."""
+    import base64
+
+    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+
+
 def embed_for(config: EmbeddingConfig) -> Embedder:
     """Factory: build the right :class:`Embedder` for an
     :class:`~memstem.config.EmbeddingConfig`.
@@ -581,6 +645,7 @@ def embed_for(config: EmbeddingConfig) -> Embedder:
             api_key_env=config.api_key_env or OpenAIEmbedder.DEFAULT_API_KEY_ENV,
             base_url=config.base_url or OpenAIEmbedder.DEFAULT_BASE_URL,
             max_request_inputs=config.max_request_inputs,
+            supports_images=config.supports_images,
         )
     if provider == "gemini":
         return GeminiEmbedder(
