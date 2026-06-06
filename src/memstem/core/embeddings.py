@@ -373,6 +373,9 @@ class OpenAIEmbedder(Embedder):
                 f"embedder model {self.model!r} is not configured for images; "
                 "set embedding.supports_images=true for a multimodal model"
             )
+        # Matches the exact request shape verified against vLLM 0.22.1 on
+        # 2026-06-06 (no encoding_format — the chat/messages embedding path
+        # returns float vectors by default; see ADR 0025).
         payload = {
             "model": self.model,
             "messages": [
@@ -381,7 +384,6 @@ class OpenAIEmbedder(Embedder):
                     "content": [{"type": "image_url", "image_url": {"url": image_data_url}}],
                 }
             ],
-            "encoding_format": "float",
         }
         try:
             response = self._client.post("/embeddings", json=payload)
