@@ -55,6 +55,34 @@ from memstem.core.summarizer import Summarizer
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_MAX_INPUT_CHARS = 32000
+"""Cap on session-transcript chars sent to the distill summarizer.
+
+The summarizer LLM has a finite context window — the fleet's self-hosted
+Gemma (``gemma-4-e4b-it``) serves 16,384 tokens. A multi-hundred-KB session
+transcript blows past that and the endpoint returns ``400 Bad Request``, so
+the session is never distilled (and, under heavy embedding load, the retry
+churn starves the embed workers). Cap the transcript before templating —
+sessions front-load their context (the task is stated up top), so a head slice
+still distills well. 32k chars ≈ 11-13k tokens even for token-dense (code/JSON)
+transcripts, which leaves room for the template + the 800-token output budget
+under a 16k context. Mirrors ``project_records.DEFAULT_MAX_INPUT_CHARS`` (lower
+there because project prompts aggregate several sources)."""
+
+
+def _truncate_with_marker(text: str, max_chars: int) -> str:
+    """Trim ``text`` to ``max_chars`` with a continuation marker.
+
+    Mirrors the helper in :mod:`memstem.hygiene.project_records` and the body
+    cap in :mod:`memstem.core.rerank` — keep the head (where a session
+    establishes its context) and tell the LLM the input was truncated."""
+    if len(text) <= max_chars:
+        return text
+    head = text[:max_chars]
+    remaining = len(text) - max_chars
+    return f"{head}\n\n[…session continues for {remaining:,} more chars]"
+
+
 DEFAULT_MIN_TURNS = 10
 """ADR 0020 §Meaningfulness threshold: a session is eligible iff it
 has at least this many user/assistant turns (or, when the
@@ -97,8 +125,9 @@ class SessionCandidate:
 
     Carries everything the prompt builder + path computer need so we
     don't re-read the source Memory at apply time. ``body`` is the
-    full session transcript; the prompt template handles truncation if
-    needed (the LLM provider's context window is the binding limit).
+    full session transcript; :func:`build_session_prompt` truncates it
+    to :data:`DEFAULT_MAX_INPUT_CHARS` so an oversized transcript can't
+    overflow the summarizer LLM's context window.
     """
 
     memory_id: str
@@ -344,19 +373,29 @@ def _load_session_prompt() -> str:
     return path.read_text(encoding="utf-8")
 
 
-def build_session_prompt(candidate: SessionCandidate, *, prompt_template: str | None = None) -> str:
+def build_session_prompt(
+    candidate: SessionCandidate,
+    *,
+    prompt_template: str | None = None,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
+) -> str:
     """Render the session-distillation prompt for one candidate.
 
     Pure function — given the same candidate it produces the same
     string, which means the summarizer cache key is deterministic for
     a given candidate + template combination.
+
+    The transcript is truncated to ``max_input_chars`` (with a marker)
+    so an oversized session can't overflow the summarizer's context
+    window — without the cap, big sessions return 400 from the LLM and
+    never distill. See :data:`DEFAULT_MAX_INPUT_CHARS`.
     """
     template = prompt_template or _load_session_prompt()
     tag_line = ", ".join(candidate.tags) if candidate.tags else "(none)"
     return template.format(
         title=candidate.title,
         tags=tag_line,
-        body=candidate.body,
+        body=_truncate_with_marker(candidate.body, max_input_chars),
     )
 
 
