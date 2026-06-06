@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reranker + MMR wired into config, daemon, MCP, and CLI.** The
+  cross-encoder reranker (ADR 0017) and MMR diversification (ADR 0016) —
+  previously reachable only from Python via `Search.search(...)` — are now
+  first-class config knobs and run automatically on the daemon/MCP/CLI search
+  paths. New `SearchConfig` fields: `mmr_lambda`, `rerank_top_n`, and a
+  `reranker` block (`enabled`, `provider`, `model`, `base_url`, `api_key_env`)
+  via the new `RerankerConfig`. A `build_reranker()` factory constructs an
+  `OpenAIReranker` (covers OpenAI *and* self-hosted OpenAI-compatible servers
+  like a vLLM Gemma box) or `OllamaReranker` from config; `effective_rerank_top_n()`
+  resolves the pool size (falls back to `DEFAULT_RERANK_TOP_N` when the reranker
+  is enabled without an explicit `rerank_top_n`, and forces `None` when disabled).
+  `memstem search` gains `--rerank/--no-rerank`, `--mmr FLOAT`, and `--rerank-top-n`
+  per-query overrides (forwarded to the daemon's `/search` too). All default to
+  **off**, so existing vaults are unchanged until they opt in. This is the
+  productionization of the validated self-hosted recall stack
+  (Qwen3-Embedding-8B + query instruction + MMR + Gemma reranker).
 - **Multimodal embeddings (opt-in): images in the same vector space as text.**
   The `Embedder` interface gains `embed_image()` / `embed_images()` and a
   `supports_images` flag; `OpenAIEmbedder` implements image embedding via the

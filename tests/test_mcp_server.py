@@ -10,8 +10,10 @@ from uuid import uuid4
 
 import pytest
 
+from memstem.config import RerankerConfig, SearchConfig
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
+from memstem.core.rerank import StubReranker
 from memstem.core.storage import Memory, Vault
 from memstem.servers.mcp_server import (
     _ActivityTracker,
@@ -723,3 +725,44 @@ class TestBuildServerArgValidation:
         # Passing vault without index (or vice versa) is ambiguous.
         with pytest.raises(ValueError, match="provide vault and index"):
             build_server(vault, None)
+
+
+class TestRerankWiring:
+    """build_server must thread the configured reranker + rerank_top_n
+    (ADR 0017) through to the Search the MCP tool uses."""
+
+    async def test_reranker_reorders_results(self, vault: Vault, index: Index) -> None:
+        # Two memories that both match the BM25 query, so ranking is what
+        # the reranker decides — not which one happened to match.
+        m_a = _make_memory(body="cloudflare alpha tunnel", vault=vault, index=index)
+        m_b = _make_memory(body="cloudflare beta tunnel", vault=vault, index=index)
+
+        # Stub forces m_b above m_a regardless of RRF order.
+        stub = StubReranker()
+        stub.set_default(0.0)
+        stub.set_score("cloudflare", str(m_b.id), 0.9)
+        stub.set_score("cloudflare", str(m_a.id), 0.1)
+
+        res = _Resources.eager(vault, index, embedder=None, reranker=stub)
+        sc = SearchConfig(reranker=RerankerConfig(enabled=True), rerank_top_n=10)
+        mcp = build_server(resources=res, search_config=sc)
+
+        results = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        ids = [r["id"] for r in results]
+        assert ids[:2] == [str(m_b.id), str(m_a.id)]
+
+    async def test_no_rerank_when_disabled(self, vault: Vault, index: Index) -> None:
+        # Reranker present on the resources but disabled in config → the
+        # stub must NOT run (default_rerank_top_n resolves to None).
+        m_a = _make_memory(body="cloudflare alpha tunnel", vault=vault, index=index)
+        m_b = _make_memory(body="cloudflare beta tunnel", vault=vault, index=index)
+        stub = StubReranker()
+        stub.set_default(0.0)
+        stub.set_score("cloudflare", str(m_b.id), 0.9)  # would reorder if applied
+
+        res = _Resources.eager(vault, index, embedder=None, reranker=stub)
+        # reranker.enabled defaults to False
+        mcp = build_server(resources=res, search_config=SearchConfig(rerank_top_n=10))
+        results = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        # Both still returned; m_b not forced to the top by the (skipped) stub.
+        assert {r["id"] for r in results} == {str(m_a.id), str(m_b.id)}
