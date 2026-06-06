@@ -190,8 +190,25 @@ class Embedder(ABC):
     Text-only backends leave this False; multimodal backends (Qwen3-VL served
     via vLLM) set it True and implement :meth:`embed_image`. See ADR 0025."""
 
+    query_instruction: str | None = None
+    """Optional instruction prefix applied to *queries only* (never documents)
+    by :meth:`embed_query`. Instruction-tuned retrievers (Qwen3-Embedding /
+    Qwen3-VL) expect queries as ``Instruct: {task}\\nQuery: {q}`` while
+    documents stay raw; this preserves that asymmetry. ``None`` = no prefix
+    (correct for non-instruction models). Set via ``embedding.query_instruction``.
+    See ADR 0025."""
+
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a search query. Applies :attr:`query_instruction` as an
+        instruction prefix when set; documents are embedded raw via
+        :meth:`embed_batch`, preserving the query/document asymmetry that
+        instruction-tuned retrievers were trained on. See ADR 0025."""
+        if self.query_instruction:
+            text = f"Instruct: {self.query_instruction}\nQuery: {text}"
+        return self.embed(text)
 
     @abstractmethod
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -634,14 +651,15 @@ def embed_for(config: EmbeddingConfig) -> Embedder:
     required API key is missing.
     """
     provider = config.provider.lower()
+    emb: Embedder
     if provider == "ollama":
-        return OllamaEmbedder(
+        emb = OllamaEmbedder(
             model=config.model,
             base_url=config.base_url or DEFAULT_BASE_URL,
             dimensions=config.dimensions,
         )
-    if provider == "openai":
-        return OpenAIEmbedder(
+    elif provider == "openai":
+        emb = OpenAIEmbedder(
             model=config.model,
             dimensions=config.dimensions,
             api_key_env=config.api_key_env or OpenAIEmbedder.DEFAULT_API_KEY_ENV,
@@ -649,24 +667,28 @@ def embed_for(config: EmbeddingConfig) -> Embedder:
             max_request_inputs=config.max_request_inputs,
             supports_images=config.supports_images,
         )
-    if provider == "gemini":
-        return GeminiEmbedder(
+    elif provider == "gemini":
+        emb = GeminiEmbedder(
             model=config.model,
             dimensions=config.dimensions,
             api_key_env=config.api_key_env or GeminiEmbedder.DEFAULT_API_KEY_ENV,
             base_url=config.base_url or GeminiEmbedder.DEFAULT_BASE_URL,
         )
-    if provider == "voyage":
-        return VoyageEmbedder(
+    elif provider == "voyage":
+        emb = VoyageEmbedder(
             model=config.model,
             dimensions=config.dimensions,
             api_key_env=config.api_key_env or VoyageEmbedder.DEFAULT_API_KEY_ENV,
             base_url=config.base_url or VoyageEmbedder.DEFAULT_BASE_URL,
         )
-    raise EmbeddingError(
-        f"unknown embedding provider: {config.provider!r}. "
-        "Supported: ollama, openai, gemini, voyage."
-    )
+    else:
+        raise EmbeddingError(
+            f"unknown embedding provider: {config.provider!r}. "
+            "Supported: ollama, openai, gemini, voyage."
+        )
+    # Query-only instruction prefix for instruction-tuned retrievers (ADR 0025).
+    emb.query_instruction = config.query_instruction
+    return emb
 
 
 __all__ = [

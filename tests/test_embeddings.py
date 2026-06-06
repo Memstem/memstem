@@ -752,3 +752,64 @@ class TestMultimodalEmbedding:
             assert emb.supports_images is True
         finally:
             emb.close()
+
+
+class TestQueryInstruction:
+    """Query-only instruction prefix for instruction-tuned retrievers (ADR 0025).
+    Queries get ``Instruct: {task}\\nQuery: {q}``; documents stay raw."""
+
+    @staticmethod
+    def _capture_embedder(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[OpenAIEmbedder, dict[str, Any]]:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="qwen3vl-embed", dimensions=4)
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3, 0.4]}]}
+            )
+
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        return emb, captured
+
+    def _sent_text(self, captured: dict[str, Any]) -> str:
+        sent = captured["body"]["input"]
+        return sent[0] if isinstance(sent, list) else sent
+
+    def test_embed_query_applies_instruction_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emb, captured = self._capture_embedder(monkeypatch)
+        emb.query_instruction = "Given a search query, retrieve relevant passages"
+        try:
+            emb.embed_query("how do I reset my password")
+        finally:
+            emb.close()
+        assert self._sent_text(captured) == (
+            "Instruct: Given a search query, retrieve relevant passages\n"
+            "Query: how do I reset my password"
+        )
+
+    def test_embed_query_without_instruction_is_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emb, captured = self._capture_embedder(monkeypatch)
+        # query_instruction defaults to None -> no prefix (mxbai/ollama behavior)
+        try:
+            emb.embed_query("plain query")
+        finally:
+            emb.close()
+        assert self._sent_text(captured) == "plain query"
+
+    def test_config_plumbs_query_instruction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        cfg = EmbeddingConfig(
+            provider="openai",
+            model="qwen3vl-embed",
+            dimensions=4,
+            query_instruction="retrieve relevant memories",
+        )
+        emb = embed_for(cfg)
+        try:
+            assert emb.query_instruction == "retrieve relevant memories"
+        finally:
+            emb.close()

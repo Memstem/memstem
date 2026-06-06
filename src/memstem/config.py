@@ -88,6 +88,13 @@ class EmbeddingConfig(BaseModel):
     text. Only multimodal backends (e.g. Qwen3-VL served via vLLM) support
     this; leave False for text-only models. See ADR 0025."""
 
+    query_instruction: str | None = None
+    """Instruction prefix applied to *queries only* for instruction-tuned
+    retrievers (Qwen3-Embedding / Qwen3-VL): queries are embedded as
+    ``Instruct: {query_instruction}\\nQuery: {q}`` while documents stay raw.
+    ``None`` (default) = no prefix, correct for non-instruction models
+    (mxbai/ollama/etc.). See ADR 0025."""
+
     @classmethod
     def for_provider(cls, provider: str) -> EmbeddingConfig:
         """Build a config pre-populated with sensible defaults for ``provider``.

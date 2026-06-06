@@ -85,6 +85,12 @@ Per ADR 0001/0009 local-first: default stays text-only Ollama. Multimodal Qwen3-
   ingestion.
 - **D. PDF dependency → yes, optional + lazy.** `pypdfium2` (+ `pillow`) ship as a
   `multimodal` extra, imported only when embedding images/PDFs.
+- **E. Query instruction (ranking).** Qwen3-Embedding / Qwen3-VL are *instruction-tuned*:
+  queries must be formatted as `Instruct: {task}\nQuery: {q}` while documents stay raw.
+  Added `embedding.query_instruction` + `Embedder.embed_query()`; search uses it for the
+  query, the embed worker keeps documents raw. `None` (default) = no prefix, preserving
+  behavior for non-instruction models. Pilots showed raw-query retrieval underperforms
+  for these models; this restores the trained asymmetry.
 
 ## Consequences
 
