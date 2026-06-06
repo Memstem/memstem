@@ -8,6 +8,7 @@ to a real provider — the worker logic is what matters here.
 from __future__ import annotations
 
 import asyncio
+import base64
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -751,3 +752,87 @@ class TestReadForEmbedRecovery:
 
         # Subsequent ticks skip the failed row instead of crashing.
         assert asyncio.run(worker.tick()) == 0
+
+
+# A valid 1x1 transparent PNG, for image media-chunk tests.
+_PNG_1x1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+    "AAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+class _MultimodalStubEmbedder(_StubEmbedder):
+    """Stub that also embeds images (ADR 0025), like Qwen3-VL via vLLM."""
+
+    supports_images = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.image_calls: list[list[str]] = []
+
+    def embed_images(self, image_data_urls: list[str]) -> list[list[float]]:
+        self.image_calls.append(list(image_data_urls))
+        return [[9.0] * 8 for _ in image_data_urls]
+
+
+class TestMediaChunks:
+    """ADR 0025: the worker embeds a record's referenced images as extra
+    chunks (text first, then images) in the same vector space."""
+
+    def test_embeds_image_media_chunks(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="see the shot ![cap](shot.png) here"))
+        rel = index.get_path(str(memory.id))
+        assert rel is not None
+        (vault.root / rel).parent.joinpath("shot.png").write_bytes(_PNG_1x1)
+
+        embedder = _MultimodalStubEmbedder()
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=10, idle_sleep=0
+        )
+        assert asyncio.run(worker.tick()) == 1
+
+        rows = index.db.execute(
+            "SELECT chunk_index FROM memories_vec WHERE memory_id = ? ORDER BY chunk_index",
+            (str(memory.id),),
+        ).fetchall()
+        # One text chunk (index 0) + one image media-chunk (index 1).
+        assert [r["chunk_index"] for r in rows] == [0, 1]
+        assert embedder.image_calls and len(embedder.image_calls[0]) == 1
+        assert embedder.image_calls[0][0].startswith("data:image/png;base64,")
+
+    def test_text_only_embedder_ignores_images(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="see ![cap](shot.png) here"))
+        rel = index.get_path(str(memory.id))
+        assert rel is not None
+        (vault.root / rel).parent.joinpath("shot.png").write_bytes(_PNG_1x1)
+
+        embedder = _StubEmbedder()  # supports_images is False by default
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=10, idle_sleep=0
+        )
+        asyncio.run(worker.tick())
+
+        rows = index.db.execute(
+            "SELECT chunk_index FROM memories_vec WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchall()
+        assert len(rows) == 1  # text chunk only; image ignored
+
+    def test_missing_image_file_skipped(self, vault: Vault, index: Index) -> None:
+        # Body references an image that doesn't exist on disk → skipped,
+        # record still embeds its text chunk without error.
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="ref to ![x](nope.png) only"))
+        embedder = _MultimodalStubEmbedder()
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=10, idle_sleep=0
+        )
+        assert asyncio.run(worker.tick()) == 1
+        rows = index.db.execute(
+            "SELECT chunk_index FROM memories_vec WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchall()
+        assert len(rows) == 1  # text only; missing image silently skipped
+        assert embedder.image_calls == []
