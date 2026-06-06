@@ -23,6 +23,7 @@ from memstem.core.storage import Memory, Vault
 from memstem.core.summarizer import NoOpSummarizer, StubSummarizer
 from memstem.hygiene.session_distill import (
     DEFAULT_DISTILLATION_IMPORTANCE,
+    DEFAULT_MAX_INPUT_CHARS,
     DISTILLATION_KIND_TAG,
     PROVENANCE_REF_PREFIX,
     SessionCandidate,
@@ -334,6 +335,32 @@ def test_build_session_prompt_accepts_template_override() -> None:
     candidate = _make_candidate(title="X", tags=["a"], body="b")
     prompt = build_session_prompt(candidate, prompt_template=template)
     assert prompt == "T=X\nG=a\nB=b"
+
+
+def test_build_session_prompt_truncates_oversized_body() -> None:
+    # An oversized transcript must be capped so it can't overflow the
+    # summarizer LLM's context window (the cause of the Gemma 400s).
+    big = "x" * (DEFAULT_MAX_INPUT_CHARS + 5000)
+    candidate = _make_candidate(title="big", tags=["a"], body=big)
+    prompt = build_session_prompt(candidate, prompt_template="{title}|{tags}|{body}")
+    body_out = prompt.split("|", 2)[2]
+    assert len(body_out) < len(big)
+    assert "session continues for 5,000 more chars" in body_out
+    # The head is preserved up to the cap.
+    assert body_out.startswith("x" * DEFAULT_MAX_INPUT_CHARS)
+
+
+def test_build_session_prompt_leaves_small_body_untouched() -> None:
+    candidate = _make_candidate(title="small", tags=["a"], body="short transcript")
+    prompt = build_session_prompt(candidate, prompt_template="{body}")
+    assert prompt == "short transcript"
+
+
+def test_build_session_prompt_respects_custom_cap() -> None:
+    candidate = _make_candidate(title="c", tags=["a"], body="abcdefghij")
+    prompt = build_session_prompt(candidate, prompt_template="{body}", max_input_chars=4)
+    assert prompt.startswith("abcd")
+    assert "continues for 6 more chars" in prompt
 
 
 # ─── Materialization ──────────────────────────────────────────────
