@@ -308,6 +308,9 @@ class TestSearchHybrid:
         def embed(self, text: str) -> list[float]:
             return self.mapping[text]
 
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
+
     def test_multi_signal_match_outranks_single_signal_match(
         self, vault: Vault, index: Index
     ) -> None:
@@ -341,6 +344,9 @@ class TestSearchHybrid:
             def embed(self, text: str) -> list[float]:
                 raise RuntimeError("boom")
 
+            def embed_query(self, text: str) -> list[float]:
+                return self.embed(text)
+
         search = Search(vault=vault, index=index, embedder=_BoomEmbedder())  # type: ignore[arg-type]
         results = search.search("lookup")
         assert len(results) == 1
@@ -360,6 +366,9 @@ class TestSearchMmr:
 
         def embed(self, text: str) -> list[float]:
             return self.mapping[text]
+
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
 
     def test_mmr_disabled_preserves_rrf_order(self, vault: Vault, index: Index) -> None:
         """``mmr_lambda=None`` is the existing pre-MMR behavior."""
@@ -542,6 +551,9 @@ class TestSearchHyde:
         def embed(self, text: str) -> list[float]:
             self.embedded.append(text)
             return _fake_embedding(hash(text) % 10000)
+
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
 
     def test_hyde_disabled_uses_original_query_for_embedding(
         self, vault: Vault, index: Index

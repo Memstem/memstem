@@ -302,7 +302,10 @@ class Search:
         if self.embedder is not None:
             embed_input = self._maybe_expand_for_hyde(query, use_hyde=use_hyde)
             try:
-                query_embedding = self.embedder.embed(embed_input)
+                # embed_query applies the query-only instruction prefix for
+                # instruction-tuned retrievers (ADR 0025); a no-op for models
+                # without query_instruction set.
+                query_embedding = self.embedder.embed_query(embed_input)
                 vec = self.query_vec(
                     query_embedding,
                     limit=limit * OVERFETCH_MULTIPLIER,

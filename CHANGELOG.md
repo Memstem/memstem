@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screenshots. No schema change and no retrieval change — image chunks surface
   through the existing memory-level vector-hit dedup. Text-only embedders are
   unaffected. (ADR 0025, decision A: media-chunk of the parent record.)
+- **Query-only instruction prefix for instruction-tuned retrievers.** New
+  `embedding.query_instruction` config + `Embedder.embed_query()`: search now
+  embeds queries as `Instruct: {query_instruction}\nQuery: {q}` while documents
+  stay raw — the asymmetry Qwen3-Embedding / Qwen3-VL were trained on. `None`
+  (default) keeps current behavior for mxbai/ollama/etc. (ADR 0025.)
 
 ## [0.12.7] — 2026-06-05
 
