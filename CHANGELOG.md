@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default are unchanged. Foundational piece of
   [ADR 0025](docs/decisions/0025-multimodal-embeddings.md) (image/PDF ingestion,
   storage model, and cross-modal ranking land in follow-ups).
+- **Media helpers for multimodal ingestion** (`core/media.py`): detect local image
+  references in a record body (markdown + `<img>`), resolve to data URLs, and render
+  PDF pages to images. PDF rendering uses the optional `multimodal` extra
+  (`pip install 'memstem[multimodal]'` → `pypdfium2` + `pillow`), lazily imported.
 
 ## [0.12.7] — 2026-06-05
 
