@@ -23,6 +23,7 @@ from memstem.core.embeddings import (
     _classify_http_error,
     chunk_text,
     embed_for,
+    image_bytes_to_data_url,
 )
 
 
@@ -679,3 +680,75 @@ class TestOllamaEmbedderIntegration:
         related = cos(vecs[0], vecs[1])
         unrelated = cos(vecs[0], vecs[2])
         assert related > unrelated
+
+
+class TestMultimodalEmbedding:
+    """Image embedding (ADR 0025) — additive multimodal support on the
+    OpenAI-compatible embedder, used by Qwen3-VL served via vLLM. The
+    text path is untouched; images go via the ``messages``/image_url shape."""
+
+    def test_image_bytes_to_data_url(self) -> None:
+        import base64
+
+        url = image_bytes_to_data_url(b"\x89PNG\r\n", mime="image/png")
+        assert url.startswith("data:image/png;base64,")
+        assert base64.b64decode(url.split(",", 1)[1]) == b"\x89PNG\r\n"
+
+    def test_text_only_backend_rejects_images(self) -> None:
+        # ABC default: a non-multimodal backend raises rather than silently
+        # returning a meaningless vector.
+        emb = OllamaEmbedder(model="nomic-embed-text")
+        try:
+            with pytest.raises(EmbeddingError, match="does not support image"):
+                emb.embed_image("data:image/png;base64,AAAA")
+        finally:
+            emb.close()
+
+    def test_openai_image_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="qwen3vl-embed", dimensions=4)
+        try:
+            with pytest.raises(EmbeddingError, match="not configured for images"):
+                emb.embed_image("data:image/png;base64,AAAA")
+        finally:
+            emb.close()
+
+    def test_openai_embed_image_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        emb = OpenAIEmbedder(model="qwen3vl-embed", dimensions=4, supports_images=True)
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3, 0.4]}]}
+            )
+
+        emb._client = httpx.Client(base_url=emb.base_url, transport=_mock_transport(handler))
+        try:
+            vec = emb.embed_image("data:image/png;base64,AAAA")
+        finally:
+            emb.close()
+        assert vec == [0.1, 0.2, 0.3, 0.4]
+        # Image must use the multimodal `messages`/image_url shape, not `input`.
+        body = captured["body"]
+        assert "messages" in body and "input" not in body
+        content = body["messages"][0]["content"][0]
+        assert content["type"] == "image_url"
+        assert content["image_url"]["url"] == "data:image/png;base64,AAAA"
+
+    def test_config_carries_supports_images_to_embedder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        cfg = EmbeddingConfig(
+            provider="openai",
+            model="qwen3vl-embed",
+            dimensions=4,
+            supports_images=True,
+        )
+        emb = embed_for(cfg)
+        try:
+            assert emb.supports_images is True
+        finally:
+            emb.close()

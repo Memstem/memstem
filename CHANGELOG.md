@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Multimodal embeddings (opt-in): images in the same vector space as text.**
+  The `Embedder` interface gains `embed_image()` / `embed_images()` and a
+  `supports_images` flag; `OpenAIEmbedder` implements image embedding via the
+  OpenAI vision (`messages` → `image_url`) shape, so a vLLM-served Qwen3-VL model
+  can embed screenshots and PDF pages into the same space as text. Enable per
+  vault with `embedding.supports_images: true`; text-only backends and the
+  default are unchanged. Foundational piece of
+  [ADR 0025](docs/decisions/0025-multimodal-embeddings.md) (image/PDF ingestion,
+  storage model, and cross-modal ranking land in follow-ups).
 
 ## [0.12.7] — 2026-06-05
 
