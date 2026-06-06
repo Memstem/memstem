@@ -48,6 +48,7 @@ from memstem.core.embeddings import (
 )
 from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
+from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.search import Search
 from memstem.core.storage import Vault
 from memstem.discovery import (
@@ -187,6 +188,27 @@ def _maybe_embedder(config: Config) -> Embedder | None:
         return None
     except Exception as exc:  # connection refused, DNS, ...
         logger.warning("embedder unavailable: %s", exc)
+        return None
+
+
+def _maybe_reranker(config: Config) -> Reranker | None:
+    """Build the configured reranker (ADR 0017); None when disabled or on error.
+
+    Reranker construction is lazy (no network until the first score), so
+    a misconfigured endpoint surfaces at search time, not here. A bad
+    ``provider`` value still raises from :func:`build_reranker`; we log
+    and fall back to no rerank rather than break the search command."""
+    try:
+        rc = config.search.reranker
+        return build_reranker(
+            enabled=rc.enabled,
+            provider=rc.provider,
+            model=rc.model,
+            base_url=rc.base_url,
+            api_key_env=rc.api_key_env,
+        )
+    except Exception as exc:
+        logger.warning("reranker unavailable: %s", exc)
         return None
 
 
@@ -370,6 +392,35 @@ def search(
             ),
         ),
     ] = False,
+    rerank: Annotated[
+        bool | None,
+        typer.Option(
+            "--rerank/--no-rerank",
+            help=(
+                "Override the configured reranker (ADR 0017) for this query. "
+                "--rerank re-scores the top candidates with the configured "
+                "reranker; --no-rerank skips it. Omit to use config."
+            ),
+        ),
+    ] = None,
+    mmr: Annotated[
+        float | None,
+        typer.Option(
+            "--mmr",
+            help=(
+                "Override MMR diversification lambda (ADR 0016) in [0,1] for "
+                "this query. 0.5-0.7 trade relevance for topic spread. Omit "
+                "to use config (mmr off by default)."
+            ),
+        ),
+    ] = None,
+    rerank_top_n: Annotated[
+        int | None,
+        typer.Option(
+            "--rerank-top-n",
+            help="Override the rerank candidate-pool size (implies --rerank).",
+        ),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -396,6 +447,19 @@ def search(
     with phase("search"):
         cfg = _load_config(_resolve_vault_path(vault))
 
+        # Resolve per-query overrides against config. `--rerank-top-n`
+        # implies `--rerank` unless `--no-rerank` was explicitly passed.
+        mmr_lambda = mmr if mmr is not None else cfg.search.mmr_lambda
+        rerank_enabled = (
+            rerank
+            if rerank is not None
+            else (cfg.search.reranker.enabled or rerank_top_n is not None)
+        )
+        top_n = effective_rerank_top_n(
+            rerank_top_n if rerank_top_n is not None else cfg.search.rerank_top_n,
+            reranker_enabled=rerank_enabled,
+        )
+
         if not no_daemon:
             with phase("daemon-probe") as probe_details:
                 client = find_daemon(cfg)
@@ -408,6 +472,10 @@ def search(
                         query=query,
                         limit=limit,
                         types=list(types) if types else None,
+                        mmr_lambda=mmr_lambda,
+                        # 0 explicitly disables rerank on the daemon side;
+                        # None lets the daemon use its own configured default.
+                        rerank_top_n=top_n if rerank_enabled else 0,
                     )
                     return
                 except DaemonError as exc:
@@ -420,6 +488,9 @@ def search(
             query=query,
             limit=limit,
             types=list(types) if types else None,
+            mmr_lambda=mmr_lambda,
+            rerank_top_n=top_n,
+            reranker_enabled=rerank_enabled,
         )
 
 
@@ -430,11 +501,17 @@ def _search_via_daemon(
     query: str,
     limit: int,
     types: list[str] | None,
+    mmr_lambda: float | None = None,
+    rerank_top_n: int | None = None,
 ) -> None:
     """Render a search result list fetched from the daemon. Kept
     separate from `_search_via_direct_db` so the two transports stay
     symmetrical and easy to reason about — both end in the same
-    `_print_search_hits` shape."""
+    `_print_search_hits` shape.
+
+    ``mmr_lambda`` / ``rerank_top_n`` forward per-query overrides to the
+    daemon's ``/search``; the daemon applies them with its own configured
+    reranker (rerank only does real work if the daemon has one enabled)."""
     with phase("daemon-search") as details:
         hits = client.search(
             query,
@@ -445,6 +522,8 @@ def _search_via_daemon(
             vector_weight=cfg.search.vector_weight,
             importance_weight=cfg.search.importance_weight,
             type_bias=cfg.search.type_bias,
+            mmr_lambda=mmr_lambda,
+            rerank_top_n=rerank_top_n,
         )
         details["results"] = len(hits)
     _print_search_hits(hits)
@@ -456,6 +535,9 @@ def _search_via_direct_db(
     query: str,
     limit: int,
     types: list[str] | None,
+    mmr_lambda: float | None = None,
+    rerank_top_n: int | None = None,
+    reranker_enabled: bool = False,
 ) -> None:
     """Open the index directly and run `Search`. Used when no daemon
     is reachable, or when the user passes `--no-daemon`."""
@@ -463,9 +545,22 @@ def _search_via_direct_db(
     with phase("connect"):
         index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)
+    # Build the reranker only when this query asks for it (config or
+    # --rerank). _maybe_reranker honours config.reranker; when the flag
+    # forces rerank on but config has it disabled, build directly.
+    reranker: Reranker | None = None
+    if reranker_enabled:
+        rc = cfg.search.reranker
+        reranker = _maybe_reranker(cfg) or build_reranker(
+            enabled=True,
+            provider=rc.provider,
+            model=rc.model,
+            base_url=rc.base_url,
+            api_key_env=rc.api_key_env,
+        )
     try:
         with phase("direct-search") as details:
-            results = Search(vault_obj, index, embedder).search(
+            results = Search(vault_obj, index, embedder, reranker=reranker).search(
                 query,
                 limit=limit,
                 types=types,
@@ -474,6 +569,8 @@ def _search_via_direct_db(
                 vector_weight=cfg.search.vector_weight,
                 importance_weight=cfg.search.importance_weight,
                 type_bias=cfg.search.type_bias,
+                mmr_lambda=mmr_lambda,
+                rerank_top_n=rerank_top_n if reranker_enabled else None,
                 log_client="cli" if cfg.hygiene.query_log_enabled else None,
                 log_max_rows=cfg.hygiene.query_log_max_rows,
             )
@@ -722,6 +819,7 @@ def mcp(
         build_vault=lambda: Vault(cfg.vault_path),
         build_index=lambda: _open_index(cfg),
         build_embedder=lambda: _maybe_embedder(cfg),
+        build_reranker=lambda: _maybe_reranker(cfg),
     )
     server = build_server(
         resources=resources,

@@ -24,8 +24,10 @@ from memstem.core.rerank import (
     StubReranker,
     _format_body_for_prompt,
     _parse_score,
+    build_reranker,
     cache_lookup,
     cache_write,
+    effective_rerank_top_n,
     query_hash,
 )
 from memstem.core.storage import Memory
@@ -665,3 +667,58 @@ class TestOpenAIReranker:
         # Two distinct cache rows now.
         rows = index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()[0]
         assert rows == 2
+
+
+# ─── build_reranker factory ───────────────────────────────────────
+
+
+class TestBuildReranker:
+    def test_disabled_returns_none(self) -> None:
+        assert build_reranker(enabled=False) is None
+        # Provider/model are ignored when disabled.
+        assert build_reranker(enabled=False, provider="ollama", model="x") is None
+
+    def test_openai_provider_builds_openai_reranker(self) -> None:
+        rk = build_reranker(
+            enabled=True,
+            provider="openai",
+            model="gemma-4-e4b-it",
+            base_url="http://10.0.1.233:8000/v1",
+            api_key_env="OPENAI_API_KEY",
+        )
+        assert isinstance(rk, OpenAIReranker)
+        assert rk.model == "gemma-4-e4b-it"
+        assert rk.base_url == "http://10.0.1.233:8000/v1"
+        assert rk.name == "openai:gemma-4-e4b-it"
+
+    def test_openai_compatible_aliases(self) -> None:
+        for provider in ("openai-compatible", "vllm", "OpenAI"):
+            rk = build_reranker(enabled=True, provider=provider, model="m")
+            assert isinstance(rk, OpenAIReranker)
+
+    def test_ollama_provider_builds_ollama_reranker(self) -> None:
+        rk = build_reranker(enabled=True, provider="ollama", model="qwen2.5:7b")
+        assert isinstance(rk, OllamaReranker)
+        assert rk.model == "qwen2.5:7b"
+
+    def test_unknown_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown reranker provider"):
+            build_reranker(enabled=True, provider="bogus")
+
+
+# ─── effective_rerank_top_n ───────────────────────────────────────
+
+
+class TestEffectiveRerankTopN:
+    def test_disabled_returns_none_even_with_value(self) -> None:
+        assert effective_rerank_top_n(15, reranker_enabled=False) is None
+        assert effective_rerank_top_n(None, reranker_enabled=False) is None
+
+    def test_enabled_with_value_passes_through(self) -> None:
+        assert effective_rerank_top_n(15, reranker_enabled=True) == 15
+
+    def test_enabled_without_value_falls_back_to_default(self) -> None:
+        assert effective_rerank_top_n(None, reranker_enabled=True) == DEFAULT_RERANK_TOP_N
+
+    def test_enabled_with_nonpositive_uses_default(self) -> None:
+        assert effective_rerank_top_n(0, reranker_enabled=True) == DEFAULT_RERANK_TOP_N

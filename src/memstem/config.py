@@ -135,6 +135,38 @@ unspecified types fall back to ``1.0`` (neutral). Setting every type to
 ``1.0`` recovers the pre-bias behaviour exactly."""
 
 
+class RerankerConfig(BaseModel):
+    """LLM-as-judge reranker backend (ADR 0017).
+
+    Disabled by default — leaving ``enabled=False`` keeps the search
+    path on the NoOp reranker (a passthrough). Enable it and set
+    :attr:`~SearchConfig.rerank_top_n` to re-score the top-N candidates
+    with a cross-encoder-style LLM judge for a precision lift.
+
+    ``provider`` selects the backend:
+
+    - ``openai`` (default) — any OpenAI-compatible ``/chat/completions``
+      endpoint. This covers OpenAI itself *and* self-hosted vLLM/LM Studio
+      servers (e.g. the fleet's Gemma box at
+      ``http://10.0.1.233:8000/v1`` serving ``gemma-4-e4b-it``). Set
+      ``base_url`` to the server and ``model`` to the served name.
+    - ``ollama`` — a local Ollama model via ``/api/generate``.
+    """
+
+    enabled: bool = False
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    base_url: str | None = None
+    """Override the provider's default endpoint. ``None`` uses the
+    provider default (OpenAI's API for ``openai``, localhost:11434 for
+    ``ollama``). Point this at a self-hosted OpenAI-compatible server to
+    keep reranking in-VPC."""
+    api_key_env: str = "OPENAI_API_KEY"
+    """Env var (or ``memstem auth``/secrets.yaml entry) holding the API
+    key for the ``openai`` provider. Self-hosted endpoints ignore the
+    value but still require one to be present."""
+
+
 class SearchConfig(BaseModel):
     """Hybrid search configuration."""
 
@@ -164,6 +196,28 @@ class SearchConfig(BaseModel):
     that makes "prefer distillations and curated memories over raw
     sessions" explicit and tunable. To disable it entirely, set every
     type to ``1.0`` (or supply an empty mapping)."""
+
+    mmr_lambda: float | None = None
+    """Maximal Marginal Relevance diversification (ADR 0016) applied in
+    the daemon / MCP / CLI search path. ``None`` (default) disables MMR —
+    the RRF + importance order is final. A float in ``[0, 1]`` activates
+    the diversifier: ``0.7`` is the literature default, ``0.5`` trades a
+    little relevance for more topic spread (the value validated on Brad's
+    corpus), ``1.0`` reduces to identity. See :meth:`Search.search`."""
+
+    rerank_top_n: int | None = None
+    """Cross-encoder rerank pool size (ADR 0017) applied in the daemon /
+    MCP / CLI search path. ``None`` (default) skips rerank entirely. An
+    integer N re-scores the top-N materialized candidates via the
+    configured :class:`RerankerConfig` reranker before MMR / truncation.
+    Only takes effect when ``reranker.enabled`` is also ``True``; if the
+    reranker is enabled but this is left ``None`` the daemon falls back to
+    ``DEFAULT_RERANK_TOP_N`` so enabling the reranker "just works"."""
+
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    """Reranker backend (ADR 0017). Only consulted when
+    ``reranker.enabled`` is ``True``; otherwise the search path stays on
+    the NoOp passthrough regardless of ``rerank_top_n``."""
 
 
 class HygieneConfig(BaseModel):

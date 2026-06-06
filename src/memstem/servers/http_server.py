@@ -39,6 +39,7 @@ import memstem
 from memstem.config import HttpServerConfig, HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.index import Index
+from memstem.core.rerank import build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
@@ -60,6 +61,8 @@ class SearchRequest(BaseModel):
     vector_weight: float | None = None
     importance_weight: float | None = None
     type_bias: dict[str, float] | None = None
+    mmr_lambda: float | None = None
+    rerank_top_n: int | None = None
 
 
 class SearchHit(BaseModel):
@@ -155,9 +158,22 @@ def build_app(
         allow_headers=["*"],
     )
 
-    search = Search(vault=vault, index=index, embedder=embedder)
     sc = search_config or SearchConfig()
     hc = hygiene_config or HygieneConfig()
+    # Build the configured reranker (ADR 0017) once at app construction so
+    # every /search call reuses its HTTP client + cache. None when disabled,
+    # which Search turns into the NoOp passthrough.
+    reranker = build_reranker(
+        enabled=sc.reranker.enabled,
+        provider=sc.reranker.provider,
+        model=sc.reranker.model,
+        base_url=sc.reranker.base_url,
+        api_key_env=sc.reranker.api_key_env,
+    )
+    search = Search(vault=vault, index=index, embedder=embedder, reranker=reranker)
+    default_rerank_top_n = effective_rerank_top_n(
+        sc.rerank_top_n, reranker_enabled=sc.reranker.enabled
+    )
     log_client = "http" if hc.query_log_enabled else None
 
     @app.get("/health")
@@ -207,6 +223,10 @@ def build_app(
                 req.importance_weight if req.importance_weight is not None else sc.importance_weight
             ),
             type_bias=(req.type_bias if req.type_bias is not None else sc.type_bias),
+            mmr_lambda=(req.mmr_lambda if req.mmr_lambda is not None else sc.mmr_lambda),
+            rerank_top_n=(
+                req.rerank_top_n if req.rerank_top_n is not None else default_rerank_top_n
+            ),
             log_client=log_client,
             log_max_rows=hc.query_log_max_rows,
         )

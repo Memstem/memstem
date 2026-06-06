@@ -577,6 +577,62 @@ class OpenAIReranker(Reranker):
         return str(content) if content is not None else ""
 
 
+def build_reranker(
+    *,
+    enabled: bool,
+    provider: str = "openai",
+    model: str = DEFAULT_OPENAI_MODEL,
+    base_url: str | None = None,
+    api_key_env: str = DEFAULT_OPENAI_API_KEY_ENV,
+) -> Reranker | None:
+    """Construct a :class:`Reranker` from config fields, or ``None`` when disabled.
+
+    Returns ``None`` when ``enabled`` is falsy so callers can pass the
+    result straight to :class:`~memstem.core.search.Search` (which
+    substitutes a :class:`NoOpReranker` for ``None``). The ``openai``
+    provider covers both OpenAI itself and any OpenAI-compatible
+    self-hosted server (vLLM/LM Studio) via ``base_url`` — that's how the
+    fleet points the reranker at the in-VPC Gemma box. ``ollama`` builds
+    a local :class:`OllamaReranker`.
+
+    Raises :class:`ValueError` on an unknown provider so a typo in
+    ``config.yaml`` surfaces loudly instead of silently disabling rerank.
+    """
+    if not enabled:
+        return None
+    p = (provider or "openai").lower()
+    if p == "ollama":
+        return OllamaReranker(base_url=base_url or DEFAULT_OLLAMA_URL, model=model)
+    if p in ("openai", "openai-compatible", "vllm"):
+        return OpenAIReranker(
+            model=model,
+            base_url=base_url or DEFAULT_OPENAI_BASE_URL,
+            api_key_env=api_key_env,
+        )
+    raise ValueError(f"unknown reranker provider {provider!r}. Known: openai, ollama")
+
+
+def effective_rerank_top_n(
+    rerank_top_n: int | None,
+    *,
+    reranker_enabled: bool,
+) -> int | None:
+    """Resolve the rerank pool size for a search call.
+
+    Rerank only runs when a real reranker is configured. When the
+    reranker is enabled but ``rerank_top_n`` is left unset, fall back to
+    :data:`DEFAULT_RERANK_TOP_N` so flipping ``reranker.enabled`` on is
+    enough to get reranking. When the reranker is disabled, return
+    ``None`` regardless so :meth:`Search.search` skips the stage even if a
+    stale ``rerank_top_n`` lingers in config.
+    """
+    if not reranker_enabled:
+        return None
+    if rerank_top_n is not None and rerank_top_n > 0:
+        return rerank_top_n
+    return DEFAULT_RERANK_TOP_N
+
+
 __all__ = [
     "DEFAULT_OLLAMA_MODEL",
     "DEFAULT_OLLAMA_URL",
@@ -591,7 +647,9 @@ __all__ = [
     "RerankCandidate",
     "Reranker",
     "StubReranker",
+    "build_reranker",
     "cache_lookup",
     "cache_write",
+    "effective_rerank_top_n",
     "query_hash",
 ]

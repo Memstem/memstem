@@ -32,6 +32,7 @@ from memstem.config import HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index
+from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
@@ -129,11 +130,14 @@ class _Resources:
     __slots__ = (
         "_build_embedder",
         "_build_index",
+        "_build_reranker",
         "_build_vault",
         "_embedder",
         "_embedder_resolved",
         "_index",
         "_lock",
+        "_reranker",
+        "_reranker_resolved",
         "_search",
         "_vault",
     )
@@ -144,14 +148,18 @@ class _Resources:
         build_vault: Callable[[], Vault],
         build_index: Callable[[], Index],
         build_embedder: Callable[[], Embedder | None],
+        build_reranker: Callable[[], Reranker | None] = lambda: None,
     ) -> None:
         self._build_vault = build_vault
         self._build_index = build_index
         self._build_embedder = build_embedder
+        self._build_reranker = build_reranker
         self._vault: Vault | None = None
         self._index: Index | None = None
         self._embedder: Embedder | None = None
         self._embedder_resolved = False
+        self._reranker: Reranker | None = None
+        self._reranker_resolved = False
         self._search: Search | None = None
         # Use an RLock because `search` composes the cached vault/index/embedder
         # via their properties while holding the same guard. A plain Lock would
@@ -164,6 +172,7 @@ class _Resources:
         vault: Vault,
         index: Index,
         embedder: Embedder | None = None,
+        reranker: Reranker | None = None,
     ) -> _Resources:
         """Wrap already-initialized resources. Used by tests and any caller
         that constructs the heavy objects itself.
@@ -172,6 +181,7 @@ class _Resources:
             build_vault=lambda: vault,
             build_index=lambda: index,
             build_embedder=lambda: embedder,
+            build_reranker=lambda: reranker,
         )
         # Pre-resolve so callers that own the index lifecycle externally
         # (test fixtures, daemon embed) don't see surprise factory invocations.
@@ -179,6 +189,8 @@ class _Resources:
         instance._index = index
         instance._embedder = embedder
         instance._embedder_resolved = True
+        instance._reranker = reranker
+        instance._reranker_resolved = True
         return instance
 
     @classmethod
@@ -188,6 +200,7 @@ class _Resources:
         build_vault: Callable[[], Vault],
         build_index: Callable[[], Index],
         build_embedder: Callable[[], Embedder | None],
+        build_reranker: Callable[[], Reranker | None] = lambda: None,
     ) -> _Resources:
         """Defer construction until first access. The CLI's ``mcp`` command
         uses this so the MCP handshake is fast even with a multi-hundred-MB
@@ -197,6 +210,7 @@ class _Resources:
             build_vault=build_vault,
             build_index=build_index,
             build_embedder=build_embedder,
+            build_reranker=build_reranker,
         )
 
     @property
@@ -225,6 +239,15 @@ class _Resources:
         return self._embedder
 
     @property
+    def reranker(self) -> Reranker | None:
+        if not self._reranker_resolved:
+            with self._lock:
+                if not self._reranker_resolved:
+                    self._reranker = self._build_reranker()
+                    self._reranker_resolved = True
+        return self._reranker
+
+    @property
     def search(self) -> Search:
         if self._search is None:
             with self._lock:
@@ -233,6 +256,7 @@ class _Resources:
                         vault=self.vault,
                         index=self.index,
                         embedder=self.embedder,
+                        reranker=self.reranker,
                     )
         return self._search
 
@@ -327,20 +351,34 @@ def build_server(
     for the factory) disables auto-exit; the CLI's ``memstem mcp``
     command threads ``cfg.mcp.idle_timeout_seconds`` here.
     """
+    sc = search_config or SearchConfig()
+    hc = hygiene_config or HygieneConfig()
     if resources is not None:
         if vault is not None or index is not None or embedder is not None:
             raise ValueError(
                 "build_server: pass either resources= or (vault, index, embedder), not both"
             )
+        # Lazy path: the caller (CLI `mcp` command) already wired the
+        # reranker builder into the resources from config.
         res = resources
     else:
         if vault is None or index is None:
             raise ValueError("build_server: provide vault and index, or resources= for lazy init")
-        res = _Resources.eager(vault, index, embedder)
+        # Eager path: build the configured reranker (ADR 0017) here so it
+        # rides along on the Search this resource set constructs.
+        reranker = build_reranker(
+            enabled=sc.reranker.enabled,
+            provider=sc.reranker.provider,
+            model=sc.reranker.model,
+            base_url=sc.reranker.base_url,
+            api_key_env=sc.reranker.api_key_env,
+        )
+        res = _Resources.eager(vault, index, embedder, reranker)
 
     mcp = FastMCP(name)
-    sc = search_config or SearchConfig()
-    hc = hygiene_config or HygieneConfig()
+    default_rerank_top_n = effective_rerank_top_n(
+        sc.rerank_top_n, reranker_enabled=sc.reranker.enabled
+    )
     log_client = "mcp" if hc.query_log_enabled else None
     activity = _ActivityTracker()
     if idle_timeout_seconds > 0:
@@ -363,6 +401,8 @@ def build_server(
             vector_weight=sc.vector_weight,
             importance_weight=sc.importance_weight,
             type_bias=sc.type_bias,
+            mmr_lambda=sc.mmr_lambda,
+            rerank_top_n=default_rerank_top_n,
             log_client=log_client,
             log_max_rows=hc.query_log_max_rows,
         )
