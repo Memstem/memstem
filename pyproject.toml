@@ -49,6 +49,12 @@ dev = [
     "mypy>=1.10.0",
     "pre-commit>=3.7.0",
 ]
+multimodal = [
+    # Optional: PDF page rendering + image encoding for multimodal ingestion
+    # (ADR 0025). Lazy-imported; only needed when embedding images/PDFs.
+    "pypdfium2>=4.0.0",
+    "pillow>=10.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/memstem/memstem"
@@ -101,6 +107,7 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = [
     "frontmatter",
+    "pypdfium2",
     "sqlite_vec",
     "watchdog.events",
     "watchdog.observers",
@@ -117,11 +124,12 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra -q --cov=memstem --cov-report=term-missing -m 'not requires_ollama'"
+addopts = "-ra -q --cov=memstem --cov-report=term-missing -m 'not requires_ollama and not requires_pypdfium2'"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "requires_ollama: integration test that requires a running Ollama server (skipped by default)",
+    "requires_pypdfium2: test that requires the optional pypdfium2+pillow extras (skipped by default)",
 ]
 
 [tool.coverage.run]

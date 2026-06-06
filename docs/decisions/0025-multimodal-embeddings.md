@@ -1,7 +1,7 @@
 # ADR 0025: Multimodal embeddings — text + image/PDF in one vector space (Qwen3-VL)
 
 Date: 2026-06-06
-Status: Proposed
+Status: Accepted
 
 ## Context
 
@@ -74,17 +74,17 @@ Extend the `Embedder` ABC (ADR 0009) **additively** — the text contract is unc
 Per ADR 0001/0009 local-first: default stays text-only Ollama. Multimodal Qwen3-VL is
 **opt-in per vault** via config. This ADR adds a capability; it does not change defaults.
 
-## Open decisions — need Brad's sign-off before implementing §2–§4
+## Resolved decisions (2026-06-06, Brad)
 
-These touch storage / ranking / the adapter interface, so per repo policy they are
-called out for decision rather than guessed:
-
-- **A. Image-as-record model.** Each image / PDF-page = its own `MemoryRecord`, or an
-  attached media-chunk of a parent record? (Affects storage schema + adapter interface.)
-- **B. Cross-modal ranking.** Within-modality ranking vs. one unified space with score
-  calibration. (Affects ADR 0016 / 0017.)
-- **C. Reranker now or later.** Adds a second model + VRAM/box.
-- **D. PDF dependency.** Accept `pypdfium2` as an (optional, lazy) ingestion dependency?
+- **A. Image-as-record model → media-chunk of a parent record.** An image/screenshot is
+  a chunk attached to the record it came from; a PDF becomes one record whose chunks are
+  its page-images. Preserves provenance; reuses the existing chunk→vector machinery.
+- **B. Cross-modal ranking → rank within-modality, normalize per-modality.** The reranker
+  (when added) fuses across modalities. (Interacts with ADR 0016 / 0017.)
+- **C. Reranker → later.** Qwen3-VL-Reranker-2B lands as its own PR after core multimodal
+  ingestion.
+- **D. PDF dependency → yes, optional + lazy.** `pypdfium2` (+ `pillow`) ship as a
+  `multimodal` extra, imported only when embedding images/PDFs.
 
 ## Consequences
 
