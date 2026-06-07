@@ -1,1 +1,1 @@
-"""Background hygiene: dedup, decay, auto-skill extraction."""
+"""Background hygiene: dedup, decay, importance, distillation."""
