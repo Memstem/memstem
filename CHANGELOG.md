@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stay raw — the asymmetry Qwen3-Embedding / Qwen3-VL were trained on. `None`
   (default) keeps current behavior for mxbai/ollama/etc. (ADR 0025.)
 
+### Documentation
+
+- README now documents the **reranker + MMR** recall pass (enable steps + CLI
+  flags) and recommends **Qwen3-Embedding-8B** (4096-dim) as the self-hosted
+  embedder when not using a cloud API, alongside the existing Ollama default —
+  new "Search & reranking" section plus a self-hosted `embedding:` example. The
+  embedding-model ladder is captured in `docs/recall-models.md`.
+
 ## [0.12.7] — 2026-06-05
 
 ### Fixed

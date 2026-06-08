@@ -53,9 +53,18 @@ report plus an explicit per-type ranking policy. Shipping:
 - **Five MCP tools** (`memstem_search`, `_get`, `_list_skills`, `_get_skill`,
   `_upsert`) plus a co-hosted local HTTP API on `127.0.0.1:7821` for
   first-party clients (CLI tools, future editor extensions).
-- **Four pluggable embedders** — Ollama (local default), OpenAI, Gemini,
-  Voyage — selectable via `_meta/config.yaml`. Always-on embed queue
+- **Pluggable embedders** — Ollama (local default), OpenAI, Gemini, Voyage, or
+  any OpenAI-compatible server — selectable via `_meta/config.yaml`. For a
+  **self-hosted, no-cloud** setup the recommended embedder is
+  **Qwen3-Embedding-8B** (4096-dim, instruction-tuned); see
+  [Embedding provider](#embedding-provider--pick-one). Always-on embed queue
   with retry/backoff and idle-timeout self-exit.
+- **Cross-encoder reranking + MMR (new in 0.13.0)** — opt-in recall-quality
+  pass that re-orders hybrid-search candidates with an LLM reranker and
+  diversifies near-duplicates with MMR, wired into config, the daemon, MCP, and
+  CLI (`--rerank`, `--mmr`, `--rerank-top-n`). Off by default; pair it with a
+  self-hosted Gemma/Qwen reranker for zero per-query cloud cost. See
+  [Search & reranking](#search--reranking-recall-quality).
 - **Derived records (new in 0.9.0)** — `memstem hygiene
   distill-sessions` produces `type: distillation` companion records
   for meaningful sessions, and `memstem hygiene project-records`
@@ -246,7 +255,7 @@ Every search runs in parallel down two paths and is merged with Reciprocal Rank 
 
 ### Embedding provider — pick one
 
-Memstem ships four providers. Default is local Ollama; switch by editing the `embedding:` block (then `memstem reindex` so existing vectors get redone against the new provider).
+Memstem ships several providers. **Default is local Ollama** (zero-config, no API key). **For a high-quality self-hosted setup with no cloud API, the recommended embedder is Qwen3-Embedding-8B** (see the self-hosted block below). Switch by editing the `embedding:` block (then `memstem reindex` so existing vectors get redone against the new provider).
 
 ```yaml
 # Default — local, no API key
@@ -287,7 +296,46 @@ embedding:
   dimensions: 1024
 ```
 
+```yaml
+# Recommended self-hosted (no cloud API) — Qwen3-Embedding-8B on vLLM.
+# Instruction-tuned 4096-dim retriever, served over the OpenAI-compatible path
+# (point base_url at your own server). Pair with the query_instruction below and
+# a self-hosted reranker (see "Search & reranking") for the full no-cloud stack.
+embedding:
+  provider: openai                       # OpenAI-compatible client
+  model: qwen3-text-embed                # the name your vLLM serves
+  base_url: http://your-vllm-host:8000/v1
+  api_key_env: OPENAI_API_KEY            # any non-empty token; vLLM ignores it
+  dimensions: 4096
+  query_instruction: "Given a search query, retrieve relevant memories, notes, and documents that answer it"
+```
+
 API keys are read from environment variables named in `api_key_env` — they never land in the vault. `embedding.workers` (default 2) and `embedding.batch_size` (default 8) tune the queue throughput; CPU Ollama is happiest at 1 worker, API providers tolerate 4+.
+
+### Search & reranking (recall quality)
+
+Hybrid search (BM25 + vector, merged with RRF) works out of the box. For higher
+precision, enable the **reranker + MMR** pass (new in 0.13.0): it re-orders the
+top candidates with an LLM and diversifies near-duplicates. Off by default —
+opt in per vault:
+
+```yaml
+search:
+  mmr_lambda: 0.5            # 0 = max diversity, 1 = pure relevance
+  rerank_top_n: 15           # candidate pool the reranker re-scores
+  reranker:
+    enabled: true
+    provider: openai         # OpenAI-compatible — also works against a self-hosted vLLM box
+    model: gemma-4-e4b-it    # or gpt-4o-mini, qwen2.5:7b, ...
+    base_url: http://your-vllm-host:8000/v1
+    api_key_env: OPENAI_API_KEY
+```
+
+Per-query overrides: `memstem search "q" --rerank --mmr 0.5 --rerank-top-n 15`
+(and `--no-rerank` to skip). Together with the Qwen3 embedder + `query_instruction`
+above, this is the validated **fully self-hosted recall stack** — no per-query cloud
+cost. For picking the reranker LLM, see
+[recall-quality model recommendations](./docs/recall-models.md).
 
 ### Adapters
 
