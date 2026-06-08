@@ -1,3 +1,3 @@
 """Memstem: unified memory and skill infrastructure for AI agents."""
 
-__version__ = "0.12.7"
+__version__ = "0.13.0"

@@ -147,8 +147,8 @@ class RerankerConfig(BaseModel):
 
     - ``openai`` (default) — any OpenAI-compatible ``/chat/completions``
       endpoint. This covers OpenAI itself *and* self-hosted vLLM/LM Studio
-      servers (e.g. the fleet's Gemma box at
-      ``http://10.0.1.233:8000/v1`` serving ``gemma-4-e4b-it``). Set
+      servers (e.g. a self-hosted Gemma box at
+      ``http://localhost:8000/v1`` serving ``gemma-4-e4b-it``). Set
       ``base_url`` to the server and ``model`` to the served name.
     - ``ollama`` — a local Ollama model via ``/api/generate``.
     """

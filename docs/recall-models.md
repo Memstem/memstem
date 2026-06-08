@@ -58,6 +58,23 @@ Any of these three can be turned off by leaving the feature flag
 unset; the embedder + RRF + importance + MMR pipeline keeps working.
 You only need a chat model for the features you turn on.
 
+## Embedding model (the retriever)
+
+Separate from the chat model above — this is the vectorizer behind hybrid
+search. The ladder:
+
+| Tier | Model | Dim | Notes |
+|---|---|---|---|
+| **Local default** | `nomic-embed-text` (Ollama) | 768 | Zero-config, CPU-friendly, no API key. |
+| **Cloud** | `text-embedding-3-large` (OpenAI) · `voyage-3` (Voyage) | 3072 · 1024 | Strong recall, per-call cost. |
+| **Recommended self-hosted** | **`Qwen3-Embedding-8B`** (vLLM) | **4096** | Highest recall without a cloud API. Instruction-tuned: set `embedding.query_instruction` so queries embed as `Instruct: …\nQuery: …` while documents embed plain (ADR 0025). Served over the OpenAI-compatible path (`provider: openai` + `base_url`). |
+
+The validated **fully self-hosted recall stack** is **Qwen3-Embedding-8B +
+`query_instruction` + MMR + a self-hosted Gemma reranker** — all on your own
+vLLM, no per-query cloud cost. Config lives in the README
+[Embedding provider](../README.md#embedding-provider--pick-one) and
+[Search & reranking](../README.md#search--reranking-recall-quality) sections.
+
 ## Provider options
 
 ### OpenAI (cloud)
