@@ -31,7 +31,7 @@ class TestSearchConfigDefaults:
                 enabled=True,
                 provider="openai",
                 model="gemma-4-e4b-it",
-                base_url="http://10.0.1.233:8000/v1",
+                base_url="http://localhost:8000/v1",
             ),
         )
         assert sc.mmr_lambda == 0.5
@@ -40,5 +40,5 @@ class TestSearchConfigDefaults:
         assert sc.reranker.model == "gemma-4-e4b-it"
         # model_dump round-trips cleanly for YAML persistence.
         dumped = sc.model_dump()
-        assert dumped["reranker"]["base_url"] == "http://10.0.1.233:8000/v1"
+        assert dumped["reranker"]["base_url"] == "http://localhost:8000/v1"
         assert SearchConfig(**dumped).reranker.model == "gemma-4-e4b-it"

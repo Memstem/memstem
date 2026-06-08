@@ -250,9 +250,9 @@ class TestOpenAIEmbedder:
     def test_max_batch_defaults_by_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         real = OpenAIEmbedder(model="m", dimensions=4)  # default api.openai.com
-        compat = OpenAIEmbedder(model="m", dimensions=4, base_url="http://10.0.1.54:8080/v1")
+        compat = OpenAIEmbedder(model="m", dimensions=4, base_url="http://localhost:8080/v1")
         override = OpenAIEmbedder(
-            model="m", dimensions=4, base_url="http://10.0.1.54:8080/v1", max_request_inputs=16
+            model="m", dimensions=4, base_url="http://localhost:8080/v1", max_request_inputs=16
         )
         try:
             assert real.max_batch == OpenAIEmbedder.MAX_BATCH_SIZE  # 100 for OpenAI Inc.
@@ -284,7 +284,7 @@ class TestOpenAIEmbedder:
                 },
             )
 
-        emb = OpenAIEmbedder(model="m", dimensions=4, base_url="http://10.0.1.54:8080/v1")
+        emb = OpenAIEmbedder(model="m", dimensions=4, base_url="http://localhost:8080/v1")
         emb._client = httpx.Client(
             base_url=emb.base_url,
             transport=_mock_transport(handler),

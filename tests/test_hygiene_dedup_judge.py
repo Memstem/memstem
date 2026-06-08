@@ -424,11 +424,11 @@ class TestOpenAIJudgeMocked:
         judge = OpenAIDedupJudge(
             client=client,
             prompt_template="ignored",
-            base_url="http://10.0.1.233:8000/v1",
+            base_url="http://localhost:8000/v1",
             model="gemma-4-e4b-it",
         )
         result = judge.judge_pair(_make_pair())
-        assert judge.base_url == "http://10.0.1.233:8000/v1"
+        assert judge.base_url == "http://localhost:8000/v1"
         assert judge.model == "gemma-4-e4b-it"
         # Self-hosted endpoint → openai-compat prefix, NOT openai.
         # This keeps the audit log honest about which service actually
@@ -453,7 +453,7 @@ class TestOpenAINamePrefix:
             ("https://my-resource.openai.azure.com/v1", "openai"),
             ("https://eastus2.openai.azure.com/openai", "openai"),
             # Self-hosted / third-party using the OpenAI protocol
-            ("http://10.0.1.233:8000/v1", "openai-compat"),
+            ("http://localhost:8000/v1", "openai-compat"),
             ("http://localhost:8000/v1", "openai-compat"),
             ("https://api.together.xyz/v1", "openai-compat"),
             ("https://api.groq.com/openai/v1", "openai-compat"),

@@ -343,7 +343,7 @@ def test_openai_summarizer_self_hosted_name_uses_compat_prefix() -> None:
     should reflect that so distillation records honestly identify the
     upstream service."""
     s = smod.OpenAISummarizer(
-        base_url="http://10.0.1.233:8000/v1",
+        base_url="http://localhost:8000/v1",
         model="gemma-4-e4b-it",
         client=_MockClient(_MockResponse({"choices": []})),
     )

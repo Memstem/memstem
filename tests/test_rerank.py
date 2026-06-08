@@ -683,12 +683,12 @@ class TestBuildReranker:
             enabled=True,
             provider="openai",
             model="gemma-4-e4b-it",
-            base_url="http://10.0.1.233:8000/v1",
+            base_url="http://localhost:8000/v1",
             api_key_env="OPENAI_API_KEY",
         )
         assert isinstance(rk, OpenAIReranker)
         assert rk.model == "gemma-4-e4b-it"
-        assert rk.base_url == "http://10.0.1.233:8000/v1"
+        assert rk.base_url == "http://localhost:8000/v1"
         assert rk.name == "openai:gemma-4-e4b-it"
 
     def test_openai_compatible_aliases(self) -> None:
