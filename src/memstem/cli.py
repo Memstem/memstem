@@ -161,13 +161,30 @@ def _resolve_vault_path(override: str | None = None) -> Path:
     return DEFAULT_VAULT_PATH
 
 
+def _default_config(vault_path: Path, cfg_path: Path, reason: str) -> Config:
+    """Built-in defaults plus a visible warning that no usable config was
+    found. Without this the fallback is silent: a wrong ``--vault`` (or a
+    container whose vault is mounted off the default path) drops to the
+    built-in ``ollama`` embedder and surfaces only as a confusing
+    "connection refused" / empty-result at query time."""
+    cfg = Config(vault_path=vault_path)
+    logger.warning(
+        "%s at %s — using built-in defaults (embedder=%s). If your vault "
+        "lives elsewhere, pass --vault or set MEMSTEM_VAULT.",
+        reason,
+        cfg_path,
+        cfg.embedding.provider,
+    )
+    return cfg
+
+
 def _load_config(vault_path: Path) -> Config:
     cfg_path = vault_path / "_meta" / "config.yaml"
     if not cfg_path.is_file():
-        return Config(vault_path=vault_path)
+        return _default_config(vault_path, cfg_path, "no config.yaml")
     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        return Config(vault_path=vault_path)
+        return _default_config(vault_path, cfg_path, "empty or malformed config.yaml")
     raw.setdefault("vault_path", str(vault_path))
     return Config.model_validate(raw)
 
