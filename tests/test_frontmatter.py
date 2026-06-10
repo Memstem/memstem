@@ -13,6 +13,7 @@ from memstem.core.frontmatter import (
     Frontmatter,
     MemoryType,
     Provenance,
+    coerce,
     parse,
     serialize,
     validate,
@@ -133,3 +134,58 @@ class TestValidate:
         ts = datetime(2026, 4, 25, 15, 0, tzinfo=UTC)
         fm_obj = validate(_minimal_metadata(created=ts.isoformat()))
         assert fm_obj.created == ts
+
+
+class TestCoerce:
+    """coerce() must never reject agent-authored frontmatter — it normalizes,
+    so a memory's content is never lost to a metadata problem."""
+
+    def test_missing_type_and_dates_filled(self) -> None:
+        # The exact shape of the failing production saves: {id, source, title}.
+        mid = str(uuid4())
+        fm_obj = coerce({"id": mid, "source": "heartbeat", "title": "remember this"})
+        assert fm_obj.type is MemoryType.MEMORY
+        assert str(fm_obj.id) == mid
+        assert fm_obj.source == "heartbeat"
+        assert isinstance(fm_obj.created, datetime)
+        assert isinstance(fm_obj.updated, datetime)
+
+    def test_unknown_type_becomes_memory_and_kept_as_tag(self) -> None:
+        fm_obj = coerce(_minimal_metadata(type="site_scan", tags=["roof"]))
+        assert fm_obj.type is MemoryType.MEMORY
+        assert "site_scan" in fm_obj.tags
+        assert "roof" in fm_obj.tags
+
+    def test_missing_id_is_generated(self) -> None:
+        fm_obj = coerce({"source": "agent", "title": "x"})
+        assert isinstance(fm_obj.id, UUID)
+
+    def test_missing_id_is_deterministic_from_path(self) -> None:
+        a = coerce({"source": "agent"}, path="memories/note.md")
+        b = coerce({"source": "agent"}, path="memories/note.md")
+        c = coerce({"source": "agent"}, path="memories/other.md")
+        assert a.id == b.id
+        assert a.id != c.id
+
+    def test_missing_source_defaults(self) -> None:
+        fm_obj = coerce({"type": "memory", "title": "x"})
+        assert fm_obj.source == "agent"
+
+    def test_skill_missing_required_fields_demoted_to_memory(self) -> None:
+        # type=skill needs title/scope/verification; rather than reject, demote.
+        fm_obj = coerce({"id": str(uuid4()), "type": "skill", "source": "agent", "title": "t"})
+        assert fm_obj.type is MemoryType.MEMORY
+
+    def test_valid_input_passes_through_unchanged(self) -> None:
+        meta = _minimal_metadata(type="decision", title="keep me")
+        fm_obj = coerce(meta)
+        assert fm_obj.type is MemoryType.DECISION
+        assert str(fm_obj.id) == meta["id"]
+        assert fm_obj.title == "keep me"
+
+    def test_never_raises_on_bad_optional_field(self) -> None:
+        # importance out of range fails strict validation; the floor keeps the
+        # content rather than dropping the whole memory.
+        fm_obj = coerce(_minimal_metadata(importance=5.0))
+        assert isinstance(fm_obj, Frontmatter)
+        assert fm_obj.type is MemoryType.MEMORY

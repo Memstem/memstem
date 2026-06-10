@@ -8,13 +8,14 @@ strongly-typed `Frontmatter` model conforming to `docs/frontmatter-spec.md`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Self
-from uuid import UUID
+from uuid import UUID, uuid4, uuid5
 
 import frontmatter as fm
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class MemoryType(StrEnum):
@@ -115,6 +116,109 @@ def serialize(metadata: dict[str, Any], body: str) -> str:
 def validate(metadata: dict[str, Any]) -> Frontmatter:
     """Validate a raw metadata dict against the Frontmatter schema.
 
-    Raises pydantic.ValidationError on failure.
+    Raises pydantic.ValidationError on failure. Use this for records MemStem
+    itself authors (where invalid frontmatter is a real bug). For ingesting
+    agent-authored content, use :func:`coerce`, which never rejects.
     """
     return Frontmatter.model_validate(metadata)
+
+
+_VALID_TYPES = {member.value for member in MemoryType}
+# Stable namespace for deriving deterministic ids from a vault path, so a file
+# missing its `id` gets the *same* id on every re-read instead of churning the
+# index. Arbitrary fixed UUID — only its constancy matters.
+_COERCE_ID_NAMESPACE = UUID("a3c1f0de-1b2c-4d3e-9f80-0a1b2c3d4e5f")
+_SKILL_REQUIRED = ("title", "scope", "verification")
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _is_uuid(value: Any) -> bool:
+    if isinstance(value, UUID):
+        return True
+    if isinstance(value, str):
+        try:
+            UUID(value)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def coerce(metadata: Mapping[str, Any], *, path: str | None = None) -> Frontmatter:
+    """Normalize a raw metadata dict into a valid ``Frontmatter`` — never
+    raising for missing or unrecognized values.
+
+    This is the ingestion-boundary counterpart to :func:`validate`. MemStem is
+    agent-agnostic by design: an agent writes memories however it natively does
+    (any client, any sloppiness), and MemStem adapts to ingest them — the agent
+    is never required to produce MemStem-perfect metadata (ADR 0005, pull-based
+    ingestion). So every path that ingests agent-authored content — the
+    ``memstem_upsert`` tool, :meth:`Vault.read`, and the adapter pipeline —
+    funnels through here, so a memory's *content* can never be lost to a
+    metadata problem.
+
+    All coercions are non-destructive:
+
+    - missing/unknown ``type`` -> ``memory`` (the generic catch-all); any
+      original label is preserved as a tag so the agent's intent survives.
+    - missing/unparseable ``created`` / ``updated`` -> now.
+    - missing/invalid ``id`` -> a stable id derived from ``path`` (so re-reads
+      don't churn the index), or a fresh one when no path is given.
+    - missing ``source`` -> ``"agent"``.
+    - a ``skill`` lacking its required fields is demoted to ``memory`` rather
+      than rejected.
+    """
+    meta: dict[str, Any] = dict(metadata)
+
+    raw_type = meta.get("type")
+    if raw_type not in _VALID_TYPES:
+        if raw_type not in (None, ""):
+            existing = meta.get("tags")
+            tags = list(existing) if isinstance(existing, list) else []
+            if str(raw_type) not in tags:
+                tags.append(str(raw_type))
+            meta["tags"] = tags
+        meta["type"] = MemoryType.MEMORY.value
+
+    now = datetime.now(tz=UTC)
+    if _as_datetime(meta.get("created")) is None:
+        meta["created"] = now.isoformat()
+    if _as_datetime(meta.get("updated")) is None:
+        meta["updated"] = meta["created"]
+
+    if not _is_uuid(meta.get("id")):
+        meta["id"] = str(uuid5(_COERCE_ID_NAMESPACE, path)) if path else str(uuid4())
+
+    if not meta.get("source"):
+        meta["source"] = "agent"
+
+    if meta["type"] == MemoryType.SKILL.value and not all(
+        meta.get(field) for field in _SKILL_REQUIRED
+    ):
+        meta["type"] = MemoryType.MEMORY.value
+
+    try:
+        return Frontmatter.model_validate(meta)
+    except ValidationError:
+        # Absolute floor: the ingest path must never raise. Keep the content
+        # addressable with a minimal valid header and discard whatever else
+        # tripped validation.
+        return Frontmatter.model_validate(
+            {
+                "id": meta["id"],
+                "type": MemoryType.MEMORY.value,
+                "created": meta["created"],
+                "updated": meta["updated"],
+                "source": meta["source"],
+            }
+        )

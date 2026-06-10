@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -293,19 +293,21 @@ class TestUpsertTool:
         )
         assert result["path"] == "memories/custom/place.md"
 
-    async def test_invalid_frontmatter_raises(self, vault: Vault, index: Index) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
-
+    async def test_invalid_id_is_normalized_not_rejected(self, vault: Vault, index: Index) -> None:
+        # Previously an unparseable id raised a validation error; now it's
+        # replaced with a generated valid id and the save lands.
         mcp = build_server(vault, index)
-        with pytest.raises(ToolError, match="validation error"):
-            await _call_tool(
-                mcp,
-                "memstem_upsert",
-                {
-                    "frontmatter": {"id": "not-a-uuid", "type": "memory"},
-                    "body": "x",
-                },
-            )
+        result = await _call_tool(
+            mcp,
+            "memstem_upsert",
+            {
+                "frontmatter": {"id": "not-a-uuid", "type": "memory"},
+                "body": "x",
+            },
+        )
+        assert UUID(result["id"])  # a real UUID was generated
+        stored = await _call_tool(mcp, "memstem_get", {"id_or_path": result["id"]})
+        assert stored["body"] == "x"
 
     async def test_round_trip_via_search(self, vault: Vault, index: Index) -> None:
         mcp = build_server(vault, index)
@@ -766,3 +768,40 @@ class TestRerankWiring:
         results = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
         # Both still returned; m_b not forced to the top by the (skipped) stub.
         assert {r["id"] for r in results} == {str(m_a.id), str(m_b.id)}
+
+
+class TestUpsertNormalizes:
+    """memstem_upsert must accept whatever the agent sends and land the save —
+    the production failure mode was rejecting incomplete/odd frontmatter."""
+
+    async def test_minimal_frontmatter_is_accepted(self, vault: Vault, index: Index) -> None:
+        # The exact shape that was failing in production: {id, source, title},
+        # no type, no created. Must land, not raise.
+        mcp = build_server(vault, index)
+        mid = str(uuid4())
+        result = await _call_tool(
+            mcp,
+            "memstem_upsert",
+            {
+                "frontmatter": {"id": mid, "source": "heartbeat", "title": "remember this"},
+                "body": "client reply is unread",
+            },
+        )
+        assert result["id"] == mid
+        stored = await _call_tool(mcp, "memstem_get", {"id_or_path": mid})
+        assert stored["type"] == "memory"
+        assert "client reply" in stored["body"]
+
+    async def test_invented_type_is_accepted(self, vault: Vault, index: Index) -> None:
+        mcp = build_server(vault, index)
+        result = await _call_tool(
+            mcp,
+            "memstem_upsert",
+            {
+                "frontmatter": {"source": "agent", "type": "site_scan", "title": "roof scan"},
+                "body": "scan notes",
+            },
+        )
+        stored = await _call_tool(mcp, "memstem_get", {"id_or_path": result["id"]})
+        assert stored["type"] == "memory"
+        assert "site_scan" in stored["frontmatter"]["tags"]

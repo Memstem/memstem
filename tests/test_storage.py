@@ -79,11 +79,23 @@ class TestErrors:
         with pytest.raises(MemoryNotFoundError):
             vault.delete("memories/missing.md")
 
-    def test_invalid_frontmatter_on_read(self, tmp_vault: Path) -> None:
+    def test_read_coerces_sloppy_frontmatter(self, tmp_vault: Path) -> None:
+        # Missing id/created/updated/source: previously rejected, now normalized
+        # and ingested. Content is never dropped for a metadata problem.
         vault = Vault(tmp_vault)
-        _write_raw(tmp_vault, "memories/bad.md", "---\ntype: memory\n---\nbody\n")
+        _write_raw(tmp_vault, "memories/sloppy.md", "---\ntype: memory\ntitle: hi\n---\nbody\n")
+        memory = vault.read("memories/sloppy.md")
+        assert memory.type is MemoryType.MEMORY
+        assert memory.frontmatter.source  # defaulted, not blank
+        assert memory.body.strip() == "body"
+
+    def test_read_unparseable_yaml_raises(self, tmp_vault: Path) -> None:
+        # Truly unparseable YAML can't be normalized; it still raises so walk()
+        # skips and logs it rather than coercing garbage.
+        vault = Vault(tmp_vault)
+        _write_raw(tmp_vault, "memories/broken.md", "---\nfoo: [unclosed\n---\nbody\n")
         with pytest.raises(InvalidFrontmatterError):
-            vault.read("memories/bad.md")
+            vault.read("memories/broken.md")
 
     def test_path_escape_rejected(self, tmp_vault: Path) -> None:
         vault = Vault(tmp_vault)
@@ -198,13 +210,22 @@ class TestWalk:
         assert len(results) == 1
         assert results[0].frontmatter.title == "test"
 
-    def test_walk_skips_invalid_frontmatter_with_warning(
+    def test_walk_ingests_sloppy_frontmatter(self, tmp_vault: Path) -> None:
+        # A parseable file with missing fields is normalized and yielded, not
+        # skipped — the file door behaves like the upsert door now.
+        vault = Vault(tmp_vault)
+        vault.write(_make_memory("memories/good.md"))
+        _write_raw(tmp_vault, "memories/sloppy.md", "---\ntype: memory\ntitle: hi\n---\nbody\n")
+        results = list(vault.walk())
+        assert len(results) == 2
+
+    def test_walk_skips_unparseable_yaml_with_warning(
         self, tmp_vault: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         vault = Vault(tmp_vault)
         vault.write(_make_memory("memories/good.md"))
-        _write_raw(tmp_vault, "memories/bad.md", "---\ntype: memory\n---\nbody\n")
+        _write_raw(tmp_vault, "memories/broken.md", "---\nfoo: [unclosed\n---\nbody\n")
         with caplog.at_level(logging.WARNING):
             results = list(vault.walk())
         assert len(results) == 1
-        assert any("bad.md" in record.message for record in caplog.records)
+        assert any("broken.md" in record.message for record in caplog.records)

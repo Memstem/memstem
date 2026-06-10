@@ -30,7 +30,7 @@ from mcp.server.fastmcp import FastMCP
 
 from memstem.config import HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
-from memstem.core.frontmatter import Frontmatter, MemoryType, validate
+from memstem.core.frontmatter import Frontmatter, MemoryType, coerce
 from memstem.core.index import Index
 from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
@@ -488,11 +488,14 @@ def build_server(
     ) -> dict[str, Any]:
         """Add or update a memory.
 
-        Validates `frontmatter` against the canonical schema. If `path` is
-        omitted, generates a vault-relative path from type + id.
+        Normalizes `frontmatter` rather than rejecting it: missing `type`,
+        `created`, `updated`, `id`, or `source` are filled in, and an
+        unrecognized `type` is kept as a tag and stored as a `memory`. The save
+        always lands — the agent is never required to produce perfect metadata.
+        If `path` is omitted, a vault-relative path is generated from type + id.
         """
         activity.touch()
-        fm = validate(frontmatter)
+        fm = coerce(frontmatter)
         target_path = Path(path) if path else _auto_path(fm)
         memory = Memory(frontmatter=fm, body=body, path=target_path)
         res.vault.write(memory)
