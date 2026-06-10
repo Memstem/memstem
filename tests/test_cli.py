@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -11,7 +12,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from memstem.cli import app
+from memstem.cli import _load_config, app
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
@@ -1260,3 +1261,43 @@ class TestAuth:
     def test_remove_unknown_provider_exits_2(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["auth", "remove", "bogus"])
         assert result.exit_code == 2
+
+
+class TestLoadConfigFallback:
+    """``_load_config`` must warn — not silently default — when it can't
+    find a usable config, so a wrong ``--vault`` (or a container whose vault
+    is mounted off the default path) doesn't masquerade as an embedder
+    connection error. The built-in default embedder is ``ollama``."""
+
+    def test_warns_and_defaults_when_config_missing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="memstem.cli"):
+            cfg = _load_config(tmp_path)
+        assert cfg.embedding.provider == "ollama"  # built-in default
+        assert "no config.yaml" in caplog.text
+        assert "MEMSTEM_VAULT" in caplog.text
+
+    def test_warns_when_config_malformed(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        meta = tmp_path / "_meta"
+        meta.mkdir()
+        (meta / "config.yaml").write_text("just a string, not a mapping\n")
+        with caplog.at_level(logging.WARNING, logger="memstem.cli"):
+            cfg = _load_config(tmp_path)
+        assert cfg.embedding.provider == "ollama"
+        assert "malformed" in caplog.text
+
+    def test_no_warning_when_config_present(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        meta = tmp_path / "_meta"
+        meta.mkdir()
+        (meta / "config.yaml").write_text(
+            "embedding:\n  provider: openai\n  model: text-embedding-3-large\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="memstem.cli"):
+            cfg = _load_config(tmp_path)
+        assert cfg.embedding.provider == "openai"
+        assert "config.yaml" not in caplog.text

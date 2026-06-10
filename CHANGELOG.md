@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CLI warns instead of silently falling back to the default (ollama) config.**
+  When `_load_config` can't find a usable `config.yaml` at the resolved vault
+  path (missing, empty, or malformed), it now logs a clear warning naming the
+  path and the built-in default embedder, and points at `--vault` /
+  `MEMSTEM_VAULT`. Previously the fallback was silent, so a wrong `--vault` — or
+  a container whose vault is mounted off the default path — surfaced only as a
+  confusing "connection refused" / empty-result at query time.
+
 ## [0.13.0] - 2026-06-08
 
 ### Added
