@@ -28,7 +28,7 @@ from memstem.core.dedup import (
     record_body_hash,
 )
 from memstem.core.extraction import NoiseAction, noise_filter
-from memstem.core.frontmatter import Frontmatter, MemoryType, validate
+from memstem.core.frontmatter import Frontmatter, MemoryType, coerce
 from memstem.core.importance_seed import compute_seed
 from memstem.core.index import Index, body_hash
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
@@ -267,7 +267,9 @@ class Pipeline:
             )
         else:
             payload["importance"] = meta["importance"]
-        return validate(payload)
+        # coerce(), not validate(): an adapter that emits an unrecognized type
+        # (or other odd metadata) still ingests — content is never dropped.
+        return coerce(payload)
 
     def _record_mapping(self, source: str, ref: str, memory_id: UUID) -> None:
         with self.index._lock, self.index.db:

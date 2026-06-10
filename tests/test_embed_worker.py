@@ -727,8 +727,11 @@ class TestReadForEmbedRecovery:
     ) -> None:
         pipe = Pipeline(vault, index)
         memory = _processed(pipe, _record(body="alpha"))
-        # Stomp the file with an empty (but parseable) frontmatter block.
-        (vault.root / memory.path).write_text("---\n---\n\nbody\n", encoding="utf-8")
+        # Stomp the file with unparseable YAML — the one case coerce() can't
+        # normalize, so read() still raises InvalidFrontmatterError.
+        (vault.root / memory.path).write_text(
+            "---\nfoo: [unclosed\n---\n\nbody\n", encoding="utf-8"
+        )
 
         worker = EmbedWorker(
             vault=vault,

@@ -12,10 +12,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
 
+import yaml
 from pydantic import BaseModel, ConfigDict
-from pydantic import ValidationError as PydanticValidationError
 
-from memstem.core.frontmatter import Frontmatter, MemoryType, parse, serialize, validate
+from memstem.core.frontmatter import Frontmatter, MemoryType, coerce, parse, serialize
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +75,16 @@ class Vault:
         if not full.is_file():
             raise MemoryNotFoundError(f"no memory at {full}")
         text = full.read_text(encoding="utf-8")
-        meta_dict, body = parse(text)
-        try:
-            fm_obj = validate(meta_dict)
-        except PydanticValidationError as exc:
-            raise InvalidFrontmatterError(f"{full}: {exc}") from exc
         rel = full.relative_to(self.root)
+        try:
+            meta_dict, body = parse(text)
+        except yaml.YAMLError as exc:
+            # Unparseable YAML can't be normalized — surface it so walk() skips
+            # (and logs) the file rather than coercing garbage.
+            raise InvalidFrontmatterError(f"{full}: {exc}") from exc
+        # coerce(), not validate(): a file with missing or odd frontmatter is
+        # normalized and indexed, never dropped. See frontmatter.coerce.
+        fm_obj = coerce(meta_dict, path=str(rel))
         return Memory(frontmatter=fm_obj, body=body, path=rel)
 
     def write(self, memory: Memory) -> None:

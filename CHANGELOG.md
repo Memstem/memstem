@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ingestion never rejects agent-authored memories — it normalizes them.** A new
+  `frontmatter.coerce()` fills missing/odd metadata instead of raising: missing
+  `type`/`created`/`updated`/`id`/`source` are defaulted, and an unrecognized
+  `type` (e.g. an agent inventing `site_scan`) is kept as a tag and stored as a
+  `memory`. All three ingestion boundaries now use it — the `memstem_upsert` MCP
+  tool, `Vault.read` (so `walk`/reindex normalize sloppy files instead of
+  skipping them), and the adapter pipeline. This restores MemStem's agent-agnostic
+  contract (ADR 0005): an agent writes memories however it natively does and
+  MemStem adapts to ingest them — the agent is never required to produce
+  schema-perfect frontmatter. Previously `memstem_upsert` and `Vault.read`
+  strict-validated and **dropped** the content (the upsert tool returned a
+  Pydantic error to the agent; `walk` silently skipped the file), so saves with
+  partial metadata were lost. `validate()` stays strict for MemStem's own records.
 - **CLI warns instead of silently falling back to the default (ollama) config.**
   When `_load_config` can't find a usable `config.yaml` at the resolved vault
   path (missing, empty, or malformed), it now logs a clear warning naming the

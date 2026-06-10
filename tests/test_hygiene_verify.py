@@ -237,11 +237,12 @@ def test_as_json_is_serializable(vault: Vault, index: Index) -> None:
 
 
 def test_parser_skips_counted_when_warnings_emit(vault: Vault, index: Index) -> None:
-    """A file with malformed frontmatter under a non-reserved dir should
-    surface as a parser_skips entry — that's how an operator notices
-    schema breakage that ``hygiene cleanup-retro`` won't catch."""
+    """A file with unparseable frontmatter under a non-reserved dir should
+    surface as a parser_skips entry — that's how an operator notices schema
+    breakage that ``hygiene cleanup-retro`` won't catch. (Merely incomplete
+    frontmatter is normalized by coerce(), not skipped.)"""
     bad = vault.root / "memories" / "broken.md"
-    bad.write_text("---\ntype: memory\n---\nbody\n", encoding="utf-8")
+    bad.write_text("---\nfoo: [unclosed\n---\nbody\n", encoding="utf-8")
     report = verify_vault(vault, index)
     assert len(report.parser_skips) == 1
     assert "broken.md" in report.parser_skips[0]
