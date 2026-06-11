@@ -251,6 +251,9 @@ class TestUpsertTool:
         # Verify the file actually exists.
         memory = vault.read(result["path"])
         assert memory.body == "freshly upserted"
+        # A1: the save must be enqueued for embedding (the daemon's worker
+        # drains this shared queue) — previously MCP upserts never got vectors.
+        assert new_id in index.queue_pending(limit=10)
 
     async def test_skill_auto_path_uses_title_slug(self, vault: Vault, index: Index) -> None:
         mcp = build_server(vault, index)
