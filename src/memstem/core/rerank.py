@@ -35,11 +35,17 @@ import re
 import sqlite3
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from memstem.core.storage import Memory
+
+# Optional serialization lock (Index.lock) wrapping only the cache DB ops —
+# never the LLM call. None = no locking (tests / dedicated connection).
+_Lock = AbstractContextManager[Any]
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +234,7 @@ class Reranker(ABC):
         query: str,
         candidates: Iterable[RerankCandidate],
         db: sqlite3.Connection | None = None,
+        lock: _Lock | None = None,
     ) -> list[float]:
         """Score each candidate, consulting the cache when ``db`` is provided.
 
@@ -239,6 +246,12 @@ class Reranker(ABC):
         The cache is bypassed when ``db is None`` (used by tests that
         don't want to round-trip through SQLite) and by NoOp (which
         overrides this method for the trivial path).
+
+        ``lock`` (the Index connection lock) is held only around the cache
+        read/write, never around :meth:`score` — the per-candidate LLM call can
+        take seconds, and holding the global index lock across it would freeze
+        the embed workers and every other search (the lock's own contract is
+        that it must not cover HTTP calls).
         """
         candidates = list(candidates)
         if not candidates:
@@ -248,13 +261,14 @@ class Reranker(ABC):
         for candidate in candidates:
             cached: float | None = None
             if db is not None:
-                cached = cache_lookup(
-                    db,
-                    qhash=qhash,
-                    memory_id=candidate.memory_id,
-                    body_hash=candidate.body_hash,
-                    judge=self.name,
-                )
+                with lock or nullcontext():
+                    cached = cache_lookup(
+                        db,
+                        qhash=qhash,
+                        memory_id=candidate.memory_id,
+                        body_hash=candidate.body_hash,
+                        judge=self.name,
+                    )
             if cached is not None:
                 scores.append(cached)
                 continue
@@ -274,14 +288,15 @@ class Reranker(ABC):
             value = max(0.0, min(1.0, value))
             scores.append(value)
             if db is not None:
-                cache_write(
-                    db,
-                    qhash=qhash,
-                    memory_id=candidate.memory_id,
-                    body_hash=candidate.body_hash,
-                    judge=self.name,
-                    score=value,
-                )
+                with lock or nullcontext():
+                    cache_write(
+                        db,
+                        qhash=qhash,
+                        memory_id=candidate.memory_id,
+                        body_hash=candidate.body_hash,
+                        judge=self.name,
+                        score=value,
+                    )
         return scores
 
 
@@ -304,6 +319,7 @@ class NoOpReranker(Reranker):
         query: str,
         candidates: Iterable[RerankCandidate],
         db: sqlite3.Connection | None = None,
+        lock: _Lock | None = None,
     ) -> list[float]:
         # Skip the cache entirely — NoOp's score is constant and free,
         # so caching it would waste rows and writes.

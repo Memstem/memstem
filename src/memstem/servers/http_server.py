@@ -210,61 +210,79 @@ def build_app(
     @app.post("/search", response_model=list[SearchHit])
     async def do_search(req: SearchRequest) -> list[SearchHit]:
         """Hybrid keyword + semantic search across memories and skills."""
-        results = search.search(
-            query=req.query,
-            limit=req.limit,
-            types=req.types,
-            rrf_k=req.rrf_k if req.rrf_k is not None else sc.rrf_k,
-            bm25_weight=(req.bm25_weight if req.bm25_weight is not None else sc.bm25_weight),
-            vector_weight=(
-                req.vector_weight if req.vector_weight is not None else sc.vector_weight
-            ),
-            importance_weight=(
-                req.importance_weight if req.importance_weight is not None else sc.importance_weight
-            ),
-            type_bias=(req.type_bias if req.type_bias is not None else sc.type_bias),
-            mmr_lambda=(req.mmr_lambda if req.mmr_lambda is not None else sc.mmr_lambda),
-            rerank_top_n=(
-                req.rerank_top_n if req.rerank_top_n is not None else default_rerank_top_n
-            ),
-            log_client=log_client,
-            log_max_rows=hc.query_log_max_rows,
-        )
-        return [_serialize_result(r) for r in results]
+
+        # search.search() makes blocking embedder/reranker HTTP calls (up to
+        # the embedder's ~120s timeout) and synchronous SQLite reads. Run it in
+        # a worker thread so a slow or hung backend can't freeze the daemon's
+        # event loop (ingestion, hygiene, /health all share it). Index.lock
+        # keeps the shared connection safe across threads.
+        def _run() -> list[SearchHit]:
+            results = search.search(
+                query=req.query,
+                limit=req.limit,
+                types=req.types,
+                rrf_k=req.rrf_k if req.rrf_k is not None else sc.rrf_k,
+                bm25_weight=(req.bm25_weight if req.bm25_weight is not None else sc.bm25_weight),
+                vector_weight=(
+                    req.vector_weight if req.vector_weight is not None else sc.vector_weight
+                ),
+                importance_weight=(
+                    req.importance_weight
+                    if req.importance_weight is not None
+                    else sc.importance_weight
+                ),
+                type_bias=(req.type_bias if req.type_bias is not None else sc.type_bias),
+                mmr_lambda=(req.mmr_lambda if req.mmr_lambda is not None else sc.mmr_lambda),
+                rerank_top_n=(
+                    req.rerank_top_n if req.rerank_top_n is not None else default_rerank_top_n
+                ),
+                log_client=log_client,
+                log_max_rows=hc.query_log_max_rows,
+            )
+            return [_serialize_result(r) for r in results]
+
+        return await asyncio.to_thread(_run)
 
     @app.get("/memory/{id_or_path:path}", response_model=MemoryDetail)
     async def get_memory(id_or_path: str) -> MemoryDetail:
         """Retrieve a single memory by vault-relative path or by id."""
-        try:
-            memory = vault.read(id_or_path)
+
+        # Synchronous file read + a logged DB write; offload off the event loop
+        # like /search so a slow disk can't stall the daemon. log_get holds
+        # Index.lock for the shared connection (now running in a worker thread).
+        def _run() -> MemoryDetail:
+            try:
+                memory = vault.read(id_or_path)
+                if log_client is not None:
+                    log_get(
+                        index.db,
+                        memory_id=str(memory.id),
+                        client=f"{log_client}:get",
+                        max_rows=hc.query_log_max_rows,
+                        lock=index.lock,
+                    )
+                return _serialize_memory(memory)
+            except MemoryNotFoundError:
+                pass
+            # Route through `Index.get_path` so the read holds the Index lock —
+            # a bare `index.db.execute(...)` here races the embed worker on the
+            # shared connection (`InterfaceError: bad parameter or other API
+            # misuse`).
+            path = index.get_path(id_or_path)
+            if path is None:
+                raise HTTPException(status_code=404, detail=f"no memory for {id_or_path!r}")
+            memory = vault.read(path)
             if log_client is not None:
                 log_get(
                     index.db,
                     memory_id=str(memory.id),
                     client=f"{log_client}:get",
                     max_rows=hc.query_log_max_rows,
+                    lock=index.lock,
                 )
             return _serialize_memory(memory)
-        except MemoryNotFoundError:
-            pass
-        # Route through `Index.get_path` so the read holds
-        # `Index._lock`. The daemon-embedded HTTP server shares its
-        # sqlite connection with the embed worker; a bare
-        # `index.db.execute(...)` here races the worker thread and
-        # surfaces as `InterfaceError: bad parameter or other API
-        # misuse`.
-        path = index.get_path(id_or_path)
-        if path is None:
-            raise HTTPException(status_code=404, detail=f"no memory for {id_or_path!r}")
-        memory = vault.read(path)
-        if log_client is not None:
-            log_get(
-                index.db,
-                memory_id=str(memory.id),
-                client=f"{log_client}:get",
-                max_rows=hc.query_log_max_rows,
-            )
-        return _serialize_memory(memory)
+
+        return await asyncio.to_thread(_run)
 
     return app
 

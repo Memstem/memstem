@@ -38,8 +38,14 @@ import logging
 import re
 import sqlite3
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+# Optional serialization lock (Index.lock) wrapping only the cache DB ops —
+# never the LLM call. None = no locking (tests / dedicated connection).
+_Lock = AbstractContextManager[Any]
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +209,7 @@ class HydeExpander(ABC):
         self,
         query: str,
         db: sqlite3.Connection | None = None,
+        lock: _Lock | None = None,
     ) -> str:
         """Expand with cache-aware orchestration.
 
@@ -214,10 +221,14 @@ class HydeExpander(ABC):
         The cache is bypassed when ``db is None`` (used by tests that
         don't want to round-trip through SQLite) and by NoOp (which
         overrides this method for the trivial path).
+
+        ``lock`` (the Index connection lock) guards only the cache DB ops, not
+        :meth:`expand`'s LLM call — see :meth:`Reranker.score_candidates`.
         """
         qhash = query_hash(query)
         if db is not None:
-            cached = cache_lookup(db, qhash=qhash, judge=self.name)
+            with lock or nullcontext():
+                cached = cache_lookup(db, qhash=qhash, judge=self.name)
             if cached is not None:
                 return cached
         try:
@@ -228,7 +239,8 @@ class HydeExpander(ABC):
         if not isinstance(hypothesis, str):
             return ""
         if db is not None and hypothesis:
-            cache_write(db, qhash=qhash, judge=self.name, hypothesis=hypothesis)
+            with lock or nullcontext():
+                cache_write(db, qhash=qhash, judge=self.name, hypothesis=hypothesis)
         return hypothesis
 
 
@@ -250,6 +262,7 @@ class NoOpExpander(HydeExpander):
         self,
         query: str,
         db: sqlite3.Connection | None = None,
+        lock: _Lock | None = None,
     ) -> str:
         # Skip the cache entirely — NoOp's output is constant and free,
         # so caching it would waste rows and writes.

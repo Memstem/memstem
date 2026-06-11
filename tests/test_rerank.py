@@ -298,6 +298,23 @@ class TestStubReranker:
         row_count = index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()[0]
         assert row_count == 1
 
+    def test_score_candidates_caches_with_lock(self, index: Index) -> None:
+        # B5: a lock can be passed in (Index.lock in production); it guards only
+        # the cache ops, and scoring + caching still work through it.
+        memory_id = "77777777-7777-7777-7777-777777777777"
+        index.db.execute(
+            """INSERT INTO memories(id, type, source, title, body, path, created, updated)
+               VALUES (?, 'memory', 'test', 't', 'lk', 'p7.md', '2026-01-01', '2026-01-01')""",
+            (memory_id,),
+        )
+        memory = _memory(memory_id, "lk")
+        reranker = StubReranker()
+        reranker.set_score("query", memory_id, 0.5)
+        candidates = [RerankCandidate.from_memory(memory)]
+        scores = reranker.score_candidates("query", candidates, db=index.db, lock=index.lock)
+        assert scores == [pytest.approx(0.5)]
+        assert index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()[0] == 1
+
     def test_score_candidates_uses_cache_on_second_call(self, index: Index) -> None:
         memory_id = "66666666-6666-6666-6666-666666666666"
         index.db.execute(

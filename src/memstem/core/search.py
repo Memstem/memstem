@@ -401,8 +401,7 @@ class Search:
             return query
         if not self.hyde.should_expand(query):
             return query
-        with self.index._lock:
-            hypothesis = self.hyde.expand_cached(query, db=self.index.db)
+        hypothesis = self.hyde.expand_cached(query, db=self.index.db, lock=self.index.lock)
         if not hypothesis:
             return query
         return hypothesis
@@ -429,8 +428,12 @@ class Search:
         head = results[:top_n]
         tail = results[top_n:]
         candidates = [RerankCandidate.from_memory(r.memory) for r in head]
-        with self.index._lock:
-            scores = self.reranker.score_candidates(query, candidates, db=self.index.db)
+        # The lock is passed INTO score_candidates so it guards only the cache
+        # DB ops, not the per-candidate LLM calls — holding it across N reranker
+        # round-trips would stall the embed workers and other searches.
+        scores = self.reranker.score_candidates(
+            query, candidates, db=self.index.db, lock=self.index.lock
+        )
         # Pair (rerank_score, original RRF score) for stable composite
         # ordering. Higher rerank wins; ties break on RRF (which itself
         # already encodes importance boost) so two ``1.0`` reranks
@@ -468,6 +471,7 @@ class Search:
                 hits=hits,
                 client=client,
                 max_rows=max_rows,
+                lock=self.index.lock,
             )
         except Exception as exc:
             logger.warning("query_log: unexpected error during search logging: %s", exc)
