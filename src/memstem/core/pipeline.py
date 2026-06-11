@@ -180,8 +180,15 @@ class Pipeline:
             return None
 
         memory_id = existing_id_for_ref or uuid4()
-        fm = self._build_frontmatter(record, memory_id, valid_to=transient_valid_to)
-        path = self._existing_path(memory_id) or _path_for_memory(fm, record)
+        # On a re-ingest, read the existing memory once so we can both reuse its
+        # path AND preserve hygiene/lifecycle-written frontmatter the adapter
+        # can't know about (importance bumps, deprecated_by tombstones, expiry).
+        existing = self._existing_memory(memory_id) if existing_id_for_ref is not None else None
+        existing_fm = existing.frontmatter if existing is not None else None
+        fm = self._build_frontmatter(
+            record, memory_id, valid_to=transient_valid_to, existing_fm=existing_fm
+        )
+        path = (existing.path if existing is not None else None) or _path_for_memory(fm, record)
         memory = Memory(frontmatter=fm, body=record.body, path=path)
 
         self.vault.write(memory)
@@ -207,24 +214,28 @@ class Pipeline:
     def _lookup_or_assign_id(self, source: str, ref: str) -> UUID:
         return self._lookup_id_or_none(source, ref) or uuid4()
 
-    def _existing_path(self, memory_id: UUID) -> Path | None:
-        # Same race fix as `_lookup_id_or_none`: route through the
-        # lock-holding `Index.get_path` instead of `index.db.execute`.
+    def _existing_memory(self, memory_id: UUID) -> Memory | None:
+        # Route through the lock-holding `Index.get_path` (not a bare
+        # `index.db.execute`) to avoid the embed-worker connection race.
         path = self.index.get_path(str(memory_id))
         if path is None:
             return None
-        # Confirm the on-disk file still exists; fall back to a fresh path if not.
+        # Confirm the on-disk file still exists; fall back to None if not.
         try:
-            self.vault.read(path)
-            return Path(path)
+            return self.vault.read(path)
         except MemoryNotFoundError:
             return None
+
+    def _existing_path(self, memory_id: UUID) -> Path | None:
+        existing = self._existing_memory(memory_id)
+        return existing.path if existing is not None else None
 
     def _build_frontmatter(
         self,
         record: MemoryRecord,
         memory_id: UUID,
         valid_to: datetime | None = None,
+        existing_fm: Frontmatter | None = None,
     ) -> Frontmatter:
         meta = dict(record.metadata)
         type_str = meta.get("type", "memory")
@@ -245,8 +256,6 @@ class Pipeline:
             "tags": list(record.tags),
             "provenance": provenance,
         }
-        if valid_to is not None:
-            payload["valid_to"] = valid_to.isoformat()
         # Skill-typed records need scope+verification; default to permissive.
         if type_str == "skill":
             raw_fm = (
@@ -255,19 +264,33 @@ class Pipeline:
             assert isinstance(raw_fm, dict)
             payload.setdefault("scope", str(raw_fm.get("scope") or "universal"))
             payload.setdefault("verification", str(raw_fm.get("verification") or "verify by hand"))
-        # ADR 0008 Tier 1 PR-A: seed `importance` from cheap heuristics
-        # at ingest. We only set it when the record doesn't already
-        # carry one — user-set or upstream-set values are preserved.
-        # The search-side multiplier (`final = rrf * (1 + alpha *
-        # importance)`) is inert without this until pinned/bumped.
-        if "importance" not in meta:
+        # ADR 0008 Tier 1 PR-A: seed `importance` from cheap heuristics at
+        # ingest. Precedence: an explicit value on the record wins; otherwise
+        # an importance the hygiene loop already wrote to the vault file is
+        # preserved (re-ingest must not reset a retrieval bump); only a record
+        # we've never seen falls back to the heuristic seed.
+        if "importance" in meta:
+            payload["importance"] = meta["importance"]
+        elif existing_fm is not None and existing_fm.importance is not None:
+            payload["importance"] = existing_fm.importance
+        else:
             payload["importance"] = compute_seed(
                 memory_type=type_str,
                 body_length=len(record.body),
                 created=created,
             )
-        else:
-            payload["importance"] = meta["importance"]
+        # Preserve lifecycle frontmatter that hygiene/cleanup owns and adapters
+        # never emit, so a re-ingest doesn't resurrect a deprecated record or
+        # drop an expiry. A fresh transient tag (valid_to arg) still wins.
+        if valid_to is not None:
+            payload["valid_to"] = valid_to.isoformat()
+        elif existing_fm is not None and existing_fm.valid_to is not None:
+            payload["valid_to"] = existing_fm.valid_to.isoformat()
+        if existing_fm is not None:
+            if existing_fm.deprecated_by is not None:
+                payload["deprecated_by"] = str(existing_fm.deprecated_by)
+            if existing_fm.valid_from is not None:
+                payload["valid_from"] = existing_fm.valid_from.isoformat()
         # coerce(), not validate(): an adapter that emits an unrecognized type
         # (or other odd metadata) still ingests — content is never dropped.
         return coerce(payload)
