@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -36,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import memstem
+from memstem.adapters.base import Adapter
 from memstem.config import HttpServerConfig, HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.index import Index
@@ -130,6 +132,7 @@ def build_app(
     *,
     search_config: SearchConfig | None = None,
     hygiene_config: HygieneConfig | None = None,
+    adapters: Sequence[Adapter] | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app bound to the given vault/index/embedder.
 
@@ -140,6 +143,10 @@ def build_app(
     ``hygiene_config`` defaults to ``HygieneConfig()``; threading the
     loaded config keeps the ADR 0008 query-log enabled/disabled state
     consistent with the daemon-side hygiene worker.
+
+    ``adapters`` lets ``/health`` report per-adapter watcher-thread
+    liveness (B4). Omit it (standalone server, tests) and the
+    ``watchers`` block is empty — never degraded.
     """
     app = FastAPI(
         title="Memstem",
@@ -178,17 +185,22 @@ def build_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Health probe: version, embed-queue state, and hygiene snapshot.
+        """Health probe: version, embed-queue state, watcher liveness, hygiene.
 
         ``status`` is computed, not hardcoded: it reports ``"degraded"`` when
-        embeddings are failing (``embed_queue.failed > 0``) or a state read
-        errors, and ``"ok"`` otherwise. Previously this returned a literal
-        ``"ok"`` and an ``embedder`` flag that only meant "an embedder was
-        configured at startup" — so the daemon stayed green for months while
-        every embed silently failed. ``embed_queue`` exposes the
-        ``{pending, failed, total}`` the embed worker tracks so the failure is
-        visible to monitoring. (Watcher-thread liveness is not yet surfaced —
-        a separate supervision change.)
+        embeddings are failing (``embed_queue.failed > 0``), a watcher thread
+        has died, or a state read errors, and ``"ok"`` otherwise. Previously
+        this returned a literal ``"ok"`` and an ``embedder`` flag that only
+        meant "an embedder was configured at startup" — so the daemon stayed
+        green for months while every embed silently failed. ``embed_queue``
+        exposes the ``{pending, failed, total}`` the embed worker tracks so
+        the failure is visible to monitoring.
+
+        The ``watchers`` block reports each adapter's watchdog observer
+        thread (B4): ``true`` healthy, ``false`` dead (problem
+        ``watcher_dead:<name>`` — file events are silently dropped; the
+        periodic reconcile still catches the records up, on a delay),
+        ``null`` not running (startup, or nothing to watch).
 
         The ``hygiene`` block reports last-run timestamps per stage and any
         stages currently mid-cycle; ``loop_enabled`` reflects the config flag.
@@ -196,6 +208,13 @@ def build_app(
         from memstem.hygiene.state import snapshot as hygiene_snapshot
 
         problems: list[str] = []
+
+        watchers_block: dict[str, bool | None] = {}
+        for adapter in adapters or ():
+            alive = adapter.watcher_alive()
+            watchers_block[adapter.name] = alive
+            if alive is False:
+                problems.append(f"watcher_dead:{adapter.name}")
 
         hygiene_block: dict[str, Any] = {"loop_enabled": hc.loop_enabled}
         try:
@@ -222,6 +241,7 @@ def build_app(
             "vault": str(vault.root),
             "embedder": embedder is not None,
             "embed_queue": embed_block,
+            "watchers": watchers_block,
             "hygiene": hygiene_block,
         }
 
@@ -317,6 +337,7 @@ async def serve(
     *,
     search_config: SearchConfig | None = None,
     hygiene_config: HygieneConfig | None = None,
+    adapters: Sequence[Adapter] | None = None,
 ) -> None:
     """Run the HTTP server forever. Cancel-safe.
 
@@ -345,6 +366,7 @@ async def serve(
         embedder,
         search_config=search_config,
         hygiene_config=hygiene_config,
+        adapters=adapters,
     )
     server_config = uvicorn.Config(
         app=app,

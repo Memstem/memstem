@@ -324,6 +324,7 @@ class ClaudeCodeAdapter(Adapter):
                 watched_parents.add(extra.parent)
 
         observer.start()
+        self._observer = observer  # registered for watcher_alive() / health
         try:
             while True:
                 changed = await queue.get()
@@ -342,6 +343,7 @@ class ClaudeCodeAdapter(Adapter):
                     if instr is not None:
                         yield instr
         finally:
+            self._observer = None
             observer.stop()
             observer.join()
 

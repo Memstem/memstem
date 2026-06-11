@@ -605,6 +605,7 @@ class OpenClawAdapter(Adapter):
             if root.exists():
                 observer.schedule(handler, str(root), recursive=True)
         observer.start()
+        self._observer = observer  # registered for watcher_alive() / health
         try:
             while True:
                 changed = await queue.get()
@@ -613,6 +614,7 @@ class OpenClawAdapter(Adapter):
                 async for record in self._records_for_changed_path(changed, paths):
                     yield record
         finally:
+            self._observer = None
             observer.stop()
             observer.join()
 

@@ -454,6 +454,7 @@ class CodexAdapter(Adapter):
             return
 
         observer.start()
+        self._observer = observer  # registered for watcher_alive() / health
         try:
             while True:
                 changed = await queue.get()
@@ -465,6 +466,7 @@ class CodexAdapter(Adapter):
                 if record is not None:
                     yield record
         finally:
+            self._observer = None
             observer.stop()
             observer.join()
 
