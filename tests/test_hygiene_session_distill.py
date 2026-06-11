@@ -23,6 +23,7 @@ from memstem.core.storage import Memory, Vault
 from memstem.core.summarizer import NoOpSummarizer, StubSummarizer
 from memstem.hygiene.session_distill import (
     DEFAULT_DISTILLATION_IMPORTANCE,
+    DEFAULT_MAX_DISTILL_ATTEMPTS,
     DEFAULT_MAX_INPUT_CHARS,
     DISTILLATION_KIND_TAG,
     PROVENANCE_REF_PREFIX,
@@ -32,6 +33,7 @@ from memstem.hygiene.session_distill import (
     compute_distillation_plan,
     find_distilled_session_ids,
     find_session_candidates,
+    get_distill_failures,
     is_meaningful_session,
     materialize_distillation,
 )
@@ -340,14 +342,17 @@ def test_build_session_prompt_accepts_template_override() -> None:
 def test_build_session_prompt_truncates_oversized_body() -> None:
     # An oversized transcript must be capped so it can't overflow the
     # summarizer LLM's context window (the cause of the Gemma 400s).
-    big = "x" * (DEFAULT_MAX_INPUT_CHARS + 5000)
-    candidate = _make_candidate(title="big", tags=["a"], body=big)
+    head = "h" * (DEFAULT_MAX_INPUT_CHARS + 5000)
+    body = head + "TAIL_MARKER"
+    candidate = _make_candidate(title="big", tags=["a"], body=body)
     prompt = build_session_prompt(candidate, prompt_template="{title}|{tags}|{body}")
     body_out = prompt.split("|", 2)[2]
-    assert len(body_out) < len(big)
-    assert "session continues for 5,000 more chars" in body_out
-    # The head is preserved up to the cap.
-    assert body_out.startswith("x" * DEFAULT_MAX_INPUT_CHARS)
+    assert len(body_out) < len(body)
+    assert "elided from the middle" in body_out
+    # Head is preserved...
+    assert body_out.startswith("h" * 100)
+    # ...and so is the tail (the "where work ended" section the prompt requires).
+    assert body_out.endswith("TAIL_MARKER")
 
 
 def test_build_session_prompt_leaves_small_body_untouched() -> None:
@@ -359,8 +364,10 @@ def test_build_session_prompt_leaves_small_body_untouched() -> None:
 def test_build_session_prompt_respects_custom_cap() -> None:
     candidate = _make_candidate(title="c", tags=["a"], body="abcdefghij")
     prompt = build_session_prompt(candidate, prompt_template="{body}", max_input_chars=4)
-    assert prompt.startswith("abcd")
-    assert "continues for 6 more chars" in prompt
+    # cap=4 → 3 head chars + 1 tail char, middle elided.
+    assert prompt.startswith("abc")
+    assert prompt.endswith("j")
+    assert "elided from the middle" in prompt
 
 
 # ─── Materialization ──────────────────────────────────────────────
@@ -544,6 +551,39 @@ class TestApplyDistillations:
         assert result.written == 0
         assert result.skipped_no_summary == 1
         assert list(vault.walk(types=[MemoryType.DISTILLATION.value])) == []
+
+    def test_repeated_failures_excluded_after_cap(self, vault: Vault, index: Index) -> None:
+        # C4: a session whose summary keeps coming back empty is retried only
+        # up to the cap, then excluded — not re-attempted forever.
+        _write_session(vault, session_id="s1", turns=12)
+        for _ in range(DEFAULT_MAX_DISTILL_ATTEMPTS):
+            plan = compute_distillation_plan(
+                vault, NoOpSummarizer(), db=index.db, recency_days=None, lock=index.lock
+            )
+            assert len(plan.proposals) == 1  # still attempted until the cap
+            apply_distillations(vault, index, plan, lock=index.lock)
+        assert get_distill_failures(index.db).get("s1") == DEFAULT_MAX_DISTILL_ATTEMPTS
+        # Now excluded: no wasted summarizer call, and it's visible in stats.
+        plan = compute_distillation_plan(
+            vault, NoOpSummarizer(), db=index.db, recency_days=None, lock=index.lock
+        )
+        assert plan.proposals == []
+        assert plan.skipped_failed == 1
+
+    def test_successful_distill_clears_failure(self, vault: Vault, index: Index) -> None:
+        _write_session(vault, session_id="s1", turns=12)
+        plan = compute_distillation_plan(
+            vault, NoOpSummarizer(), db=index.db, recency_days=None, lock=index.lock
+        )
+        apply_distillations(vault, index, plan, lock=index.lock)
+        assert get_distill_failures(index.db).get("s1") == 1
+        stub = StubSummarizer()
+        stub.set_default("a real summary")
+        plan2 = compute_distillation_plan(
+            vault, stub, db=index.db, recency_days=None, lock=index.lock
+        )
+        apply_distillations(vault, index, plan2, lock=index.lock)
+        assert "s1" not in get_distill_failures(index.db)
 
     def test_force_overwrite_preserves_existing_memory_id(self, vault: Vault, index: Index) -> None:
         _write_session(vault, session_id="s1", turns=12)

@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-11
+
+Reliability batch from a full-codebase review — durability, concurrency, and
+failure-visibility fixes across the storage, serving, and hygiene paths.
+
+### Fixed
+
+- **`Vault.write` is atomic.** Writes go to a sibling temp file, fsync, then
+  `os.replace` (and the directory is fsynced), so a crash or OOM-kill mid-write
+  can no longer leave a truncated canonical markdown file. The vault is the
+  source of truth; the index is rebuildable, the markdown isn't.
+- **Closed the remaining `SQLITE_MISUSE` races.** The `InterfaceError: bad
+  parameter or other API misuse` class (PRs #103/#105) still had live sites that
+  read the shared connection from a daemon thread without the Index lock — the
+  pipeline and reconcile dedup-hash reads, the `hygiene_state` helpers, the
+  dedup-audit write, and the importance cursor. All now serialize through a
+  locked `Index.find_memory_id_for_body_hash` or a threaded `Index.lock`. Under
+  an embedder outage these could crash the daemon.
+- **`/search` and `/memory` no longer block the event loop.** Both routes ran
+  blocking embedder/reranker HTTP (up to the embedder's ~120s timeout) and
+  synchronous SQLite on the async loop; a hung backend froze the whole daemon
+  (ingestion, hygiene, `/health`). They now run in a worker thread.
+- **Reranking no longer holds the index lock across LLM calls.** The lock is
+  scoped to the rerank/HyDE cache DB ops only, not the per-candidate model
+  round-trips, honoring the lock's documented contract and freeing embed workers
+  and concurrent searches during a rerank.
+- **`/health` is truthful.** `status` is computed (`degraded` when
+  `embed_queue.failed > 0` or a state read errors) instead of a hardcoded
+  `"ok"`, and the response now includes the `embed_queue` `{pending, failed,
+  total}` stats. Previously the daemon reported green while every embed silently
+  failed.
+- **MCP `memstem_upsert` enqueues an embedding.** Memories saved via the MCP
+  tool were keyword-findable but never got a vector (no semantic search) until a
+  manual reindex, and bypassed Layer-1 dedup. The upsert now records the body
+  hash and enqueues the embed (the daemon shares the index DB and drains it).
+- **Re-ingest preserves hygiene-written frontmatter.** Rebuilding frontmatter
+  from the adapter record alone reset importance bumps and dropped
+  `deprecated_by`/`valid_to` on every source-file change — so importance never
+  accumulated on frequently-updated files and a re-ingest could resurrect a
+  deprecated record. The existing memory is now read once and importance,
+  `deprecated_by`, `valid_to`, and `valid_from` are carried over.
+- **Distillation remembers failures and keeps the session ending.** A session
+  whose summary kept coming back empty was retried every cycle forever and then
+  aged silently out of the recency window; failures are now tracked in
+  `hygiene_state`, a session is excluded after `DEFAULT_MAX_DISTILL_ATTEMPTS`
+  (logged, not silent), and the record clears on success. The transcript cap now
+  keeps the head **and** the tail (reserving a quarter for the tail) so the
+  prompt's mandatory "where the work ended" Status section is visible on long
+  sessions.
+
 ## [0.13.1] - 2026-06-10
 
 ### Fixed

@@ -182,15 +182,15 @@ def compute_importance_updates(
     no side effects.
     """
     moment = now or datetime.now(tz=UTC)
-    cursor = _read_cursor(index.db)
-    # Take index._lock for the query_log read — when this function is
-    # called from the in-daemon hygiene loop (ADR 0023), it runs in a
-    # worker thread sharing the connection with the embed workers, the
-    # watchers, and HTTP handlers. Without external serialization,
-    # sqlite3 raises ``InterfaceError: bad parameter or other API
-    # misuse`` on the prepared-statement cache (same root cause PR #103
-    # fixed for pipeline/search/http).
-    with index._lock:
+    # Take index.lock for BOTH the cursor read and the query_log read — when
+    # this function is called from the in-daemon hygiene loop (ADR 0023), it
+    # runs in a worker thread sharing the connection with the embed workers,
+    # the watchers, and HTTP handlers. Without external serialization, sqlite3
+    # raises ``InterfaceError: bad parameter or other API misuse`` on the
+    # prepared-statement cache (same root cause PR #103 fixed for
+    # pipeline/search/http). The cursor read was previously outside the lock.
+    with index.lock:
+        cursor = _read_cursor(index.db)
         rows = index.db.execute(
             """
             SELECT id, ts, kind, memory_id, rank
@@ -324,7 +324,7 @@ def apply_importance_updates(
 
     # Advance cursor under the same lock as the pipeline writes for
     # consistency. _write_cursor is idempotent — re-running is fine.
-    with index._lock, index.db:
+    with index.lock, index.db:
         _write_cursor(index.db, plan.last_seen_id)
     return n
 
@@ -335,7 +335,7 @@ def reset_cursor(index: Index) -> None:
     Useful for tests and for one-off recoveries; not exposed via CLI
     by default because it can amplify already-applied bumps.
     """
-    with index._lock, index.db:
+    with index.lock, index.db:
         index.db.execute("DELETE FROM hygiene_state WHERE key = ?", (CURSOR_KEY,))
 
 

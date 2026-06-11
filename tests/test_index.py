@@ -304,6 +304,19 @@ class TestEmbedState:
         index.upsert_vectors(str(memory.id), [body], [_fake_embedding(1)])
         return memory
 
+    def test_find_memory_id_for_body_hash(self, index: Index) -> None:
+        # Locked wrapper over dedup.find_existing_memory_for_hash: returns the
+        # mapped id after record_body_hash, None for an unknown hash.
+        from memstem.core.dedup import normalized_body_hash, record_body_hash
+
+        memory = _make_memory(body="hello")
+        index.upsert(memory)
+        h = normalized_body_hash("hello")
+        with index.lock, index.db:
+            record_body_hash(index.db, h, str(memory.id))
+        assert index.find_memory_id_for_body_hash(h) == str(memory.id)
+        assert index.find_memory_id_for_body_hash(normalized_body_hash("absent")) is None
+
     def test_needs_reembed_when_no_vectors(self, index: Index) -> None:
         memory = _make_memory(body="hello")
         index.upsert(memory)

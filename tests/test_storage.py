@@ -60,6 +60,16 @@ class TestRoundTrip:
         vault.write(memory)
         assert (tmp_vault / "memories/people/deep/nested.md").is_file()
 
+    def test_write_is_atomic_overwrite(self, tmp_vault: Path) -> None:
+        # Overwriting an existing memory must replace it in one step and leave
+        # no temp files behind — the canonical file is never truncated.
+        vault = Vault(tmp_vault)
+        vault.write(_make_memory("memories/test.md", body="v1"))
+        vault.write(_make_memory("memories/test.md", body="v2"))
+        assert vault.read("memories/test.md").body == "v2"
+        leftovers = [p.name for p in (tmp_vault / "memories").iterdir() if p.name != "test.md"]
+        assert leftovers == []
+
     def test_read_resolves_absolute_path(self, tmp_vault: Path) -> None:
         vault = Vault(tmp_vault)
         memory = _make_memory("memories/abs.md")

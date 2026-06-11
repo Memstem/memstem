@@ -29,6 +29,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from memstem.config import HygieneConfig, SearchConfig
+from memstem.core.dedup import normalized_body_hash, record_body_hash
 from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, coerce
 from memstem.core.index import Index
@@ -500,6 +501,17 @@ def build_server(
         memory = Memory(frontmatter=fm, body=body, path=target_path)
         res.vault.write(memory)
         res.index.upsert(memory)
+        # Index.upsert writes FTS rows but no vector and doesn't touch the embed
+        # queue, so without this an MCP-saved memory was keyword-findable but
+        # never semantically searchable until a manual `memstem reindex`. Record
+        # the body hash (Layer-1 dedup) and enqueue the embed — the daemon shares
+        # this index DB and its worker drains the queue. Enqueue is unconditional
+        # (the worker's vector upsert is idempotent and MCP upserts are rare), so
+        # we don't need the daemon's embedding-signature here.
+        mid = str(fm.id)
+        with res.index.lock, res.index.db:
+            record_body_hash(res.index.db, normalized_body_hash(body), mid)
+        res.index.enqueue_embed(mid)
         return {
             "id": str(fm.id),
             "path": str(target_path),

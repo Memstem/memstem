@@ -48,10 +48,18 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Iterable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Optional serialization lock for the shared daemon connection (Index.lock).
+# These writers run from the search/get path, which may be offloaded to a
+# worker thread, so they must serialize against the embed workers. Passing
+# nothing (CLI / dedicated connection) is a no-op. See Index.get_path.
+_Lock = AbstractContextManager[Any]
 
 
 DEFAULT_MAX_ROWS = 100_000
@@ -83,6 +91,7 @@ def log_search_results(
     client: str | None = None,
     max_rows: int = DEFAULT_MAX_ROWS,
     now: datetime | None = None,
+    lock: _Lock | None = None,
 ) -> None:
     """Append one row per hit to the ``query_log`` table.
 
@@ -100,7 +109,7 @@ def log_search_results(
     if not rows:
         return
     try:
-        with db:
+        with lock or nullcontext(), db:
             db.executemany(
                 """
                 INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
@@ -123,11 +132,12 @@ def log_get(
     client: str | None = None,
     max_rows: int = DEFAULT_MAX_ROWS,
     now: datetime | None = None,
+    lock: _Lock | None = None,
 ) -> None:
     """Record a ``memstem_get`` open. ``query``, ``rank``, and ``score`` are NULL."""
     timestamp = (now or datetime.now(tz=UTC)).isoformat()
     try:
-        with db:
+        with lock or nullcontext(), db:
             db.execute(
                 """
                 INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)

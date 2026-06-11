@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -209,6 +210,27 @@ class TestProcess:
         assert first.id == second.id
         assert first.path == second.path
         assert vault.read(second.path).body == "v2"
+
+    def test_re_ingest_preserves_hygiene_frontmatter(self, vault: Vault, index: Index) -> None:
+        # A re-ingest must not reset an importance bump the hygiene loop wrote
+        # to the vault, nor drop a deprecated_by tombstone (C5).
+        pipe = Pipeline(vault, index)
+        first = _processed(pipe, _record(body="v1"))
+        seed_importance = vault.read(first.path).frontmatter.importance
+
+        on_disk = vault.read(first.path)
+        tombstone = uuid4()
+        bumped_fm = on_disk.frontmatter.model_copy(
+            update={"importance": 0.97, "deprecated_by": tombstone}
+        )
+        vault.write(Memory(frontmatter=bumped_fm, body=on_disk.body, path=on_disk.path))
+
+        second = _processed(pipe, _record(body="v2"))
+        reloaded = vault.read(second.path)
+        assert reloaded.body == "v2"  # content still updates
+        assert reloaded.frontmatter.importance == 0.97  # not reset to the seed
+        assert seed_importance != 0.97
+        assert reloaded.frontmatter.deprecated_by == tombstone  # tombstone survives
 
     def test_distinct_refs_get_distinct_ids(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)

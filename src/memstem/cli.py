@@ -39,7 +39,7 @@ from memstem.config import (
     OpenClawLayout,
     OpenClawWorkspace,
 )
-from memstem.core.dedup import find_existing_memory_for_hash, normalized_body_hash
+from memstem.core.dedup import normalized_body_hash
 from memstem.core.embed_worker import drain_once, run_workers
 from memstem.core.embeddings import (
     Embedder,
@@ -1054,7 +1054,8 @@ def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     existing_id = index.lookup_record_mapping(record.source, record.ref)
     if existing_id is None:
         return False
-    return find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) == existing_id
+    # Locked Index method: reconcile runs on a daemon thread alongside embed workers.
+    return index.find_memory_id_for_body_hash(normalized_body_hash(record.body)) == existing_id
 
 
 async def _reconcile_all(
@@ -1967,7 +1968,10 @@ def hygiene_distill_sessions(
             return
         if apply:
             with _stage_lock(index.db, STAGE_DISTILL_SESSIONS):
-                result = apply_distillations(vault_obj, index, plan)
+                # track_failures is daemon-only: a manual CLI run shouldn't
+                # accrue retry state (the operator is here on purpose and can
+                # re-run / --force).
+                result = apply_distillations(vault_obj, index, plan, track_failures=False)
             typer.echo(
                 f"\napplied: {result.written} distillation(s) written, "
                 f"{result.skipped_no_summary} skipped (empty summary), "

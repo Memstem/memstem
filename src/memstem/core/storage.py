@@ -7,7 +7,10 @@ through it rather than touching files directly.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
@@ -18,6 +21,41 @@ from pydantic import BaseModel, ConfigDict
 from memstem.core.frontmatter import Frontmatter, MemoryType, coerce, parse, serialize
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically.
+
+    The markdown vault is the canonical store (the SQLite index is derived and
+    rebuildable), so a torn write here is unrecoverable data loss. Write to a
+    sibling temp file on the same filesystem, fsync it, then ``os.replace`` —
+    a crash leaves either the complete old file or the complete new one, never
+    a truncated one. The directory is fsynced too so the rename survives a
+    power loss.
+    """
+    directory = path.parent
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
 
 META_DIRNAME = "_meta"
 # Operator-only directories — anything whose name starts with an underscore.
@@ -92,7 +130,7 @@ class Vault:
         full.parent.mkdir(parents=True, exist_ok=True)
         meta_dict = memory.frontmatter.model_dump(mode="json", exclude_none=True)
         text = serialize(meta_dict, memory.body)
-        full.write_text(text, encoding="utf-8")
+        _atomic_write_text(full, text)
 
     def delete(self, path: Path | str) -> None:
         full = self._resolve(path)
