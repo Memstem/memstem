@@ -139,13 +139,15 @@ class HygieneLoop:
         fn: Callable[[], None],
     ) -> None:
         db = self.index.db
+        lock = self.index.lock
         try:
-            if not due_for_run(db, stage, interval_seconds):
+            if not due_for_run(db, stage, interval_seconds, lock=lock):
                 return
             if not acquire_stage_lock(
                 db,
                 stage,
                 max_age_seconds=self.cfg.stage_lock_max_age_seconds,
+                lock=lock,
             ):
                 logger.debug("hygiene[%s]: lock held by another runner", stage)
                 return
@@ -157,13 +159,13 @@ class HygieneLoop:
         logger.info("hygiene[%s]: starting cycle", stage)
         try:
             await asyncio.to_thread(fn)
-            set_last_run(db, stage, datetime.now(UTC))
+            set_last_run(db, stage, datetime.now(UTC), lock=lock)
             elapsed = (datetime.now(UTC) - started).total_seconds()
             logger.info("hygiene[%s]: cycle complete (%.1fs)", stage, elapsed)
         except asyncio.CancelledError:
             # Surface cancellation to the outer run() but release the lock first.
             try:
-                release_stage_lock(db, stage)
+                release_stage_lock(db, stage, lock=lock)
             except Exception:
                 logger.exception("hygiene[%s]: failed to release lock on cancel", stage)
             raise
@@ -171,7 +173,7 @@ class HygieneLoop:
             logger.exception("hygiene[%s]: cycle failed", stage)
         finally:
             try:
-                release_stage_lock(db, stage)
+                release_stage_lock(db, stage, lock=lock)
             except Exception:
                 logger.exception("hygiene[%s]: failed to release lock", stage)
 
@@ -382,7 +384,7 @@ class HygieneLoop:
             pairs = pairs[: self.cfg.dedup_max_per_cycle]
 
         results = judge_pairs(pairs, judge=judge)
-        n_written = write_audit_rows(self.index.db, results)
+        n_written = write_audit_rows(self.index.db, results, lock=self.index.lock)
         logger.info("hygiene[dedup_judge]: wrote %d audit row(s)", n_written)
 
 

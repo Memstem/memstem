@@ -39,7 +39,7 @@ from memstem.config import (
     OpenClawLayout,
     OpenClawWorkspace,
 )
-from memstem.core.dedup import find_existing_memory_for_hash, normalized_body_hash
+from memstem.core.dedup import normalized_body_hash
 from memstem.core.embed_worker import drain_once, run_workers
 from memstem.core.embeddings import (
     Embedder,
@@ -1054,7 +1054,8 @@ def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     existing_id = index.lookup_record_mapping(record.source, record.ref)
     if existing_id is None:
         return False
-    return find_existing_memory_for_hash(index.db, normalized_body_hash(record.body)) == existing_id
+    # Locked Index method: reconcile runs on a daemon thread alongside embed workers.
+    return index.find_memory_id_for_body_hash(normalized_body_hash(record.body)) == existing_id
 
 
 async def _reconcile_all(

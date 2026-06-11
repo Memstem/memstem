@@ -22,7 +22,6 @@ from uuid import UUID, uuid4
 
 from memstem.adapters.base import MemoryRecord
 from memstem.core.dedup import (
-    find_existing_memory_for_hash,
     increment_seen_count,
     normalized_body_hash,
     record_body_hash,
@@ -163,7 +162,9 @@ class Pipeline:
         # leave a record_map entry that would fight with the canonical one.
         body_dedup_hash = normalized_body_hash(record.body)
         existing_id_for_ref = self._lookup_id_or_none(record.source, record.ref)
-        existing_id_for_hash = find_existing_memory_for_hash(self.index.db, body_dedup_hash)
+        # Locked Index method, not a bare find_existing_memory_for_hash(index.db, ...):
+        # this runs on the asyncio thread while embed workers share the connection.
+        existing_id_for_hash = self.index.find_memory_id_for_body_hash(body_dedup_hash)
         is_cross_record_duplicate = existing_id_for_hash is not None and (
             existing_id_for_ref is None or existing_id_for_hash != str(existing_id_for_ref)
         )

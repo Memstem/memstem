@@ -190,7 +190,7 @@ def build_app(
 
         hygiene_block: dict[str, Any] = {"loop_enabled": hc.loop_enabled}
         try:
-            hygiene_block.update(hygiene_snapshot(index.db))
+            hygiene_block.update(hygiene_snapshot(index.db, lock=index.lock))
         except Exception as exc:
             # Hygiene state read shouldn't ever fail, but if it does we
             # don't want the health endpoint to 500.

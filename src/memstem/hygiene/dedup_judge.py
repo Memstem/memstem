@@ -32,10 +32,12 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from memstem.hygiene.dedup_candidates import DedupCandidatePair
 
@@ -472,11 +474,16 @@ def write_audit_rows(
     results: list[JudgeResult],
     *,
     now: datetime | None = None,
+    lock: AbstractContextManager[Any] | None = None,
 ) -> int:
     """Append ``results`` to the ``dedup_audit`` table. Returns rows written.
 
     Every row is written with ``applied = 0``. The resolution PR
     that flips ``applied = 1`` lives outside this slice.
+
+    ``lock`` (the Index connection lock) serializes this write against the embed
+    workers sharing the connection — it runs inside ``asyncio.to_thread`` from
+    the hygiene loop, so a bare write would risk the SQLITE_MISUSE race.
     """
     if not results:
         return 0
@@ -494,7 +501,7 @@ def write_audit_rows(
         for r in results
     ]
     try:
-        with db:
+        with lock or nullcontext(), db:
             db.executemany(
                 """
                 INSERT INTO dedup_audit

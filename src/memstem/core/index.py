@@ -23,6 +23,7 @@ from typing import Any, Self
 
 import sqlite_vec
 
+from memstem.core.dedup import find_existing_memory_for_hash
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
 
@@ -393,6 +394,19 @@ class Index:
         if self._db is None:
             raise RuntimeError("index is not connected; call connect() first")
         return self._db
+
+    @property
+    def lock(self) -> threading.RLock:
+        """Serialization lock guarding the shared connection.
+
+        Code that must run its own SQL against :attr:`db` from a daemon thread
+        (the hygiene loop, the importance cursor, ``/health``'s snapshot) holds
+        this while it works — bare ``index.db.execute`` from one thread while an
+        embed worker uses the same connection is the ``SQLITE_MISUSE`` race
+        documented on :meth:`get_path`. Prefer a dedicated Index method; use this
+        only where the SQL legitimately lives in another module.
+        """
+        return self._lock
 
     def connect(self) -> None:
         if self._db is not None:
@@ -884,6 +898,18 @@ class Index:
                 "SELECT path FROM memories WHERE id = ?", (str(memory_id),)
             ).fetchone()
         return row["path"] if row else None
+
+    def find_memory_id_for_body_hash(self, body_hash: str) -> str | None:
+        """Return the memory_id already storing this normalized body hash, or None.
+
+        Locked counterpart to :func:`memstem.core.dedup.find_existing_memory_for_hash`.
+        The pipeline (asyncio thread) and startup reconcile read this while embed
+        workers use the same shared connection from worker threads, so it must hold
+        the Index lock — a bare ``index.db.execute`` here is the ``SQLITE_MISUSE``
+        race documented on :meth:`get_path`.
+        """
+        with self._lock:
+            return find_existing_memory_for_hash(self.db, body_hash)
 
     def lookup_record_mapping(self, source: str, ref: str) -> str | None:
         """Return the memory_id (as ``str``) for a ``(source, ref)`` pair, or None.
