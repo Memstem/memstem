@@ -126,14 +126,25 @@ def acquire_stage_lock(
     another runner does. A lock older than ``max_age_seconds`` is
     treated as crashed — the function reclaims it and returns ``True``.
 
-    ``lock`` (the Index connection lock) is held across the check-then-set so
-    two *threads* in the daemon can't both win. NOTE: this does not coordinate
-    across *processes* (a daemon run vs. a CLI ``memstem hygiene`` run use
-    separate connections); a SQL-atomic acquire is the follow-up for that.
+    Cross-process safe: the claim itself is a single atomic SQL statement
+    per case — ``INSERT ... ON CONFLICT DO NOTHING`` when no holder was
+    observed, a compare-and-swap ``UPDATE ... WHERE value = <observed>``
+    when reclaiming a stale (or legacy-unparseable) holder — with the
+    statement's rowcount deciding the winner. Of N racing acquirers
+    (daemon loop vs. CLI ``memstem hygiene`` in separate processes, or
+    N threads), exactly one statement changes a row. ``lock`` (the Index
+    connection lock) still serializes threads *sharing one connection*
+    (the SQLITE_MISUSE race documented on ``Index.get_path``).
     """
     now = now or datetime.now(UTC)
+    key = _lock_key(stage)
     with lock or nullcontext():
-        existing = get_lock_holder(db, stage)
+        row = db.execute(
+            "SELECT value FROM hygiene_state WHERE key = ?",
+            (key,),
+        ).fetchone()
+        existing_raw: str | None = row[0] if row else None
+        existing = _parse_iso(existing_raw)
         if existing is not None:
             age = (now - existing).total_seconds()
             if age < max_age_seconds:
@@ -145,15 +156,21 @@ def acquire_stage_lock(
                 max_age_seconds,
             )
 
-        db.execute(
-            """
-            INSERT INTO hygiene_state (key, value) VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """,
-            (_lock_key(stage), now.isoformat()),
-        )
+        if existing_raw is None:
+            cursor = db.execute(
+                """
+                INSERT INTO hygiene_state (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO NOTHING
+                """,
+                (key, now.isoformat()),
+            )
+        else:
+            cursor = db.execute(
+                "UPDATE hygiene_state SET value = ? WHERE key = ? AND value = ?",
+                (now.isoformat(), key, existing_raw),
+            )
         db.commit()
-    return True
+        return cursor.rowcount == 1
 
 
 def release_stage_lock(db: sqlite3.Connection, stage: str, *, lock: _Lock | None = None) -> None:
