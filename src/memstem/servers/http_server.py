@@ -178,28 +178,50 @@ def build_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Liveness probe + version + hygiene snapshot (ADR 0023).
+        """Health probe: version, embed-queue state, and hygiene snapshot.
 
-        The ``hygiene`` block reports last-run timestamps per stage and
-        any stages currently mid-cycle. ``loop_enabled`` reflects the
-        config flag — useful for fleet monitoring to confirm customer
-        containers run with hygiene disabled while production agents
-        run with it on.
+        ``status`` is computed, not hardcoded: it reports ``"degraded"`` when
+        embeddings are failing (``embed_queue.failed > 0``) or a state read
+        errors, and ``"ok"`` otherwise. Previously this returned a literal
+        ``"ok"`` and an ``embedder`` flag that only meant "an embedder was
+        configured at startup" — so the daemon stayed green for months while
+        every embed silently failed. ``embed_queue`` exposes the
+        ``{pending, failed, total}`` the embed worker tracks so the failure is
+        visible to monitoring. (Watcher-thread liveness is not yet surfaced —
+        a separate supervision change.)
+
+        The ``hygiene`` block reports last-run timestamps per stage and any
+        stages currently mid-cycle; ``loop_enabled`` reflects the config flag.
         """
         from memstem.hygiene.state import snapshot as hygiene_snapshot
+
+        problems: list[str] = []
 
         hygiene_block: dict[str, Any] = {"loop_enabled": hc.loop_enabled}
         try:
             hygiene_block.update(hygiene_snapshot(index.db, lock=index.lock))
         except Exception as exc:
-            # Hygiene state read shouldn't ever fail, but if it does we
-            # don't want the health endpoint to 500.
+            # A state read shouldn't fail, but if it does, don't 500 — report it.
             hygiene_block["error"] = f"{type(exc).__name__}: {exc}"
+            problems.append("hygiene_state_unreadable")
+
+        embed_block: dict[str, Any] = {"configured": embedder is not None}
+        try:
+            stats = index.queue_stats()
+            embed_block.update(stats)
+            if stats.get("failed", 0) > 0:
+                problems.append("embed_failures")
+        except Exception as exc:
+            embed_block["error"] = f"{type(exc).__name__}: {exc}"
+            problems.append("embed_queue_unreadable")
+
         return {
-            "status": "ok",
+            "status": "degraded" if problems else "ok",
+            "problems": problems,
             "version": memstem.__version__,
             "vault": str(vault.root),
             "embedder": embedder is not None,
+            "embed_queue": embed_block,
             "hygiene": hygiene_block,
         }
 

@@ -85,6 +85,31 @@ class TestHealth:
             assert stage_ts is None
         assert body["hygiene"]["running"] == []
 
+    def test_embed_queue_block_and_ok_when_clean(self, client: TestClient) -> None:
+        body = client.get("/health").json()
+        assert body["status"] == "ok"
+        assert body["problems"] == []
+        assert body["embed_queue"]["failed"] == 0
+        assert "pending" in body["embed_queue"]
+
+    def test_degraded_on_embed_failures(self, client: TestClient, index: Index) -> None:
+        # A permanently-failed embed must flip /health to degraded — the signal
+        # that was invisible when status was hardcoded "ok".
+        mem_id = "11111111-1111-1111-1111-111111111111"
+        index.db.execute(
+            """INSERT INTO memories(id, type, source, title, body, path, created, updated)
+               VALUES (?, 'memory', 'test', 't', 'b', 'h.md', '2026-01-01', '2026-01-01')""",
+            (mem_id,),
+        )
+        index.db.commit()
+        index.enqueue_embed(mem_id)
+        for _ in range(6):
+            index.mark_embed_error(mem_id, "boom")
+        body = client.get("/health").json()
+        assert body["status"] == "degraded"
+        assert "embed_failures" in body["problems"]
+        assert body["embed_queue"]["failed"] == 1
+
     def test_hygiene_block_reflects_recorded_run(self, client: TestClient, index: Index) -> None:
         from datetime import UTC, datetime
 
