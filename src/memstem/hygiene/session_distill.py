@@ -40,7 +40,9 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Iterable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,6 +55,9 @@ from memstem.core.storage import Memory, Vault
 from memstem.core.summarizer import Summarizer
 
 logger = logging.getLogger(__name__)
+
+# Optional serialization lock for the shared daemon connection (Index.lock).
+_Lock = AbstractContextManager[Any]
 
 
 DEFAULT_MAX_INPUT_CHARS = 32000
@@ -73,14 +78,22 @@ there because project prompts aggregate several sources)."""
 def _truncate_with_marker(text: str, max_chars: int) -> str:
     """Trim ``text`` to ``max_chars`` with a continuation marker.
 
-    Mirrors the helper in :mod:`memstem.hygiene.project_records` and the body
-    cap in :mod:`memstem.core.rerank` — keep the head (where a session
-    establishes its context) and tell the LLM the input was truncated."""
+    Keep the head (where a session establishes its task/context) AND the tail
+    (where the work ended and the next step lives). The distill prompt's
+    mandatory ``## Status`` section asks for "where the work ended / the next
+    concrete step"; a head-only slice hid exactly that on long sessions and
+    forced the model to invent it. Reserve a quarter of the budget for the
+    tail and elide the middle."""
     if len(text) <= max_chars:
         return text
-    head = text[:max_chars]
     remaining = len(text) - max_chars
-    return f"{head}\n\n[…session continues for {remaining:,} more chars]"
+    tail_chars = max_chars // 4
+    head_chars = max_chars - tail_chars
+    head = text[:head_chars]
+    tail = text[-tail_chars:]
+    return (
+        f"{head}\n\n[…{remaining:,} chars elided from the middle; session tail follows…]\n\n{tail}"
+    )
 
 
 DEFAULT_MIN_TURNS = 10
@@ -97,6 +110,76 @@ content to summarize."""
 DEFAULT_RECENCY_DAYS = 30
 """Default recency window for the candidate scan. ``--backfill``
 disables this filter (every session is a candidate)."""
+
+DEFAULT_MAX_DISTILL_ATTEMPTS = 3
+"""How many times the daemon retries a session whose summarizer call keeps
+returning empty before it stops trying. Without this cap a session that
+permanently fails (oversized transcript that still 400s, content the model
+refuses) was re-attempted every cycle forever, starving the per-cycle cap and
+then aging silently out of the recency window. Failures are tracked in
+``hygiene_state`` (non-canonical, like the embed queue) so the count survives
+restarts and is visible, not silent."""
+
+_DISTILL_FAIL_PREFIX = "distill_fail:"
+
+
+def _distill_fail_key(session_id: str) -> str:
+    return f"{_DISTILL_FAIL_PREFIX}{session_id}"
+
+
+def get_distill_failures(db: sqlite3.Connection, *, lock: _Lock | None = None) -> dict[str, int]:
+    """Return ``{session_id: attempt_count}`` for sessions that have failed to
+    distill at least once."""
+    with lock or nullcontext():
+        rows = db.execute(
+            "SELECT key, value FROM hygiene_state WHERE key LIKE ?",
+            (f"{_DISTILL_FAIL_PREFIX}%",),
+        ).fetchall()
+    failures: dict[str, int] = {}
+    for key, value in rows:
+        session_id = key[len(_DISTILL_FAIL_PREFIX) :]
+        try:
+            failures[session_id] = int(value)
+        except (TypeError, ValueError):
+            failures[session_id] = 0
+    return failures
+
+
+def record_distill_failure(
+    db: sqlite3.Connection, session_id: str, *, lock: _Lock | None = None
+) -> int:
+    """Increment and return the failed-attempt count for ``session_id``."""
+    with lock or nullcontext():
+        row = db.execute(
+            "SELECT value FROM hygiene_state WHERE key = ?",
+            (_distill_fail_key(session_id),),
+        ).fetchone()
+        try:
+            attempts = int(row[0]) + 1 if row else 1
+        except (TypeError, ValueError):
+            attempts = 1
+        db.execute(
+            """
+            INSERT INTO hygiene_state (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (_distill_fail_key(session_id), str(attempts)),
+        )
+        db.commit()
+    return attempts
+
+
+def clear_distill_failure(
+    db: sqlite3.Connection, session_id: str, *, lock: _Lock | None = None
+) -> None:
+    """Drop any failure record for ``session_id`` (it distilled successfully)."""
+    with lock or nullcontext():
+        db.execute(
+            "DELETE FROM hygiene_state WHERE key = ?",
+            (_distill_fail_key(session_id),),
+        )
+        db.commit()
+
 
 DEFAULT_DISTILLATION_IMPORTANCE = 0.8
 """ADR 0020 §Search ranking: distillation seeds get this importance
@@ -170,6 +253,7 @@ class DistillationPlan:
     total_sessions_scanned: int = 0
     skipped_already_distilled: int = 0
     skipped_too_short: int = 0
+    skipped_failed: int = 0
 
 
 @dataclass
@@ -317,6 +401,7 @@ def find_session_candidates(
     min_words: int = DEFAULT_MIN_WORDS,
     recency_days: int | None = DEFAULT_RECENCY_DAYS,
     include_already_distilled: bool = False,
+    excluded_session_ids: set[str] | None = None,
     now: datetime | None = None,
 ) -> tuple[list[SessionCandidate], dict[str, int]]:
     """Walk vault sessions, filter, and return candidates + skip counts.
@@ -326,21 +411,29 @@ def find_session_candidates(
     - ``skipped_already_distilled``: sessions filtered by the
       already-covered set (when ``include_already_distilled=False``).
     - ``skipped_too_short``: sessions failing the turn/word threshold.
+    - ``skipped_failed``: sessions filtered by ``excluded_session_ids``
+      (permanently-failed sessions the daemon has given up retrying).
 
     ``recency_days=None`` disables the recency filter (the
     ``--backfill`` mode); pass an integer N to limit candidates to
     sessions whose ``updated`` is within the last N days.
+
+    ``excluded_session_ids`` are skipped outright — the daemon passes the
+    sessions that have exceeded the distill-retry cap so they stop consuming
+    a summarizer call (and the per-cycle budget) every tick.
     """
     cutoff: datetime | None = None
     if recency_days is not None:
         cutoff = (now or datetime.now(tz=UTC)) - timedelta(days=recency_days)
 
     covered = set() if include_already_distilled else find_distilled_session_ids(vault)
+    excluded = excluded_session_ids or set()
 
     candidates: list[SessionCandidate] = []
     total = 0
     skipped_already = 0
     skipped_short = 0
+    skipped_failed = 0
     for memory in vault.walk(types=[MemoryType.SESSION.value]):
         total += 1
         # Cheap recency filter first — the threshold check parses the
@@ -351,6 +444,9 @@ def find_session_candidates(
         if session_id in covered:
             skipped_already += 1
             continue
+        if session_id in excluded:
+            skipped_failed += 1
+            continue
         if not is_meaningful_session(memory, min_turns=min_turns, min_words=min_words):
             skipped_short += 1
             continue
@@ -360,6 +456,7 @@ def find_session_candidates(
         "total_sessions_scanned": total,
         "skipped_already_distilled": skipped_already,
         "skipped_too_short": skipped_short,
+        "skipped_failed": skipped_failed,
     }
     return candidates, stats
 
@@ -489,6 +586,8 @@ def compute_distillation_plan(
     prompt_template: str | None = None,
     now: datetime | None = None,
     max_candidates: int | None = None,
+    max_attempts: int = DEFAULT_MAX_DISTILL_ATTEMPTS,
+    lock: _Lock | None = None,
 ) -> DistillationPlan:
     """Build the full distillation plan against the configured summarizer.
 
@@ -509,12 +608,24 @@ def compute_distillation_plan(
     Candidates are processed in the order :func:`find_session_candidates`
     returns them.
     """
+    # Sessions that have already failed `max_attempts` times are excluded so we
+    # don't burn a summarizer call on them every cycle. Only consulted when a
+    # real connection is supplied (the daemon); CLI one-shots pass db=None.
+    excluded: set[str] = set()
+    if isinstance(db, sqlite3.Connection) and not force:
+        excluded = {
+            session_id
+            for session_id, attempts in get_distill_failures(db, lock=lock).items()
+            if attempts >= max_attempts
+        }
+
     candidates, stats = find_session_candidates(
         vault,
         min_turns=min_turns,
         min_words=min_words,
         recency_days=recency_days,
         include_already_distilled=force,
+        excluded_session_ids=excluded,
         now=now,
     )
 
@@ -545,6 +656,7 @@ def compute_distillation_plan(
         total_sessions_scanned=stats["total_sessions_scanned"],
         skipped_already_distilled=stats["skipped_already_distilled"],
         skipped_too_short=stats["skipped_too_short"],
+        skipped_failed=stats["skipped_failed"],
     )
 
 
@@ -568,22 +680,37 @@ def apply_distillations(
     plan: DistillationPlan,
     *,
     now: datetime | None = None,
+    lock: _Lock | None = None,
+    track_failures: bool = True,
 ) -> ApplyResult:
     """Persist every non-skipped proposal as a vault Memory + index row.
 
-    Skipped proposals (``summary`` empty) are counted but not
-    written. Per-proposal failures are caught and reported in
-    ``apply_errors`` so a single bad source session doesn't abort the
-    whole sweep.
+    Skipped proposals (``summary`` empty) are counted but not written; when
+    ``track_failures`` is set, each one bumps a per-session failed-attempt
+    counter so a permanently-failing session is eventually excluded from future
+    cycles (and the failure is visible) rather than retried forever. A
+    successful write clears any prior failure record for that session.
+
+    Per-proposal apply failures are caught and reported in ``apply_errors`` so a
+    single bad source session doesn't abort the whole sweep.
 
     Returns an :class:`ApplyResult` summarizing the apply outcome.
     """
     result = ApplyResult()
     for proposal in plan.proposals:
+        candidate = proposal.candidate
         if not proposal.summary:
             result.skipped_no_summary += 1
+            if track_failures:
+                attempts = record_distill_failure(index.db, candidate.session_id, lock=lock)
+                logger.warning(
+                    "hygiene[distill_sessions]: session %s produced no summary (attempt %d/%d)%s",
+                    candidate.session_id,
+                    attempts,
+                    DEFAULT_MAX_DISTILL_ATTEMPTS,
+                    " — will stop retrying" if attempts >= DEFAULT_MAX_DISTILL_ATTEMPTS else "",
+                )
             continue
-        candidate = proposal.candidate
         try:
             existing = _existing_distillation_for_session(vault, candidate.session_id)
             memory_id = str(existing.id) if existing is not None else None
@@ -604,6 +731,8 @@ def apply_distillations(
             # core/pipeline.py) does the same enqueue after upsert; we
             # mirror it here for hygiene-worker writes.
             index.enqueue_embed(str(memory.id))
+            if track_failures:
+                clear_distill_failure(index.db, candidate.session_id, lock=lock)
             result.written += 1
         except Exception as exc:
             err = f"distillation apply failed for session {candidate.session_id}: {exc}"
@@ -628,6 +757,7 @@ def format_plan_summary(plan: DistillationPlan) -> str:
         f"  scanned: {plan.total_sessions_scanned} session record(s)",
         f"  skipped (already distilled): {plan.skipped_already_distilled}",
         f"  skipped (too short): {plan.skipped_too_short}",
+        f"  skipped (retry cap reached): {plan.skipped_failed}",
         f"  proposed: {summarized}",
         f"  skipped (summarizer empty): {skipped_empty}",
     ]
@@ -653,6 +783,7 @@ def format_proposals(plan: DistillationPlan, *, max_preview: int = 80) -> Iterab
 
 __all__ = [
     "DEFAULT_DISTILLATION_IMPORTANCE",
+    "DEFAULT_MAX_DISTILL_ATTEMPTS",
     "DEFAULT_MIN_TURNS",
     "DEFAULT_MIN_WORDS",
     "DEFAULT_RECENCY_DAYS",
@@ -664,11 +795,14 @@ __all__ = [
     "SessionCandidate",
     "apply_distillations",
     "build_session_prompt",
+    "clear_distill_failure",
     "compute_distillation_plan",
     "find_distilled_session_ids",
     "find_session_candidates",
     "format_plan_summary",
     "format_proposals",
+    "get_distill_failures",
     "is_meaningful_session",
     "materialize_distillation",
+    "record_distill_failure",
 ]

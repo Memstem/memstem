@@ -1968,7 +1968,10 @@ def hygiene_distill_sessions(
             return
         if apply:
             with _stage_lock(index.db, STAGE_DISTILL_SESSIONS):
-                result = apply_distillations(vault_obj, index, plan)
+                # track_failures is daemon-only: a manual CLI run shouldn't
+                # accrue retry state (the operator is here on purpose and can
+                # re-run / --force).
+                result = apply_distillations(vault_obj, index, plan, track_failures=False)
             typer.echo(
                 f"\napplied: {result.written} distillation(s) written, "
                 f"{result.skipped_no_summary} skipped (empty summary), "
