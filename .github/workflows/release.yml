@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Manual publishing escape hatch — used for the first PyPI upload (the
+  # version was already tagged before the pypi job existed) and for re-runs
+  # after a transient publish failure. Skips the GitHub-release job.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,6 +15,7 @@ permissions:
 jobs:
   release:
     name: Publish GitHub release from CHANGELOG
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,3 +51,35 @@ jobs:
             --title "$RELEASE_TITLE" \
             --notes-file release-notes.md \
             --verify-tag
+
+  pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # OIDC for PyPI Trusted Publishing — no stored token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches pyproject version
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PY_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$TAG_VERSION" != "$PY_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PY_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --quiet build
+          python -m build
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
