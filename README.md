@@ -17,7 +17,7 @@ Unified memory and skill infrastructure for AI agents. One canonical knowledge s
 
 Memstem is a **standalone memory service** that acts as the single source of truth for memories and skills shared across multiple AI environments. Unlike traditional memory layers that you push to from each AI, Memstem **pulls** from the filesystem of each connected AI — so it's immune to upgrade churn in any of them.
 
-Connect Claude Code, OpenClaw, Codex, Cursor, Aider, Hermes — Memstem watches each system's session and memory files, ingests new content within seconds, and exposes one unified search API via MCP.
+Connect Claude Code, OpenClaw, and Codex today — adapters for Cursor, Aider, and more are on the [roadmap](./ROADMAP.md). Memstem watches each system's session and memory files, ingests new content within seconds, and exposes one unified search API via MCP.
 
 ## Why
 
@@ -54,7 +54,8 @@ Shipping:
   markdown-canonical vault. Index is rebuildable from the files.
 - **Five MCP tools** (`memstem_search`, `_get`, `_list_skills`, `_get_skill`,
   `_upsert`) plus a co-hosted local HTTP API on `127.0.0.1:7821` for
-  first-party clients (CLI tools, future editor extensions).
+  first-party clients (CLI tools, future editor extensions), with optional
+  bearer-token auth for non-loopback deployments.
 - **Pluggable embedders** — Ollama (local default), OpenAI, Gemini, Voyage, or
   any OpenAI-compatible server — selectable via `_meta/config.yaml`. For a
   **self-hosted, no-cloud** setup the recommended embedder is
