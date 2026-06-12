@@ -5,6 +5,29 @@ All notable changes to Memstem will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **README install instructions actually work now.** The quickstart pointed at
+  `https://memstem.com/install.sh` (domain not yet live) and the manual path at
+  `pipx install memstem` (not yet published to PyPI) — both replaced with the
+  raw.githubusercontent.com installer URL and a from-source
+  `pipx install git+…` install. `scripts/install.sh` header and macOS re-run
+  hints updated to match.
+- README Status section was stuck at v0.11.0; refreshed for the 0.13–0.16
+  releases, stale `memstem doctor` sample output updated, and per-feature
+  "(new in 0.X)" tags dropped in favor of the changelog
+- ROADMAP: Phase 0 no longer labeled "(current)"; Codex adapter marked shipped
+  (0.11.0)
+
+### Changed
+
+- Moved the installer flag table, API-key notes, macOS instructions, and
+  `connect-clients` wiring details from README to the new
+  [docs/install.md](./docs/install.md); README quickstart slimmed accordingly
+- README now asks for a star once, without the star-history chart
+
 ## [0.16.1] - 2026-06-12
 
 Dedup-judge correctness: bodies in the prompt, recency-oriented pairs,

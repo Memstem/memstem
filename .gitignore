@@ -77,3 +77,6 @@ logs/
 # Local secrets
 .env.local
 .env.*.local
+
+# Local working docs (session handoffs — never published)
+HANDOFF.md

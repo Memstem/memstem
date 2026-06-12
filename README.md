@@ -10,7 +10,7 @@ Unified memory and skill infrastructure for AI agents. One canonical knowledge s
 
 ![Memstem — one memory layer for every AI agent](./docs/images/hero.png)
 
-**If memstem helps you, please ⭐ [the repo](https://github.com/Memstem/memstem) — stars are how I gauge whether to keep building this in the open.**
+**If memstem helps you, please ⭐ [the repo](https://github.com/Memstem/memstem)** — there's no telemetry here, so stars are the only signal I have for whether to keep building this in the open.
 
 ## What it is
 
@@ -38,15 +38,16 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.11.0 — in-daemon hygiene loop + OpenAI-compatible LLM backends.**
-Live on the maintainer's box; ingesting from multi-agent OpenClaw,
-Claude Code, and Codex in real time. 0.11.0 moves the hygiene stages
-into the daemon so distillation, dedup judging, importance scoring, and
-project records run automatically, and lets the dedup judge + summarizer
-talk to any OpenAI-compatible endpoint (including a self-hosted vLLM box)
-rather than only OpenAI. 0.10.0 hardened the embed worker against
-unstable embedder providers and shipped the `hygiene verify` operator
-report plus an explicit per-type ranking policy. Shipping:
+**v0.16.1 — actively developed, running in production.**
+Live on the maintainer's infrastructure, ingesting from multi-agent
+OpenClaw, Claude Code, and Codex in real time. The 0.13 line added the
+recall-quality stack (cross-encoder reranking + MMR, multimodal
+embeddings, a validated fully self-hosted Qwen3 recall setup); 0.14
+through 0.16 were three reliability batches from a full-codebase
+review — durability, concurrency, failure visibility, embed-queue
+claim/lease, and dedup-judge correctness. See
+[CHANGELOG.md](./CHANGELOG.md) for the release-by-release history.
+Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
   markdown-canonical vault. Index is rebuildable from the files.
@@ -59,13 +60,13 @@ report plus an explicit per-type ranking policy. Shipping:
   **Qwen3-Embedding-8B** (4096-dim, instruction-tuned); see
   [Embedding provider](#embedding-provider--pick-one). Always-on embed queue
   with retry/backoff and idle-timeout self-exit.
-- **Cross-encoder reranking + MMR (new in 0.13.0)** — opt-in recall-quality
+- **Cross-encoder reranking + MMR** — opt-in recall-quality
   pass that re-orders hybrid-search candidates with an LLM reranker and
   diversifies near-duplicates with MMR, wired into config, the daemon, MCP, and
   CLI (`--rerank`, `--mmr`, `--rerank-top-n`). Off by default; pair it with a
   self-hosted Gemma/Qwen reranker for zero per-query cloud cost. See
   [Search & reranking](#search--reranking-recall-quality).
-- **Derived records (new in 0.9.0)** — `memstem hygiene
+- **Derived records** — `memstem hygiene
   distill-sessions` produces `type: distillation` companion records
   for meaningful sessions, and `memstem hygiene project-records`
   aggregates per-project-tag sessions into `type: project` rollups.
@@ -74,7 +75,7 @@ report plus an explicit per-type ranking policy. Shipping:
   did X" queries that today fail to surface project work that
   exists in the vault. See
   [docs/distillation-verification.md](./docs/distillation-verification.md).
-- **In-daemon hygiene loop (new in 0.11.0)** — `memstem daemon` runs
+- **In-daemon hygiene loop** — `memstem daemon` runs
   the four hygiene stages (distill-sessions, dedup-judge, importance,
   project-records) as background tasks alongside the watchers and embed
   workers, each on its own configurable interval with per-stage locking
@@ -82,14 +83,14 @@ report plus an explicit per-type ranking policy. Shipping:
   timestamps for fleet monitoring; set `loop_enabled: false` on
   multi-tenant hosts where the customer hasn't authorized LLM spend.
   See [ADR 0023](./docs/decisions/0023-in-daemon-hygiene-loop.md).
-- **OpenAI-compatible LLM backends for hygiene (new in 0.11.0)** — the
+- **OpenAI-compatible LLM backends for hygiene** — the
   dedup judge and summarizer speak the OpenAI chat-completions protocol,
   so dedup judging, distillation, and project-records can run against a
   self-hosted vLLM / TGI / LM Studio / LiteLLM endpoint via a `base_url`
   override — no per-customer cloud billing. The audit log and provenance
   honestly label which service produced each verdict (`openai:gpt-…` for
   OpenAI Inc., `openai-compat:gemma-…` for a self-hosted endpoint).
-- **Codex adapter (new in 0.11.0)** — third filesystem adapter (after
+- **Codex adapter** — third filesystem adapter (after
   Claude Code and OpenClaw), watching `~/.codex/sessions|skills|memories`;
   enabled by default and no-ops silently on hosts without Codex. Codex
   sessions group by project tag alongside Claude Code's. See
@@ -135,8 +136,7 @@ Cross-platform CI runs Linux (gating) plus macOS and Windows
 (experimental, `continue-on-error: true` — sqlite-vec needs
 `enable_load_extension`, which `actions/setup-python`'s macOS build
 doesn't ship; native Windows is WSL2-only by design for v0.x).
-1325 tests passing. See [CHANGELOG.md](./CHANGELOG.md) for the
-release-by-release history and [ROADMAP.md](./ROADMAP.md) for what's
+1,400+ tests passing. See [ROADMAP.md](./ROADMAP.md) for what's
 next.
 
 ## Quickstart
@@ -144,7 +144,7 @@ next.
 The full one-liner. Installs everything (memstem, Ollama, embedding model), scaffolds the vault, imports your existing Claude Code + OpenClaw memory, wires Memstem into Claude Code, and starts the daemon under PM2:
 
 ```bash
-curl -fsSL https://memstem.com/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh | bash -s -- \
   --yes --connect-clients --migrate --migrate-no-embed --start-daemon
 ```
 
@@ -152,7 +152,7 @@ The default uses **Ollama** (local, no API key, no network call). To install wit
 
 ```bash
 # OpenAI (text-embedding-3-large at 3072 dimensions)
-curl -fsSL https://memstem.com/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh | bash -s -- \
   --yes --embedder openai --openai-key "$OPENAI_API_KEY" \
   --connect-clients --migrate --start-daemon
 
@@ -161,7 +161,7 @@ curl -fsSL https://memstem.com/install.sh | bash -s -- \
 #   --embedder gemini --gemini-key "$GEMINI_API_KEY"
 ```
 
-Picking `--embedder openai|gemini|voyage` implies `--no-ollama` (cloud doesn't need a local daemon). The key gets stored via `memstem auth set <provider>`, so cron, PM2, and fresh shells all pick it up afterward without per-shell exports. Keys can also come from `MEMSTEM_OPENAI_KEY` / `MEMSTEM_GEMINI_KEY` / `MEMSTEM_VOYAGE_KEY` env vars, falling back to the standard `OPENAI_API_KEY` / `GEMINI_API_KEY` / `VOYAGE_API_KEY` names when the `MEMSTEM_*` variable is unset (helpful for unattended installs that don't want the key on the command line).
+Picking `--embedder openai|gemini|voyage` implies `--no-ollama` (cloud doesn't need a local daemon). The key gets stored via `memstem auth set <provider>`, so cron, PM2, and fresh shells all pick it up afterward without per-shell exports.
 
 The `--migrate-no-embed` flag is the practical default on a CPU-only Ollama box: it imports records to vault + FTS5 in minutes instead of hours. After it returns:
 
@@ -173,28 +173,10 @@ memstem doctor                                       # `Embed queue: N pending` 
 
 Embedding is **always queued** rather than inline (see ADR 0009): the migrate finishes in seconds and the daemon's embed worker drains the queue at its own pace. On CPU-only Ollama that means semantic search becomes "good" over an hour or two; on the API providers above it's done in seconds.
 
-Each flag is opt-in so you can dial back the scope:
-
-| Flag | What it does |
-|---|---|
-| `--yes` | Unattended; passes `-y` to `memstem init` so the wizard doesn't prompt. |
-| `--no-ollama` | Skip the Ollama install (already have it). Implied by `--embedder openai|gemini|voyage`. |
-| `--no-model` | Skip the `nomic-embed-text` pull. |
-| `--vault PATH` | Vault location (default `~/memstem-vault`). |
-| `--from-git` | Install from `github.com/Memstem/memstem` instead of PyPI. |
-| `--embedder NAME` | Embedder provider: `ollama` (default), `openai`, `gemini`, `voyage`. |
-| `--openai-key KEY` | Store an OpenAI key via `memstem auth set openai`. Also reads `MEMSTEM_OPENAI_KEY`, then `OPENAI_API_KEY`. |
-| `--gemini-key KEY` | Same, for Gemini (env: `MEMSTEM_GEMINI_KEY`). |
-| `--voyage-key KEY` | Same, for Voyage (env: `MEMSTEM_VOYAGE_KEY`). |
-| `--connect-clients` | Run `memstem connect-clients` — wires Claude Code (`~/.claude.json` + CLAUDE.md), OpenClaw, and Codex (`~/.codex/config.toml` + AGENTS.md), plus legacy-settings cleanup. Prints a dry-run diff before applying. |
-| `--remove-flipclaw` | With `--connect-clients`, also strip the legacy `claude-code-bridge.py` SessionEnd hook. |
-| `--migrate` | Run `memstem migrate --apply` to import historical memory. |
-| `--start-daemon` | `pm2 start memstem` so ingestion survives reboots. |
-
-Manual install if you'd rather not pipe a script:
+Manual install if you'd rather not pipe a script (Memstem isn't on PyPI yet — install from source):
 
 ```bash
-pipx install memstem                         # or: pip install memstem
+pipx install git+https://github.com/Memstem/memstem.git
 ollama pull nomic-embed-text                 # 768-dim local embedder
 memstem init ~/memstem-vault                 # interactive wizard
 memstem migrate --apply                      # one-shot history import
@@ -203,33 +185,9 @@ memstem doctor                               # verify
 memstem daemon                               # ingest + watch
 ```
 
-`memstem init` runs an interactive setup wizard that finds OpenClaw agent workspaces (any directory under `$HOME` with an `openclaw.json`), shared rules files (`HARD-RULES.md`), and Claude Code's session root, then writes `~/memstem-vault/_meta/config.yaml`. Pass `-y` to auto-include every candidate with content.
+**On macOS,** use a Homebrew or pyenv Python — the system Python ships a SQLite that can't load the `sqlite-vec` extension.
 
-### macOS install
-
-**Use Homebrew or pyenv Python — not the system Python.** Memstem needs `sqlite-vec`, which loads as a SQLite extension at runtime. macOS's system Python (`/usr/bin/python3`) ships with a SQLite that has extension loading **disabled at compile time**, so it can't load `sqlite-vec`. The `install.sh` script detects this up front and bails with a clear error rather than letting it crash later.
-
-The fix is one of:
-
-```bash
-# Recommended — Homebrew
-brew install python@3.12
-hash -r   # let your shell pick up the Homebrew python3
-curl -fsSL https://memstem.com/install.sh | bash    # re-run
-```
-
-```bash
-# Or — pyenv
-pyenv install 3.12.5
-pyenv global 3.12.5
-curl -fsSL https://memstem.com/install.sh | bash    # re-run
-```
-
-Both build SQLite with extension support enabled. Once you're on a Homebrew or pyenv Python, every other step (Quickstart, manual install, `memstem doctor`) works the same as on Linux.
-
-Note: macOS CI is currently `continue-on-error: true` — the GitHub Actions `setup-python` build hits the same system-Python issue. We track full macOS CI green as a follow-up; the user-facing install path on a real Mac is reliable today via Homebrew or pyenv.
-
-`memstem connect-clients` is the cutover wiring step. It (a) adds an `mcpServers.memstem` entry to `~/.claude.json` so Claude Code sees Memstem MCP, (b) registers `mcp.servers.memstem` in each configured OpenClaw agent's `openclaw.json` so OpenClaw agents see it too, (c) wires Codex CLI via an idempotent `[mcp_servers.memstem]` table in `~/.codex/config.toml` plus the same directive block in `~/.codex/AGENTS.md` (skipped when `~/.codex/` is absent; toggle with `--codex` / `--no-codex`), (d) strips any stale entry from the legacy `~/.claude/settings.json`, and (e) inserts a versioned `<!-- memstem:directive v1 -->` block into each CLAUDE.md so agents know to query Memstem for retrieval-style questions. Default mode writes `.bak` next to each edited file; `--dry-run` previews diffs without writing. Re-running is safe.
+The full install reference — every installer flag, API-key handling, the macOS detail, and exactly what `connect-clients` edits — is in [docs/install.md](./docs/install.md).
 
 ## Querying from an agent
 
@@ -315,7 +273,7 @@ API keys are read from environment variables named in `api_key_env` — they nev
 ### Search & reranking (recall quality)
 
 Hybrid search (BM25 + vector, merged with RRF) works out of the box. For higher
-precision, enable the **reranker + MMR** pass (new in 0.13.0): it re-orders the
+precision, enable the **reranker + MMR** pass: it re-orders the
 top candidates with an LLM and diversifies near-duplicates. Off by default —
 opt in per vault:
 
@@ -362,9 +320,9 @@ adapters:
 
 Run `memstem doctor` after edits to verify every configured target exists and the embedder is reachable.
 
-## Distillation + project records (new in 0.9.0)
+## Distillation + project records
 
-Two new hygiene commands turn raw session transcripts and per-project
+Two hygiene commands turn raw session transcripts and per-project
 session sets into retrieval-shaped derived records. Both are
 **CLI-driven, idempotent, and opt-in** — NoOp is the install-time
 default, you opt into a real summarizer explicitly.
@@ -412,7 +370,7 @@ $ memstem doctor
 Memstem doctor (vault=/home/ubuntu/memstem-vault):
 
   ✓ Python 3.11
-  ✓ memstem 0.11.0
+  ✓ memstem 0.16.1
   ✓ Vault: /home/ubuntu/memstem-vault
   ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly
@@ -472,16 +430,17 @@ in [docs/operations.md — Post-cleanup operator playbook](./docs/operations.md#
 
 ## Platform support
 
-| OS | v0.1 support | Notes |
+| OS | Support | Notes |
 |---|---|---|
 | Linux | ✅ Tested | Primary development platform. CI gates merges on Python 3.11 + 3.12. |
 | macOS | ⚠️ Supported, not CI-gated | `watchdog` uses FSEvents and the daemon runs. The CI runner's `actions/setup-python` ships a Python without `enable_load_extension`, which `sqlite-vec` needs, so macOS jobs run as `continue-on-error: true` for visibility. A user-installed Python (e.g. `brew install python@3.11`) has extension support enabled and works. |
-| Windows | ❌ Use WSL2 | Native Windows runs in CI for visibility (`continue-on-error: true`) but is not supported. Run Memstem inside WSL2 for v0.1; native PowerShell support is on the v0.2+ roadmap. |
+| Windows | ❌ Use WSL2 | Native Windows runs in CI for visibility (`continue-on-error: true`) but is not supported. Run Memstem inside WSL2; native PowerShell support is on the roadmap. |
 
 ## Documentation
 
 - [Architecture](./ARCHITECTURE.md) — system design and rationale
 - [Roadmap](./ROADMAP.md) — release plan (Phases 1–5)
+- [Install guide](./docs/install.md) — installer flags, API keys, macOS notes, `connect-clients` details
 - [Operations](./docs/operations.md) — production smoke test, post-cleanup operator playbook, ranking-policy reference
 - [Frontmatter spec](./docs/frontmatter-spec.md) — the markdown schema
 - [MCP API](./docs/mcp-api.md) — tool definitions
@@ -489,14 +448,6 @@ in [docs/operations.md — Post-cleanup operator playbook](./docs/operations.md#
 - [Distillation + project records — operator playbook](./docs/distillation-verification.md) — how to run the new derived-record commands and verify quality
 - [Recall-quality model recommendations](./docs/recall-models.md) — picking the right LLM for rerank / HyDE / dedup / summarization with cost expectations
 - [Recall eval results](./docs/recall-eval-results.md) — measured before/after data on the recall-quality features
-- [Phase 1 plan](./PLAN.md) — Phase 1 work breakdown
-- [Phase 2+ recall plan](./RECALL-PLAN.md) — recall-quality work blocks (W0–W10)
-
-## Why star this repo
-
-Memstem is a solo, open-source project shipped under MIT. There's no telemetry, no analytics, no auth-walled "free tier" — so I have no idea who's using it unless you tell me. Stars are the only honest signal I have for whether to keep investing time in this. If memstem makes your AI workflow better, a star takes two seconds and directly shapes what gets built next.
-
-[![Star History Chart](https://api.star-history.com/svg?repos=Memstem/memstem&type=Date)](https://star-history.com/#Memstem/memstem&Date)
 
 ## License
 

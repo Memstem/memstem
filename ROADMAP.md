@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 0 — Foundations (current)
+## Phase 0 — Foundations — shipped
 
 - [x] Repo scaffold, docs, CI
 - [x] Frontmatter spec finalized
@@ -49,7 +49,7 @@
 
 ## Phase 3 — v0.3 (multi-AI breadth)
 
-- [ ] Codex adapter
+- [x] Codex adapter — shipped 0.11.0 ([ADR 0022](./docs/decisions/0022-codex-adapter.md))
 - [ ] Cursor adapter
 - [ ] Aider adapter
 - [ ] Hermes adapter
