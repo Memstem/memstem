@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import sqlite_vec
 
@@ -29,8 +29,9 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
+_VEC_DIMS_RE = re.compile(r"FLOAT\[(\d+)\]", re.IGNORECASE)
 
 # SQLite extended error code for `FOREIGN KEY constraint failed` (787 = base
 # SQLITE_CONSTRAINT (19) | (3 << 8)). See https://www.sqlite.org/rescode.html
@@ -57,6 +58,19 @@ def _is_foreign_key_violation(exc: sqlite3.Error) -> bool:
     # Fallback for older bindings / wrapped exceptions where the extended
     # code didn't make it through. SQLite's own message is stable.
     return "FOREIGN KEY constraint failed" in str(exc)
+
+
+class EmbeddingDimensionMismatchError(RuntimeError):
+    """The configured embedding dimensions don't match the vec table.
+
+    Raised on connect when ``memories_vec`` was created with different
+    dimensions than the config now asks for. Mixing dimensions would
+    make every vector insert fail (or, worse, silently break vector
+    search), so the daemon must refuse to start rather than limp along.
+    The remedy is ``memstem reindex`` (which rebuilds the vec table at
+    the new dimensions and re-embeds everything) — or reverting the
+    config change.
+    """
 
 
 def body_hash(body: str) -> str:
@@ -371,6 +385,22 @@ MIGRATIONS: dict[int, str] = {
         -- in `_migrate()`, gated on PRAGMA table_info.
         SELECT 1;
     """,
+    13: """
+        -- Index-level metadata (A5). Currently holds one key,
+        -- `embedding_signature` — the `<provider>:<model>:<dimensions>`
+        -- string the whole index was last verified against. Per-memory
+        -- signatures in `embed_state` drive lazy re-embeds on re-emit,
+        -- but records that never re-emit (MCP upserts, settled vaults)
+        -- would keep old-model vectors forever after an embedder
+        -- switch — silently mixing vector spaces. Persisting the
+        -- index-level signature lets `verify_embedding_signature`
+        -- detect the switch at startup, warn loudly, and requeue the
+        -- stale records.
+        CREATE TABLE IF NOT EXISTS index_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """,
 }
 
 
@@ -400,9 +430,15 @@ class Index:
     class — so worker concurrency on the network side is preserved.
     """
 
-    def __init__(self, db_path: Path | str, dimensions: int = 768) -> None:
+    def __init__(
+        self,
+        db_path: Path | str,
+        dimensions: int = 768,
+        on_dimension_mismatch: Literal["fail", "rebuild"] = "fail",
+    ) -> None:
         self.db_path = Path(db_path)
         self.dimensions = dimensions
+        self.on_dimension_mismatch = on_dimension_mismatch
         self._db: sqlite3.Connection | None = None
         self._lock = threading.RLock()
 
@@ -586,6 +622,34 @@ class Index:
         # vec0 virtual tables can't be created in executescript() reliably across
         # versions, and the column dimensions depend on the embedder, so we
         # create it explicitly after the main schema is in place.
+        #
+        # A5 guard: CREATE IF NOT EXISTS silently keeps an existing table
+        # whose dimensions differ from the config — every subsequent
+        # vector insert then fails (or vector search silently degrades).
+        # Detect the mismatch here and fail loud, unless the caller opted
+        # into a rebuild (`memstem reindex`, which re-embeds everything).
+        existing_dims = self._vec_table_dimensions()
+        if existing_dims is not None and existing_dims != self.dimensions:
+            if self.on_dimension_mismatch == "fail":
+                raise EmbeddingDimensionMismatchError(
+                    f"index at {self.db_path} was built with {existing_dims}-dim "
+                    f"vectors but the config now asks for {self.dimensions}. "
+                    "Run `memstem reindex` to rebuild the vector table at the "
+                    "new dimensions (re-embeds every record), or revert the "
+                    "embedding config."
+                )
+            logger.warning(
+                "rebuilding memories_vec: dimensions changed %d -> %d; all "
+                "existing vectors dropped and every record will re-embed",
+                existing_dims,
+                self.dimensions,
+            )
+            self.db.execute("DROP TABLE memories_vec")
+            # The old embed_state rows certify vectors that no longer
+            # exist (a non-NULL body_hash means "has a vector" to
+            # needs_reembed) — clear them so every record counts as
+            # never-embedded.
+            self.db.execute("DELETE FROM embed_state")
         self.db.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
@@ -596,6 +660,21 @@ class Index:
             )
             """
         )
+
+    def _vec_table_dimensions(self) -> int | None:
+        """Dimensions of the existing ``memories_vec`` table, or None.
+
+        Read from the table's CREATE statement in ``sqlite_master`` —
+        vec0 virtual tables expose no PRAGMA for their column types, but
+        the original DDL (with its ``FLOAT[N]``) is preserved verbatim.
+        """
+        row = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'"
+        ).fetchone()
+        if row is None or row["sql"] is None:
+            return None
+        match = _VEC_DIMS_RE.search(row["sql"])
+        return int(match.group(1)) if match else None
 
     def upsert(self, memory: Memory) -> None:
         """Insert or replace a memory's metadata, tags, links, and FTS row.
@@ -843,6 +922,70 @@ class Index:
                     "Orphan vec rows cleaned.",
                     memory_id,
                 )
+
+    def verify_embedding_signature(self, signature: str) -> str:
+        """Reconcile the index-level embedder signature with ``signature``.
+
+        Returns one of:
+        - ``"stamped"`` — no signature was recorded yet (fresh index or
+          first open after upgrading to schema v13); the current one is
+          persisted.
+        - ``"ok"`` — recorded signature matches.
+        - ``"changed"`` — the embedder changed since the index was last
+          verified. The new signature is persisted, a loud warning is
+          logged, and every record whose ``embed_state`` row still
+          carries a different non-NULL signature is re-enqueued so the
+          vault converges back to a single vector space. (Records that
+          re-emit get this lazily via ``needs_reembed``; records that
+          never re-emit — MCP upserts, settled vaults — only converge
+          through this startup sweep.)
+
+        Dimension *changes* never reach here: ``connect()`` fails loud
+        (or rebuilds, for ``memstem reindex``) before any caller can
+        verify. Legacy NULL per-memory signatures stay grandfathered —
+        we don't know what embedder produced them, and re-embedding the
+        whole vault on upgrade is exactly what the NULL convention
+        avoids.
+        """
+        now = datetime.now(tz=UTC).isoformat()
+        with self._lock, self.db:
+            row = self.db.execute(
+                "SELECT value FROM index_meta WHERE key = 'embedding_signature'"
+            ).fetchone()
+            stored = row["value"] if row is not None else None
+            if stored == signature:
+                return "ok"
+            self.db.execute(
+                """
+                INSERT INTO index_meta(key, value) VALUES ('embedding_signature', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (signature,),
+            )
+            if stored is None:
+                return "stamped"
+            cur = self.db.execute(
+                """
+                INSERT INTO embed_queue(memory_id, enqueued_at, retry_count, last_error, failed)
+                SELECT memory_id, ?, 0, NULL, 0 FROM embed_state
+                WHERE embed_signature IS NOT NULL AND embed_signature != ?
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    enqueued_at = excluded.enqueued_at,
+                    retry_count = 0,
+                    last_error = NULL,
+                    failed = 0
+                """,
+                (now, signature),
+            )
+            requeued = int(cur.rowcount)
+        logger.warning(
+            "embedder signature changed (%s -> %s): re-enqueued %d record(s) "
+            "whose vectors were produced by the previous embedder",
+            stored,
+            signature,
+            requeued,
+        )
+        return "changed"
 
     # ---- Embed queue ------------------------------------------------------
 

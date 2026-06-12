@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import typer
 import yaml
@@ -189,10 +189,26 @@ def _load_config(vault_path: Path) -> Config:
     return Config.model_validate(raw)
 
 
-def _open_index(config: Config) -> Index:
+def _open_index(
+    config: Config, on_dimension_mismatch: Literal["fail", "rebuild"] = "fail"
+) -> Index:
+    """Connect to the index, enforcing the A5 embedder guards.
+
+    ``connect()`` fails loud (:class:`EmbeddingDimensionMismatchError`)
+    when the config's dimensions no longer match the vec table — pass
+    ``on_dimension_mismatch="rebuild"`` only from ``memstem reindex``,
+    the documented remedy, which drops the vectors and re-embeds. The
+    signature check then warns + requeues on a same-dimensions embedder
+    switch.
+    """
     db_path = config.index_path or config.vault_path / "_meta" / "index.db"
-    idx = Index(db_path, dimensions=config.embedding.dimensions)
+    idx = Index(
+        db_path,
+        dimensions=config.embedding.dimensions,
+        on_dimension_mismatch=on_dimension_mismatch,
+    )
     idx.connect()
+    idx.verify_embedding_signature(_embedding_signature(config))
     return idx
 
 
@@ -659,7 +675,9 @@ def reindex(
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
-    index = _open_index(cfg)
+    # reindex is the documented remedy for an embedder dimension change:
+    # opt into the vec-table rebuild instead of the fail-loud default.
+    index = _open_index(cfg, on_dimension_mismatch="rebuild")
     try:
         count = 0
         reseeded = 0

@@ -13,7 +13,12 @@ from uuid import uuid4
 import pytest
 
 from memstem.core.frontmatter import Frontmatter, validate
-from memstem.core.index import Index, body_hash, extract_wikilinks
+from memstem.core.index import (
+    EmbeddingDimensionMismatchError,
+    Index,
+    body_hash,
+    extract_wikilinks,
+)
 from memstem.core.storage import Memory
 
 
@@ -98,8 +103,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 12 for the embed-queue claim/lease columns (A4).
-        assert version == 12
+        # Bumped to 13 for the index_meta embedder-signature table (A5).
+        assert version == 13
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -116,7 +121,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [12]
+            assert [r["version"] for r in rows] == [13]
         finally:
             idx.close()
 
@@ -624,6 +629,102 @@ class TestEmbedState:
                 idx._db = real_db
         finally:
             idx.close()
+
+
+class TestDimensionGuard:
+    """A5: a dimension change must fail loud at connect, not surface as
+    per-record insert failures (or silently broken vector search) later.
+    """
+
+    def test_reopen_with_changed_dimensions_fails_loud(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        idx.close()
+        with pytest.raises(EmbeddingDimensionMismatchError, match=r"8-dim.*asks for 16"):
+            Index(db_path, dimensions=16).connect()
+
+    def test_reopen_with_same_dimensions_is_fine(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        Index(db_path, dimensions=8).connect()
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        idx.close()
+
+    def test_rebuild_mode_drops_vectors_and_embed_state(self, tmp_path: Path) -> None:
+        """`memstem reindex` path: rebuild the vec table at the new
+        dimensions, and clear embed_state so every record counts as
+        never-embedded (its rows would otherwise certify vectors that no
+        longer exist)."""
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        memory = _make_memory()
+        idx.upsert(memory)
+        idx.upsert_vectors(str(memory.id), ["chunk"], [_fake_embedding(1, dims=8)])
+        idx.record_embed_state(str(memory.id), body_hash(memory.body), "p:m:8")
+        idx.close()
+
+        idx2 = Index(db_path, dimensions=16, on_dimension_mismatch="rebuild")
+        idx2.connect()
+        try:
+            assert idx2.db.execute("SELECT COUNT(*) AS n FROM memories_vec").fetchone()["n"] == 0
+            assert idx2.db.execute("SELECT COUNT(*) AS n FROM embed_state").fetchone()["n"] == 0
+            # The memory itself (canonical metadata/FTS) survives, and the
+            # rebuilt table accepts the new dimensions.
+            assert idx2.get_path(str(memory.id)) is not None
+            idx2.upsert_vectors(str(memory.id), ["chunk"], [_fake_embedding(2, dims=16)])
+        finally:
+            idx2.close()
+
+
+class TestEmbeddingSignatureVerify:
+    """A5: the index-level embedder signature is persisted, and a
+    same-dimensions embedder switch requeues every record still carrying
+    the old signature (records that never re-emit would otherwise keep
+    old-model vectors forever — silently mixed vector spaces)."""
+
+    def test_first_verify_stamps_then_ok(self, index: Index) -> None:
+        assert index.verify_embedding_signature("p:m:768") == "stamped"
+        assert index.verify_embedding_signature("p:m:768") == "ok"
+
+    def test_change_requeues_stale_records(self, index: Index) -> None:
+        memory = _make_memory()
+        index.upsert(memory)
+        index.record_embed_state(str(memory.id), body_hash(memory.body), "old:model:768")
+        assert index.verify_embedding_signature("old:model:768") == "stamped"
+        assert index.queue_stats()["pending"] == 0
+
+        assert index.verify_embedding_signature("new:model:768") == "changed"
+        assert index.queue_stats()["pending"] == 1
+        row = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ? AND failed = 0",
+            (str(memory.id),),
+        ).fetchone()
+        assert row is not None
+        # And the new signature is now the recorded one.
+        assert index.verify_embedding_signature("new:model:768") == "ok"
+
+    def test_change_grandfathers_legacy_null_signatures(self, index: Index) -> None:
+        memory = _make_memory()
+        index.upsert(memory)
+        with index.lock, index.db:
+            index.db.execute(
+                "INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at) "
+                "VALUES (?, ?, NULL, '2026-01-01T00:00:00+00:00')",
+                (str(memory.id), body_hash(memory.body)),
+            )
+        index.verify_embedding_signature("a:b:768")
+        assert index.verify_embedding_signature("c:d:768") == "changed"
+        assert index.queue_stats()["pending"] == 0
+
+    def test_change_skips_records_already_on_new_signature(self, index: Index) -> None:
+        memory = _make_memory()
+        index.upsert(memory)
+        index.record_embed_state(str(memory.id), body_hash(memory.body), "new:model:768")
+        index.verify_embedding_signature("old:model:768")
+        assert index.verify_embedding_signature("new:model:768") == "changed"
+        assert index.queue_stats()["pending"] == 0
 
 
 class TestClaimLease:
