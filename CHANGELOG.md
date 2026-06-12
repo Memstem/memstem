@@ -5,6 +5,17 @@ All notable changes to Memstem will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Memstem is on PyPI**: `pip install memstem` / `pipx install memstem`
+  ([pypi.org/project/memstem](https://pypi.org/project/memstem/), first
+  published release: 0.17.0). The release workflow now builds sdist + wheel
+  and publishes via PyPI Trusted Publishing (OIDC) on every version tag, with
+  a tag/pyproject version-mismatch guard. README and install guide flipped to
+  the PyPI-first install path; PyPI version badge added.
+
 ## [0.17.0] - 2026-06-12
 
 Security hardening: request-edge clamps, vault-internals path guard,

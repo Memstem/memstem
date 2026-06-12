@@ -4,9 +4,6 @@ The [README Quickstart](../README.md#quickstart) covers the common paths. This
 page is the full reference: every installer flag, API-key handling, macOS
 notes, and exactly what `memstem connect-clients` edits.
 
-> Memstem is not yet published to PyPI. The installer and the manual install
-> both pull from this repository; a PyPI release is planned.
-
 ## The installer
 
 ```bash
@@ -22,7 +19,7 @@ Each flag is opt-in so you can dial back the scope:
 | `--no-ollama` | Skip the Ollama install (already have it). Implied by `--embedder openai|gemini|voyage`. |
 | `--no-model` | Skip the `nomic-embed-text` pull. |
 | `--vault PATH` | Vault location (default `~/memstem-vault`). |
-| `--from-git` | Install from `github.com/Memstem/memstem` instead of PyPI. (Until the PyPI release this is effectively the default — the PyPI attempt falls back to git automatically.) |
+| `--from-git` | Install from `github.com/Memstem/memstem` instead of [PyPI](https://pypi.org/project/memstem/). |
 | `--embedder NAME` | Embedder provider: `ollama` (default), `openai`, `gemini`, `voyage`. |
 | `--openai-key KEY` | Store an OpenAI key via `memstem auth set openai`. Also reads `MEMSTEM_OPENAI_KEY`, then `OPENAI_API_KEY`. |
 | `--gemini-key KEY` | Same, for Gemini (env: `MEMSTEM_GEMINI_KEY`). |
