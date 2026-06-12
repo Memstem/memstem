@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Third reliability batch — embed-queue claim/lease, embedder-change guards,
+config validation, and vault-delete pruning.
+
+### Fixed
+
+- **Concurrent embed workers no longer double-embed.** Workers (and a parallel
+  `memstem embed` run) used to pull the same pending rows and embed them
+  simultaneously — idempotent on the vec table, but each duplicate burned an
+  embedder round trip. Rows are now claimed atomically (`claimed_at`/
+  `claimed_by`, schema v12) with a 5-minute lease; a crashed worker's claim
+  expires and the row is reclaimed instead of stranded. Transient failures
+  release the claim immediately.
+- **A record re-enqueued mid-embed survives the stale dequeue.** If content
+  changed (re-enqueue) while a worker was still embedding the old body, the
+  worker's unconditional queue DELETE erased the fresher request and the new
+  content stayed unembedded until a reconcile noticed. Dequeues are now guarded
+  on the claim token (the row's `enqueued_at` at claim time).
+- **Embedder dimension changes fail loud at startup.** The vec table was
+  created `IF NOT EXISTS`, so changing `embedding.dimensions` left a
+  mismatched table and surfaced only as per-record insert failures (or
+  silently degraded vector search). `connect()` now compares the configured
+  dimensions against the table's actual DDL and refuses to start, naming both
+  values; `memstem reindex` opts into a rebuild (drop vectors, clear
+  `embed_state`, re-embed everything).
+- **Same-dimensions embedder switches re-embed stale records.** The index now
+  persists the `<provider>:<model>:<dimensions>` signature (`index_meta`,
+  schema v13). On a signature change it warns and re-enqueues every record
+  still carrying the old per-memory signature — records that never re-emit
+  (MCP upserts, settled vaults) previously kept old-model vectors forever,
+  silently mixing vector spaces.
+- **Nonsense numeric config is rejected at load time.** `workers: 0` crashed
+  the daemon at startup; `batch_size: 0` silently stalled embedding forever;
+  negative intervals busy-looped the hygiene scheduler. All numeric knobs now
+  carry validation constraints — bad values fail config parsing with the field
+  named. Documented `0`-means-disabled knobs keep accepting `0`.
+- **Deleted vault files no longer leave ghost search results.** The index kept
+  serving memories whose canonical markdown had been deleted. A prune sweep
+  now runs after the startup and periodic reconciles (with a safety valve: if
+  most records are "missing", it assumes a bad vault mount and refuses rather
+  than wiping a healthy index), `memstem reindex` prunes unconditionally, and
+  the embed worker prunes a record whose file is gone at embed time.
+
 ## [0.15.0] - 2026-06-11
 
 Second reliability batch — the three fixes deferred from the 0.14.0 review.
