@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<!-- Source for docs/images/hero.png — render at 1280x800 (see docs/images/src/README.md).
+     Edit this file and re-screenshot rather than regenerating the PNG by hand. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 800px; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse 900px 500px at 50% 30%, #0e1526 0%, #070b14 65%);
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    color: #dbe4f3;
+    position: relative;
+  }
+  .title { position: absolute; top: 34px; width: 100%; text-align: center;
+    font-size: 46px; font-weight: 700; color: #f4f7fc; letter-spacing: 0.5px; }
+  .subtitle { position: absolute; top: 96px; width: 100%; text-align: center;
+    font-size: 16px; color: #4fd6c9; letter-spacing: 0.4px; }
+
+  .col-label { position: absolute; font-size: 13px; font-weight: 700; color: #aab8d4; letter-spacing: 0.5px; }
+  .col-note  { position: absolute; font-size: 10.5px; color: #5b6a85; }
+
+  .card { position: absolute; background: #0d1322; border: 1px solid #27314a; border-radius: 9px; }
+  .client-card { left: 78px; width: 264px; height: 62px; display: flex; align-items: center; padding: 0 14px; gap: 11px; }
+  .client-card .dot { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid #3b4a6b;
+    display: flex; align-items: center; justify-content: center; color: #4fd6c9; font-size: 13px; flex-shrink: 0; }
+  .client-card .nm { font-size: 14.5px; font-weight: 700; color: #e8eef9; }
+  .client-card .sub { font-size: 10.5px; color: #5f7094; margin-top: 2px; }
+  .client-card .doc { margin-left: auto; color: #44546f; font-size: 13px; }
+  .client-card.roadmap { border-style: dashed; border-color: #31405f; background: rgba(13,19,34,0.55); }
+  .client-card.roadmap .nm { color: #93a3c0; }
+  .client-card.roadmap .dot { color: #93a3c0; border-style: dashed; }
+
+  .hex-wrap { position: absolute; left: 470px; top: 282px; width: 188px; height: 164px;
+    filter: drop-shadow(0 0 18px rgba(79,214,201,0.35)); }
+  .hex-border { width: 188px; height: 164px; background: #4fd6c9;
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%); position: absolute; }
+  .hex-inner { width: 182px; height: 158px; left: 3px; top: 3px; background: #0b111f;
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    position: absolute; display: flex; align-items: center; justify-content: center; }
+  .hex-inner span { font-size: 20px; font-weight: 700; color: #f4f7fc; }
+  .hex-caption { position: absolute; left: 392px; top: 466px; width: 344px; text-align: center;
+    font-size: 10.5px; color: #5b6a85; }
+
+  .panel { padding: 14px 16px; }
+  .panel .hd { font-size: 14.5px; font-weight: 700; color: #e8eef9; }
+  .panel .hsub { font-size: 10.5px; color: #5f7094; margin-top: 3px; }
+  .vault { left: 822px; top: 132px; width: 380px; height: 252px; }
+  .tree { margin-top: 12px; font-size: 13px; line-height: 1.75; color: #9fb0cd; }
+  .tree .dir { color: #6db5f0; }
+  .tree .file { color: #7e8eab; }
+  .tree .ind1 { padding-left: 22px; }
+  .tree .ind2 { padding-left: 44px; }
+
+  .index { left: 822px; top: 412px; width: 380px; height: 174px; }
+  .chips { display: flex; gap: 14px; margin-top: 14px; }
+  .chip { border: 1.5px solid #7a5cff; border-radius: 7px; padding: 8px 12px; background: #131027; flex: 1; }
+  .chip .cn { font-size: 13px; font-weight: 700; color: #cfc4ff; }
+  .chip .cs { font-size: 10px; color: #7d74a8; margin-top: 2px; }
+  .fuse { margin: 13px auto 0; width: 150px; text-align: center; border: 1.5px solid #5a4bcf; border-radius: 7px;
+    padding: 6px 0; font-size: 12px; font-weight: 700; color: #cfc4ff; background: #131027; }
+
+  .api { position: absolute; top: 612px; height: 44px; border: 1.5px solid #3a4a6e; border-radius: 8px;
+    background: #0d1322; color: #e8eef9; font-size: 15px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; }
+  .footer { position: absolute; top: 676px; width: 100%; text-align: center; font-size: 11px; color: #5b6a85; }
+
+  .arrow-label { position: absolute; font-size: 10.5px; color: #4fd6c9; }
+  svg.arrows { position: absolute; left: 0; top: 0; width: 1280px; height: 800px; }
+</style>
+</head>
+<body>
+  <div class="title">Memstem</div>
+  <div class="subtitle">One memory layer for every AI agent</div>
+
+  <!-- arrows under the cards -->
+  <svg class="arrows" viewBox="0 0 1280 800">
+    <defs>
+      <marker id="ah" markerWidth="9" markerHeight="8" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#4fd6c9"/>
+      </marker>
+    </defs>
+    <g stroke="#2f9d93" stroke-width="1.6" fill="none" marker-end="url(#ah)" opacity="0.9">
+      <path d="M 346 196 C 420 220, 440 290, 478 330"/>
+      <path d="M 346 272 C 414 290, 434 320, 470 348"/>
+      <path d="M 346 348 C 414 352, 434 360, 466 362"/>
+      <path d="M 662 338 C 730 300, 750 270, 814 232"/>
+      <path d="M 662 386 C 730 420, 750 450, 814 488"/>
+    </g>
+    <g stroke="#2f9d93" stroke-width="1.4" fill="none" marker-end="url(#ah)" opacity="0.55" stroke-dasharray="5 4">
+      <path d="M 346 424 C 414 408, 436 392, 470 380"/>
+    </g>
+  </svg>
+
+  <div class="col-label" style="left:78px; top:136px;">AI Clients</div>
+  <div class="col-note" style="left:78px; top:154px;">sources — write to disk</div>
+
+  <div class="card client-card" style="top:172px;">
+    <div class="dot">◎</div>
+    <div><div class="nm">Claude Code</div><div class="sub">anthropic</div></div>
+    <div class="doc">▤</div>
+  </div>
+  <div class="card client-card" style="top:248px;">
+    <div class="dot">◎</div>
+    <div><div class="nm">OpenClaw</div><div class="sub">agent runtime</div></div>
+    <div class="doc">▤</div>
+  </div>
+  <div class="card client-card" style="top:324px;">
+    <div class="dot">◎</div>
+    <div><div class="nm">Codex</div><div class="sub">openai</div></div>
+    <div class="doc">▤</div>
+  </div>
+  <div class="card client-card roadmap" style="top:400px;">
+    <div class="dot">+</div>
+    <div><div class="nm">Cursor · Aider · yours</div><div class="sub">adapter SDK — on the roadmap</div></div>
+  </div>
+  <div class="col-note" style="left:78px; top:478px;">writes session + memory files to disk</div>
+
+  <div class="arrow-label" style="left:392px; top:262px;">inotify watch</div>
+  <div class="arrow-label" style="left:398px; top:412px;">adapters</div>
+
+  <div class="hex-wrap">
+    <div class="hex-border"></div>
+    <div class="hex-inner"><span>Memstem</span></div>
+  </div>
+  <div class="hex-caption">Pull-based — survives every client upgrade</div>
+
+  <div class="arrow-label" style="left:712px; top:268px;">normalize</div>
+  <div class="arrow-label" style="left:706px; top:432px;">embed queue</div>
+
+  <div class="card panel vault">
+    <div class="hd">Canonical Vault</div>
+    <div class="hsub">markdown — git-friendly, rebuildable</div>
+    <div class="tree">
+      <div class="dir">🗀 memories/</div>
+      <div class="file ind1">▤ note1.md · note2.md</div>
+      <div class="dir">🗀 skills/</div>
+      <div class="dir">🗀 sessions/</div>
+      <div class="dir">🗀 distillations/</div>
+      <div class="dir">🗀 daily/</div>
+    </div>
+  </div>
+
+  <div class="card panel index">
+    <div class="hd">SQLite Index</div>
+    <div class="hsub">rebuildable from canonical vault</div>
+    <div class="chips">
+      <div class="chip"><div class="cn">FTS5</div><div class="cs">BM25 keyword</div></div>
+      <div class="chip"><div class="cn">sqlite-vec</div><div class="cs">cosine sim.</div></div>
+    </div>
+    <div class="fuse">RRF fusion</div>
+  </div>
+
+  <div class="api" style="left:404px; width:140px;">MCP API</div>
+  <div class="api" style="left:570px; width:140px;">HTTP API</div>
+  <div class="api" style="left:736px; width:140px;">CLI</div>
+  <div class="footer">five MCP tools · loopback HTTP on 127.0.0.1:7821 · `memstem` CLI</div>
+</body>
+</html>

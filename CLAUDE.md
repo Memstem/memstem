@@ -5,7 +5,7 @@ Read it first; it tells you how to operate on this codebase.
 
 ## What this project is
 
-**Memstem** is a unified memory + skill infrastructure for AI agents. It pulls memories from multiple AI client filesystems (Claude Code, OpenClaw, Codex, Cursor, etc.) via `inotify` watchers, stores them as markdown files with YAML frontmatter, indexes them with SQLite (FTS5 + sqlite-vec) hybrid search, and exposes a unified MCP API.
+**Memstem** is a unified memory + skill infrastructure for AI agents. It pulls memories from multiple AI client filesystems (Claude Code, OpenClaw, and Codex today; more planned) via `inotify` watchers, stores them as markdown files with YAML frontmatter, indexes them with SQLite (FTS5 + sqlite-vec) hybrid search, and exposes a unified MCP API.
 
 Architectural advantage: immune to upgrade churn in any client because we depend only on the files each AI drops on disk — no hooks, no push APIs, no internal SDKs.
 

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **README hero image and intro no longer overclaim adapter support.** Both
+  listed Cursor/Aider (and Hermes in the text) as connectable clients; only
+  Claude Code, OpenClaw, and Codex adapters ship today. The hero is rebuilt
+  from an editable HTML source (`docs/images/src/hero.html` — the original
+  was AI-generated with no source) showing the three live adapters plus a
+  dashed roadmap card, and the vault tree now includes `distillations/` with
+  correct (sibling) nesting. README also now mentions the optional HTTP
+  bearer-token auth from 0.17.0.
+
 ### Added
 
 - **Memstem is on PyPI**: `pip install memstem` / `pipx install memstem`
