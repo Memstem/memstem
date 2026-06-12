@@ -80,3 +80,7 @@ logs/
 
 # Local working docs (session handoffs — never published)
 HANDOFF.md
+
+# Internal planning docs (kept locally, not published)
+PLAN.md
+RECALL-PLAN.md

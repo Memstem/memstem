@@ -246,7 +246,7 @@ sequential PRs:
   authoritative.
 - **CLI-driven, not pipeline-coupled.** The daemon stays
   network-free in its default loop (consistent with ADR 0019's
-  preference for opt-in LLM features). Brad runs distillation as a
+  preference for opt-in LLM features). The maintainer runs distillation as a
   scheduled command or on-demand; the embed-worker pattern can layer
   on later if real-time distillation becomes valuable.
 - **Per-session, not per-cluster.** This ADR ships the simpler shape
@@ -277,14 +277,14 @@ sequential PRs:
   a multi-thousand-token transcript.
 - The pattern reuses existing frontmatter fields and existing
   importance ranking; no schema growth and no search code changes.
-- Backfill is idempotent and re-runnable, so a soak run on Brad's
+- Backfill is idempotent and re-runnable, so a soak run on the maintainer's
   vault is low-risk and reversible (every distillation is a separate
   markdown file; deleting them returns the system to pre-distillation
   state).
 
 **Cons:**
 
-- LLM cost scales with session volume. Bounded in practice (Brad's
+- LLM cost scales with session volume. Bounded in practice (the maintainer's
   vault: ~356 sessions today, growing at ~5/day) but worth tracking
   via the eval harness output.
 - Stale distillations: if a session is re-emitted with materially

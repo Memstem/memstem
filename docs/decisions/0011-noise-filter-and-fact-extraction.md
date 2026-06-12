@@ -6,7 +6,7 @@ Status: Proposed
 ## Context
 
 Adapters today read whole sessions and whole markdown files and persist
-each as a single `Memory` record. On Brad's box that is ~940 records
+each as a single `Memory` record. On the maintainer's box that is ~940 records
 on day one. By month three, with Claude Code + OpenClaw + Codex
 ingesting continuously, projection is ~30k records, dominated by
 heartbeat output, cron lines, boot-file echoes, and one-line transient

@@ -11,7 +11,7 @@ the SQLite index is cheap enough to pay on every CLI invocation.
 
 ### Symptom
 
-After Brad migrated the embedder from Gemini 768-dim to OpenAI
+After the maintainer migrated the embedder from Gemini 768-dim to OpenAI
 3072-dim, `memstem search "Kinsta"` from the shell began timing out at
 30 s. The MCP tool surface and the daemon's HTTP `/search` endpoint
 returned in milliseconds. Same query, same code, same vault — the

@@ -249,7 +249,7 @@ rerank.
 Per query, with rerank enabled and a cold cache:
 
 - **OllamaReranker**: N candidates × ~150ms per `/api/generate` call
-  with `qwen2.5:7b` on Brad's box = ~7.5 s for N=50. This blows past
+  with `qwen2.5:7b` on the maintainer's box = ~7.5 s for N=50. This blows past
   the p95 < 500ms budget on cold cache. Two mitigations:
   1. The cache makes the second-call latency ~5ms (one indexed SQL
      lookup per candidate). Steady-state p95 fits the budget.
@@ -371,7 +371,7 @@ eval data, not on this ADR.
   code change.
 - **Cache eviction**: the table is unbounded today. If it grows
   pathologically, a future PR can add an LRU sweep keyed on `ts`.
-  Brad's box at 1k memories × 100 queries = 100k rows max; not a
+  the maintainer's box at 1k memories × 100 queries = 100k rows max; not a
   problem yet.
 
 ## References

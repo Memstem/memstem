@@ -73,7 +73,7 @@ memstem hygiene distill-sessions --backfill --provider openai
 memstem hygiene distill-sessions --backfill --provider ollama
 ```
 
-Cost note: a dry-run pass over Brad's ~356 Claude Code sessions on
+Cost note: a dry-run pass over a real ~356-session Claude Code corpus on
 `gpt-5.4-mini` runs about $1 with all cache misses; subsequent
 runs hit the cache and cost nothing.
 
@@ -203,7 +203,7 @@ want to regenerate later.
 ## 9. Multi-user installs on the same host
 
 If two MemStem daemons run on the same machine under different OS
-users (e.g. `ubuntu` + `e1` on Brad's Ultra box), they will conflict
+users (e.g. two accounts on one shared host), they will conflict
 on the default HTTP port `7821`. The second daemon to start
 crash-loops with a `SystemExit: 1` from uvicorn during startup —
 PM2 marks it `online` with `pid=N/A` and `0b` memory. The vault is
@@ -246,5 +246,5 @@ records always scan all qualifying tags but short-circuit when the
 source set hasn't changed.
 
 Steady-state cost is dominated by genuinely new sessions
-(typically < $1/month at Brad's pace). Repeat runs over unchanged
+(typically < $1/month for a single active user). Repeat runs over unchanged
 data hit the cache and cost nothing.

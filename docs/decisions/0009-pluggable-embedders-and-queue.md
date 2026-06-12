@@ -8,7 +8,7 @@ Status: Accepted
 Phase 1 v0.1 shipped with a single embedder (Ollama with
 `nomic-embed-text`) and inline embedding inside `pipeline.process`.
 Both choices held up architecturally but broke down in practice during
-the live cutover on Brad's box:
+the live cutover on the maintainer's box:
 
 1. **Inline embedding couples ingest latency to embed throughput.** A
    bulk migrate of 1044 records on CPU-only Ollama hit 30s per-request

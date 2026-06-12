@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connect-clients` wiring details from README to the new
   [docs/install.md](./docs/install.md); README quickstart slimmed accordingly
 - README now asks for a star once, without the star-history chart
+- Maintainer-specific references ("Brad's box", `~/ari` example paths,
+  personal workspace names) genericized across ADRs, docs, README examples,
+  ARCHITECTURE, and ROADMAP — the docs now read for any operator
+- CLAUDE.md rewritten as contributor guidance (was stale Phase-1 session
+  notes referencing internal systems)
+
+### Removed
+
+- `PLAN.md` and `RECALL-PLAN.md` (internal session-planning documents) are no
+  longer tracked in the public repo; superseded by ROADMAP.md + the ADRs
+
+### Added
+
+- ADR 0010 tombstone documenting the withdrawn Obsidian-plugin scaffold, so
+  the decision-record numbering has no unexplained gap
 
 ## [0.16.1] - 2026-06-12
 

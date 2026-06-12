@@ -7,7 +7,7 @@ Status: Proposed
 
 Phase 1 ships a flat memory store: every adapted file becomes one
 `Memory` record, indexed by FTS5 + sqlite-vec, retrieved via Reciprocal
-Rank Fusion. On Brad's box that's ~940 records on day one — enough to
+Rank Fusion. On the maintainer's box that's ~940 records on day one — enough to
 expose two limits:
 
 1. **Search noise.** A query like *"what did we decide about pricing?"*
@@ -16,7 +16,7 @@ expose two limits:
    results are still a stack of source material that the agent has to
    re-read every time. There is no concept of "this 2-paragraph rollup
    is the answer; the 17 sources are the citations."
-2. **No self-improvement loop.** Records age in place. A skill Brad
+2. **No self-improvement loop.** Records age in place. A skill the maintainer
    used 50 times last quarter scores the same as a one-off note. A
    superseded plan ranks alongside the current one. Search behavior on
    day 30 is the same as day 1; the system never gets smarter at
@@ -28,7 +28,7 @@ that can replace FlipClaw — but Phase 2 needs a layer that captures
 invariant ("markdown files are canonical, the index is rebuildable").
 
 This ADR locks the v0.2 design before any code lands. PR-level work
-will follow once Brad signs off on the shape.
+will follow once the maintainer signs off on the shape.
 
 ## Goals
 
@@ -68,7 +68,7 @@ of the previous behavior.
 ### Tier 0 — Raw memories (already in v0.1)
 
 Every adapted file → one record. Source of truth, never deleted by
-the system. ~940 records on Brad's box at cutover. No change in v0.2.
+the system. ~940 records on the maintainer's box at cutover. No change in v0.2.
 
 ### Tier 1 — Importance scoring
 
@@ -333,7 +333,7 @@ formula reduces to v0.1 behavior when `importance = 0.5` everywhere.
   parameters are wrong. We'll need a debug command (`memstem
   importance <id>`) to make the score breakdown legible.
 
-## Open questions for Brad
+## Open questions for the maintainer
 
 - Is nightly the right cadence for the hygiene worker, or do you want
   it on demand (`memstem hygiene run`) until we trust it?

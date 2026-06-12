@@ -8,7 +8,7 @@ Status: Accepted
 Memstem watches local filesystem paths and ingests files as they appear or
 change. That works perfectly when every AI client (Claude Code, OpenClaw,
 etc.) runs on the same machine as the daemon — which is the v0.1 happy
-path on Brad's EC2 box.
+path on the maintainer's EC2 box.
 
 The question of remote ingestion came up early: if a user runs Claude Code
 on a laptop separate from the Memstem server, can those sessions reach the

@@ -74,7 +74,7 @@ Extend the `Embedder` ABC (ADR 0009) **additively** — the text contract is unc
 Per ADR 0001/0009 local-first: default stays text-only Ollama. Multimodal Qwen3-VL is
 **opt-in per vault** via config. This ADR adds a capability; it does not change defaults.
 
-## Resolved decisions (2026-06-06, Brad)
+## Resolved decisions (2026-06-06, the maintainer)
 
 - **A. Image-as-record model → media-chunk of a parent record.** An image/screenshot is
   a chunk attached to the record it came from; a PDF becomes one record whose chunks are

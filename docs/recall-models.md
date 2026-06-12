@@ -257,7 +257,7 @@ are scores or query rewrites, not indexed content.
 
 | Step | Model | When to pick it |
 |---|---|---|
-| 1 | `gpt-5.4-mini` (default) | Start here. Brad's eval queries land on distillations? Done. |
+| 1 | `gpt-5.4-mini` (default) | Start here. Your eval queries land on distillations? Done. |
 | 2 | `gpt-5.4` | Better at long sessions where the answer is buried among tool calls. ~3× the cost. |
 | 3 | `gpt-5` (full) | Frontier-class. Worth it only if specific failure modes survive 5.4. |
 

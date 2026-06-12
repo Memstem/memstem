@@ -244,7 +244,7 @@ callers thread `False` and search behaves identically to pre-HyDE.
 Per query, with HyDE enabled and a cold cache:
 
 - **OllamaExpander**: one `/api/generate` call producing ~80-150
-  tokens of hypothesis. With `qwen2.5:7b` on Brad's box this is
+  tokens of hypothesis. With `qwen2.5:7b` on the maintainer's box this is
   ~600-900ms — a single round trip, not a sweep.
 - **Embedding the hypothesis**: same cost as embedding the original
   query (~50ms with nomic-embed-text). No additional cost beyond what

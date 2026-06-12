@@ -9,7 +9,7 @@ After RRF + importance boost, the top-K of a hybrid search can still be
 dominated by paraphrases or near-duplicates of the same fact. Three
 distinct sources contribute:
 
-1. **Pre-W3-cleanup duplicate damage.** ~20% of Brad's vault is
+1. **Pre-W3-cleanup duplicate damage.** ~20% of the maintainer's vault is
    byte-hash duplicates (per the 2026-04-29 audit). Even after W3
    ships and the retro pass runs, new duplicate ingestion can race
    ahead of the dedup hash check, and "near-duplicates" (paraphrases,
@@ -17,7 +17,7 @@ distinct sources contribute:
    Layer 1 at all — that's Layer 3's job and Layer 3 runs in the
    hygiene worker, not at search time.
 
-2. **Multiple records about the same topic.** Brad has 50+ daily logs
+2. **Multiple records about the same topic.** The maintainer has 50+ daily logs
    that mention "Cloudflare migration" across different days. They're
    all individually valid memories — none are duplicates — but a
    query for "Cloudflare migration" surfaces 5+ near-paraphrases of
@@ -118,7 +118,7 @@ MMR adds one cosine computation per `(picked, candidate)` pair —
 bounded by `limit * limit` for top-N candidates against `limit` picks.
 For typical `limit=10` queries this is 100 cosine ops; cosine on a
 768-dim vector is microseconds in Python. Total overhead per query is
-negligible (~1ms on Brad's box).
+negligible (~1ms on the maintainer's box).
 
 The `_first_chunk_embedding` lookup is one SQL row per candidate —
 also bounded and indexed. `OVERFETCH_MULTIPLIER * limit = 50` lookups

@@ -53,7 +53,7 @@ two session records**, where:
 Why Claude Code project tags as the seed signal:
 
 - They're free — already in the vault, no new extraction needed.
-- They map cleanly to the user's mental model: Brad opens
+- They map cleanly to the user's mental model: the maintainer opens
   `~/woodfield-quotes/`, every session inside that directory is "the
   Woodfield project."
 - They're conservative: a session in a different CWD won't merge into
@@ -226,7 +226,7 @@ writer, in three sequential PRs.
 ## Rationale
 
 - **Project = Claude Code project tag (v1).** This is the cheapest,
-  highest-precision signal we have. Brad's mental model of "a
+  highest-precision signal we have. The maintainer's mental model of "a
   project" already maps to a working directory; we re-use it. We
   don't try to be clever about cross-tag merging; that's a follow-up
   if the data shows it's needed.
@@ -237,7 +237,7 @@ writer, in three sequential PRs.
   predictable (`memories/projects/<slug>.md`) so re-runs always hit
   the same file. No "did the LLM happen to pick the same canonical
   name as last time" footgun.
-- **`manual: true` to protect hand-edits.** Brad will inevitably
+- **`manual: true` to protect hand-edits.** The maintainer will inevitably
   curate some project records (correcting names, adding context the
   LLM missed). `manual: true` says "trust me, don't regenerate this
   body." Same pattern as `pinned: true` for importance.
@@ -271,7 +271,7 @@ writer, in three sequential PRs.
 
 **Cons:**
 
-- v1 only handles Claude Code projects. Brad's OpenClaw work doesn't
+- v1 only handles Claude Code projects. The maintainer's OpenClaw work doesn't
   benefit from this until a follow-up ADR addresses the OpenClaw
   signal.
 - LLM hallucination risk on canonical names. Mitigation: provenance
