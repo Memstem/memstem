@@ -191,16 +191,11 @@ class OllamaDedupJudge(DedupJudge):
         return self._client
 
     def judge_pair(self, pair: DedupCandidatePair) -> JudgeResult:
-        # Bodies travel via the path's title in the candidate pair —
-        # the candidate generator was deliberately stingy and didn't
-        # ship full bodies. Future versions of OllamaDedupJudge would
-        # accept a vault and read the bodies; for now we use what's
-        # in the pair (titles + ids) so the shape is correct.
         prompt = self.prompt_template.format(
             new_id=pair.a_id,
-            new_body=(pair.a_title or pair.a_id),
+            new_body=_prompt_body(pair.a_body, pair.a_title, pair.a_id),
             existing_id=pair.b_id,
-            existing_body=(pair.b_title or pair.b_id),
+            existing_body=_prompt_body(pair.b_body, pair.b_title, pair.b_id),
         )
         try:
             response = self._call_model(prompt)
@@ -348,14 +343,11 @@ class OpenAIDedupJudge(DedupJudge):
         return self._client
 
     def judge_pair(self, pair: DedupCandidatePair) -> JudgeResult:
-        # Same prompt shape as OllamaDedupJudge — the candidate
-        # generator's pair carries titles + ids; full body lookup is a
-        # future extension on both judges.
         prompt = self.prompt_template.format(
             new_id=pair.a_id,
-            new_body=(pair.a_title or pair.a_id),
+            new_body=_prompt_body(pair.a_body, pair.a_title, pair.a_id),
             existing_id=pair.b_id,
-            existing_body=(pair.b_title or pair.b_id),
+            existing_body=_prompt_body(pair.b_body, pair.b_title, pair.b_id),
         )
         try:
             response = self._call_model(prompt)
@@ -399,6 +391,31 @@ class OpenAIDedupJudge(DedupJudge):
             return str(body["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"unexpected chat-completions response shape: {exc}") from exc
+
+
+_MAX_PROMPT_BODY_CHARS = 4000
+"""Per-side cap on body text interpolated into the judge prompt.
+
+Bounds the prompt so two long memories can't blow past the judge
+model's context window (the fleet judge is Gemma 4 E4B via vLLM).
+4k chars ≈ 1k tokens per side — plenty for a verdict; dedup-relevant
+differences (entities, values, dates, qualifiers) live early in
+memory bodies in practice."""
+
+
+def _prompt_body(body: str, title: str | None, memory_id: str) -> str:
+    """Return the text to interpolate into a judge-prompt body slot.
+
+    Prefers the full body (truncated to :data:`_MAX_PROMPT_BODY_CHARS`),
+    falling back to the title and finally the bare id for records with
+    empty bodies — the judge always gets *something* to compare.
+    """
+    text = body.strip() if body else ""
+    if not text:
+        return title or memory_id
+    if len(text) > _MAX_PROMPT_BODY_CHARS:
+        return text[:_MAX_PROMPT_BODY_CHARS] + " …[truncated]"
+    return text
 
 
 def _load_prompt_template() -> str:

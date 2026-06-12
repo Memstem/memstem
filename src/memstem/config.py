@@ -281,12 +281,14 @@ class HygieneConfig(BaseModel):
     Candidate generation is O(N²) on the indexed memory count — a full
     walk on a multi-thousand-record vault can take tens of minutes,
     long enough to risk the stage lock going stale before the cycle
-    completes. The cap bounds that walk per tick; over multiple cycles
-    the full vault still gets covered because find_dedup_candidate_pairs
-    sorts by memory id and the cap means each cycle just sees the same
-    starting slice. (A follow-up could rotate the starting offset across
-    cycles; for now the same head-slice cap is enough to make the cycle
-    bounded.)"""
+    completes. The cap bounds that walk per tick. The generator scans
+    newest-``updated`` first, so a capped cycle examines the most
+    recently written/edited memories — where new duplicates actually
+    appear — rather than a fixed arbitrary slice. Memories older than
+    the cap horizon are only re-examined when something brings them
+    back into the newest-M window (an update touches them) or when a
+    neighbor query surfaces them as the *other* side of a pair (the
+    inner k-NN search is never capped)."""
 
     summarizer_provider: str = "openai"
     """Provider used by the loop for distillation + project-records.

@@ -38,12 +38,14 @@ def _make_memory(
     vault: Vault,
     title: str | None = None,
     type_: str = "memory",
+    mem_id: str | None = None,
+    updated: str = "2026-04-25T15:00:00+00:00",
 ) -> Memory:
     metadata: dict[str, object] = {
-        "id": str(uuid4()),
+        "id": mem_id or str(uuid4()),
         "type": type_,
         "created": "2026-04-25T15:00:00+00:00",
-        "updated": "2026-04-25T15:00:00+00:00",
+        "updated": updated,
         "source": "human",
         "title": title or "untitled",
         "tags": [],
@@ -109,7 +111,8 @@ class TestVecCandidatePairs:
         assert len(pairs) == 1
         pair = pairs[0]
         assert pair.cosine > 0.99
-        # Canonical ordering.
+        # Both memories share the same `updated` timestamp, so the
+        # recency orientation ties and breaks to lexicographic order.
         assert pair.a_id < pair.b_id
 
     def test_unrelated_vectors_no_pair(self, vault: Vault, index: Index) -> None:
@@ -270,15 +273,15 @@ class TestLimit:
 
 class TestMaxMemories:
     def test_max_memories_caps_outer_loop(self, vault: Vault, index: Index) -> None:
-        # Build six identical-vector memories; full scan would surface
-        # C(6,2) = 15 canonical pairs. ``max_memories`` caps the outer
-        # loop, so only pairs anchored on the first M (sorted by id)
-        # memories appear — every pair has at least one anchor in that
-        # subset.
+        # Build six identical-vector memories with distinct `updated`
+        # timestamps; full scan would surface C(6,2) = 15 pairs.
+        # ``max_memories`` caps the outer loop at the M most recently
+        # updated memories, so every bounded pair has at least one
+        # anchor among the newest M.
         v = _normalized_random(11)
         memories = []
-        for _ in range(6):
-            m = _make_memory(body="x", vault=vault)
+        for i in range(6):
+            m = _make_memory(body="x", vault=vault, updated=f"2026-04-2{i}T15:00:00+00:00")
             index.upsert(m)
             index.upsert_vectors(str(m.id), ["c"], [v])
             memories.append(m)
@@ -287,11 +290,43 @@ class TestMaxMemories:
         bounded = find_dedup_candidate_pairs(vault, index, neighbors_per_memory=10, max_memories=2)
         assert len(bounded) < len(full)
         assert len(bounded) > 0
-        # Every bounded pair must include one of the first two memory
-        # ids (sorted lexicographically) as anchor.
-        anchor_set = sorted(str(m.id) for m in memories)[:2]
+        # Every bounded pair must anchor on one of the two NEWEST
+        # memories (the loop above creates them oldest-first, so the
+        # newest two are the last two created).
+        anchor_set = {str(m.id) for m in memories[-2:]}
         for pair in bounded:
             assert pair.a_id in anchor_set or pair.b_id in anchor_set
+
+    def test_capped_sweep_scans_newest_first_not_lexicographic(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # Force the NEWEST memory to have the lexicographically LAST
+        # id. Under the old `ORDER BY memory_id` sweep, max_memories=1
+        # would anchor on the id-first (old) record; under recency
+        # ordering it must anchor on the newest one.
+        v = _normalized_random(12)
+        old = _make_memory(
+            body="old fact",
+            vault=vault,
+            mem_id="00000000-0000-4000-8000-000000000001",
+            updated="2026-01-01T00:00:00+00:00",
+        )
+        new = _make_memory(
+            body="new fact",
+            vault=vault,
+            mem_id="ffffffff-ffff-4fff-8fff-ffffffffffff",
+            updated="2026-06-01T00:00:00+00:00",
+        )
+        for m in (old, new):
+            index.upsert(m)
+            index.upsert_vectors(str(m.id), ["c"], [v])
+
+        bounded = find_dedup_candidate_pairs(vault, index, neighbors_per_memory=10, max_memories=1)
+        assert len(bounded) == 1
+        # The single outer-loop anchor was the newest memory, and the
+        # pair is oriented with it on the `a` (NEW) side.
+        assert bounded[0].a_id == str(new.id)
+        assert bounded[0].b_id == str(old.id)
 
     def test_max_memories_zero_returns_empty(self, vault: Vault, index: Index) -> None:
         v = _normalized_random(2)
@@ -312,6 +347,73 @@ class TestMaxMemories:
             vault, index, neighbors_per_memory=10, max_memories=None
         )
         assert {(p.a_id, p.b_id) for p in full_default} == {(p.a_id, p.b_id) for p in full_explicit}
+
+
+class TestRecencyOrientation:
+    """Pairs are oriented new→existing by `updated`, regardless of id order.
+
+    The judge prompt's CONTRADICTS semantics ("the newer fact
+    invalidates the older one") depend on the NEW slot actually
+    holding the newer record, so orientation is behavior, not style.
+    """
+
+    def _indexed_pair(
+        self,
+        vault: Vault,
+        index: Index,
+        *,
+        first: tuple[str, str, str],
+        second: tuple[str, str, str],
+    ) -> list[DedupCandidatePair]:
+        """Create two identical-vector memories from (id, updated, body) specs."""
+        v = _normalized_random(7)
+        for mem_id, updated, body in (first, second):
+            m = _make_memory(body=body, vault=vault, mem_id=mem_id, updated=updated)
+            index.upsert(m)
+            index.upsert_vectors(str(m.id), ["c"], [v])
+        return find_dedup_candidate_pairs(vault, index, neighbors_per_memory=10)
+
+    def test_newer_side_is_a_when_newer_id_sorts_last(self, vault: Vault, index: Index) -> None:
+        pairs = self._indexed_pair(
+            vault,
+            index,
+            first=("00000000-0000-4000-8000-00000000000a", "2026-01-01T00:00:00+00:00", "old"),
+            second=("ffffffff-ffff-4fff-8fff-fffffffffff0", "2026-06-01T00:00:00+00:00", "new"),
+        )
+        assert len(pairs) == 1
+        assert pairs[0].a_id == "ffffffff-ffff-4fff-8fff-fffffffffff0"
+        assert pairs[0].b_id == "00000000-0000-4000-8000-00000000000a"
+
+    def test_newer_side_is_a_when_newer_id_sorts_first(self, vault: Vault, index: Index) -> None:
+        # Same scenario, opposite id ordering — the orientation must
+        # follow `updated`, not the lexicographic sort.
+        pairs = self._indexed_pair(
+            vault,
+            index,
+            first=("00000000-0000-4000-8000-00000000000a", "2026-06-01T00:00:00+00:00", "new"),
+            second=("ffffffff-ffff-4fff-8fff-fffffffffff0", "2026-01-01T00:00:00+00:00", "old"),
+        )
+        assert len(pairs) == 1
+        assert pairs[0].a_id == "00000000-0000-4000-8000-00000000000a"
+        assert pairs[0].b_id == "ffffffff-ffff-4fff-8fff-fffffffffff0"
+
+    def test_pair_carries_bodies_and_updated(self, vault: Vault, index: Index) -> None:
+        pairs = self._indexed_pair(
+            vault,
+            index,
+            first=("00000000-0000-4000-8000-00000000000a", "2026-01-01T00:00:00+00:00", "old body"),
+            second=(
+                "ffffffff-ffff-4fff-8fff-fffffffffff0",
+                "2026-06-01T00:00:00+00:00",
+                "new body",
+            ),
+        )
+        assert len(pairs) == 1
+        pair = pairs[0]
+        assert pair.a_body.strip() == "new body"
+        assert pair.b_body.strip() == "old body"
+        assert pair.a_updated is not None and pair.a_updated.startswith("2026-06-01")
+        assert pair.b_updated is not None and pair.b_updated.startswith("2026-01-01")
 
 
 class TestNoMutation:
