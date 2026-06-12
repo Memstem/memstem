@@ -5,10 +5,13 @@ editor extensions, internal automation) can call into the same `Search`
 / `Vault` / `Index` instances the watch loop and embed worker already
 use, without spawning a `memstem search` subprocess per query.
 
-Loopback-only by design. No auth in v0.1 — the design assumption is
-that anything able to reach `127.0.0.1:7821` already has filesystem
-access to the vault. Binding to a non-loopback address is allowed by
-config but explicitly logged as a footgun on startup.
+Loopback-only by design — the design assumption is that anything able
+to reach `127.0.0.1:7821` already has filesystem access to the vault.
+Binding to a non-loopback address is allowed by config; for that case
+an optional bearer token can be required on every endpoint except
+`/health` (set the env var named by ``HttpServerConfig.auth_token_env``,
+default ``MEMSTEM_HTTP_TOKEN``). Non-loopback binds without a token are
+still allowed but explicitly logged as a footgun on startup.
 
 Endpoint shapes mirror the MCP tool list one-to-one so the two surfaces
 stay in lockstep:
@@ -29,11 +32,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+import os
+import secrets as _secrets
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import memstem
@@ -45,6 +51,7 @@ from memstem.core.rerank import build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
+from memstem.servers.request_limits import clamp_limit, clamp_rerank_top_n
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +140,7 @@ def build_app(
     search_config: SearchConfig | None = None,
     hygiene_config: HygieneConfig | None = None,
     adapters: Sequence[Adapter] | None = None,
+    auth_token: str | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app bound to the given vault/index/embedder.
 
@@ -147,6 +155,12 @@ def build_app(
     ``adapters`` lets ``/health`` report per-adapter watcher-thread
     liveness (B4). Omit it (standalone server, tests) and the
     ``watchers`` block is empty — never degraded.
+
+    ``auth_token``, when non-empty, requires ``Authorization: Bearer
+    <token>`` on every endpoint except ``/health`` (kept open so
+    monitoring keeps working when auth is turned on; it exposes counts
+    and version, never vault content). ``None``/empty disables auth —
+    the loopback default.
     """
     app = FastAPI(
         title="Memstem",
@@ -164,6 +178,21 @@ def build_app(
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
+    if auth_token:
+
+        @app.middleware("http")
+        async def _bearer_auth(
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            if request.url.path != "/health":
+                supplied = request.headers.get("authorization", "")
+                expected = f"Bearer {auth_token}"
+                # bytes, not str: compare_digest raises on non-ASCII str input,
+                # and a malformed header must yield 401, not 500.
+                if not _secrets.compare_digest(supplied.encode(), expected.encode()):
+                    return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            return await call_next(request)
 
     sc = search_config or SearchConfig()
     hc = hygiene_config or HygieneConfig()
@@ -261,7 +290,7 @@ def build_app(
         def _run() -> list[SearchHit]:
             results = search.search(
                 query=req.query,
-                limit=req.limit,
+                limit=clamp_limit(req.limit),
                 types=req.types,
                 rrf_k=req.rrf_k if req.rrf_k is not None else sc.rrf_k,
                 bm25_weight=(req.bm25_weight if req.bm25_weight is not None else sc.bm25_weight),
@@ -276,7 +305,11 @@ def build_app(
                 type_bias=(req.type_bias if req.type_bias is not None else sc.type_bias),
                 mmr_lambda=(req.mmr_lambda if req.mmr_lambda is not None else sc.mmr_lambda),
                 rerank_top_n=(
-                    req.rerank_top_n if req.rerank_top_n is not None else default_rerank_top_n
+                    # Request-supplied values are clamped; the operator-
+                    # configured default is trusted as-is.
+                    clamp_rerank_top_n(req.rerank_top_n)
+                    if req.rerank_top_n is not None
+                    else default_rerank_top_n
                 ),
                 log_client=log_client,
                 log_max_rows=hc.query_log_max_rows,
@@ -349,12 +382,26 @@ async def serve(
         logger.info("http server disabled in config; skipping")
         return
 
+    # Bearer auth is opt-in via environment: setting the env var named by
+    # `auth_token_env` (default MEMSTEM_HTTP_TOKEN) turns it on — no config
+    # edit needed, and the token never lands in config.yaml inside the vault.
+    auth_token = os.environ.get(config.auth_token_env, "") if config.auth_token_env else ""
+
     if config.host not in ("127.0.0.1", "localhost", "::1"):
-        logger.warning(
-            "http server bound to non-loopback address %s — there is no auth in v0.1; "
-            "anyone reachable can read your vault",
-            config.host,
-        )
+        if auth_token:
+            logger.info(
+                "http server bound to non-loopback address %s with bearer auth "
+                "enabled (token from $%s; /health stays open for monitoring)",
+                config.host,
+                config.auth_token_env,
+            )
+        else:
+            logger.warning(
+                "http server bound to non-loopback address %s with NO auth — anyone "
+                "reachable can read your vault. Set $%s to require a bearer token.",
+                config.host,
+                config.auth_token_env,
+            )
 
     # uvicorn is imported lazily so users running `memstem search` (which
     # never starts the server) don't pay the import cost.
@@ -367,6 +414,7 @@ async def serve(
         search_config=search_config,
         hygiene_config=hygiene_config,
         adapters=adapters,
+        auth_token=auth_token or None,
     )
     server_config = uvicorn.Config(
         app=app,

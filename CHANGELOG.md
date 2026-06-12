@@ -5,7 +5,33 @@ All notable changes to Memstem will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.0] - 2026-06-12
+
+Security hardening: request-edge clamps, vault-internals path guard,
+optional HTTP bearer auth, Gemini key header. Plus docs/CI housekeeping.
+
+### Security
+
+- **Caller-supplied `limit`/`rerank_top_n` are clamped at the request edge.**
+  An agent passing a pathological `limit` (MCP or HTTP search) no longer
+  triggers an unbounded scan/MMR pass, and a huge HTTP `rerank_top_n` no
+  longer fans that many documents out to the shared reranker LLM. Limits
+  clamp to `[1, 100]`, `rerank_top_n` to `[1, 50]`; operator-configured
+  defaults are not clamped.
+- **`memstem_upsert` rejects underscore-prefixed path components.** An
+  explicit `path` like `_meta/...` could previously write inside the vault's
+  internals directory (`index.db` and `config.yaml` live there). Such paths
+  now fail with a clear error telling the agent to retry without `path`;
+  metadata normalization (coerce-never-reject) is unaffected.
+- **Optional bearer-token auth for the HTTP server.** Setting the env var
+  named by `http_server.auth_token_env` (default `MEMSTEM_HTTP_TOKEN`)
+  requires `Authorization: Bearer <token>` on every endpoint except
+  `/health` (kept open for monitoring; it exposes counts/version, never
+  vault content). Default remains no-auth on loopback; the non-loopback
+  no-auth startup warning now points at the env var.
+- **Gemini embedder sends its API key in the `x-goog-api-key` header**
+  instead of a `?key=` URL query parameter, which leaked into access/proxy
+  logs and URL-bearing error messages.
 
 ### Fixed
 

@@ -296,6 +296,55 @@ class TestUpsertTool:
         )
         assert result["path"] == "memories/custom/place.md"
 
+    async def test_underscore_prefixed_path_rejected(self, vault: Vault, index: Index) -> None:
+        # `_meta/` holds index.db and config.yaml — an agent-supplied path
+        # must not be able to write there. The error message points the
+        # agent at the recovery (omit `path`).
+        mcp = build_server(vault, index)
+        for bad in ("_meta/evil.md", "memories/_sneaky/x.md", "_anything/y.md"):
+            with pytest.raises(Exception, match="reserved for vault internals"):
+                await _call_tool(
+                    mcp,
+                    "memstem_upsert",
+                    {"frontmatter": {"type": "memory"}, "body": "x", "path": bad},
+                )
+        # Nothing was written under _meta or anywhere else by the attempts.
+        assert not (vault.root / "_meta" / "evil.md").exists()
+
+    async def test_underscore_rejection_recovers_without_path(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # The documented recovery — same content, no `path` — lands at an
+        # auto-generated location.
+        mcp = build_server(vault, index)
+        result = await _call_tool(
+            mcp,
+            "memstem_upsert",
+            {"frontmatter": {"type": "memory"}, "body": "recovered"},
+        )
+        assert result["path"].startswith("memories/")
+
+    async def test_search_limit_clamped(self, vault: Vault, index: Index) -> None:
+        # A pathological limit must not reach Search unbounded — the MCP
+        # edge clamps it to MAX_SEARCH_LIMIT (and floors zero/negatives).
+        from memstem.core.search import Search
+        from memstem.servers.request_limits import MAX_SEARCH_LIMIT
+
+        _make_memory(body="clamp probe", vault=vault, index=index)
+        seen: list[int] = []
+        original = Search.search
+
+        def spy(self: Search, **kwargs: Any) -> Any:
+            seen.append(kwargs["limit"])
+            return original(self, **kwargs)
+
+        mcp = build_server(vault, index)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Search, "search", spy)
+            await _call_tool(mcp, "memstem_search", {"query": "clamp", "limit": 10**9})
+            await _call_tool(mcp, "memstem_search", {"query": "clamp", "limit": -5})
+        assert seen == [MAX_SEARCH_LIMIT, 1]
+
     async def test_invalid_id_is_normalized_not_rejected(self, vault: Vault, index: Index) -> None:
         # Previously an unparseable id raised a validation error; now it's
         # replaced with a generated valid id and the save lands.
