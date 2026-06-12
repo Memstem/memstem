@@ -9,14 +9,17 @@ configurable number of attempts so a single bad record doesn't block
 the queue.
 
 Concurrency is task-level: ``run_workers(N, ...)`` spawns N async tasks
-that share the queue. SQLite serializes writes, so the workers
-naturally take different memory_ids without explicit locking.
+that share the queue. Each worker claims its rows atomically via
+``Index.claim_pending`` (a leased claim, recoverable if the worker
+crashes), so concurrent workers — including a parallel ``memstem
+embed`` process — never embed the same record twice in flight.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from memstem.core.embeddings import (
@@ -54,6 +57,13 @@ class EmbedWorker:
     # provider gets picked up promptly.
     MAX_TRANSIENT_BACKOFF: float = 60.0
 
+    # How long a queue-row claim stays valid. Generous relative to a
+    # batch (8 records x a few seconds each); only a worker that crashed
+    # or hung mid-batch ever lets a claim age out, at which point the
+    # row becomes reclaimable by any worker. Normal completion releases
+    # the claim within seconds via dequeue / mark_embed_error / release.
+    CLAIM_LEASE_SECONDS: float = 300.0
+
     def __init__(
         self,
         *,
@@ -67,6 +77,13 @@ class EmbedWorker:
         worker_id: int = 0,
         embedding_signature: str = "",
     ) -> None:
+        if batch_size < 1:
+            # batch_size=0 wouldn't crash — claim_pending(limit=0) returns
+            # nothing, so the worker would idle forever while the queue
+            # grows. (And SQLite treats a negative LIMIT as unlimited.)
+            # Config validation catches config.yaml; this catches direct
+            # callers like `memstem embed --batch-size`.
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
         self.vault = vault
         self.index = index
         self.embedder = embedder
@@ -76,6 +93,9 @@ class EmbedWorker:
         self.backoff_base = backoff_base
         self.worker_id = worker_id
         self.embedding_signature = embedding_signature
+        # Queue-claim identity: distinguishes this worker from siblings in
+        # the same daemon AND from a parallel `memstem embed` process.
+        self._claimant = f"pid{os.getpid()}:w{worker_id}"
         # Consecutive transient-error count, used for exponential backoff
         # between ticks. Reset to 0 on any successful tick.
         self._transient_streak = 0
@@ -129,14 +149,18 @@ class EmbedWorker:
         - ``False`` after a permanent error → leave the streak alone
           (don't punish the queue for a single bad record).
         """
-        pending = self.index.queue_pending(limit=self.batch_size)
-        if not pending:
+        claimed = self.index.claim_pending(
+            limit=self.batch_size,
+            claimant=self._claimant,
+            lease_seconds=self.CLAIM_LEASE_SECONDS,
+        )
+        if not claimed:
             return 0
 
         embedded = 0
         any_transient = False
-        for memory_id in pending:
-            ok, transient = await asyncio.to_thread(self._embed_one, memory_id)
+        for memory_id, enqueued_at in claimed:
+            ok, transient = await asyncio.to_thread(self._embed_one, memory_id, enqueued_at)
             if ok:
                 embedded += 1
             elif transient:
@@ -151,9 +175,15 @@ class EmbedWorker:
             self._transient_streak += 1
         return embedded
 
-    def _embed_one(self, memory_id: str) -> tuple[bool, bool]:
+    def _embed_one(self, memory_id: str, claim_token: str) -> tuple[bool, bool]:
         """Embed one record. Sync — runs under :func:`asyncio.to_thread`
         so HTTP and SQLite I/O don't block the event loop.
+
+        ``claim_token`` is the row's ``enqueued_at`` as observed by
+        :meth:`Index.claim_pending`; every dequeue here is guarded on it
+        so a record that was re-enqueued (content changed) mid-embed
+        keeps its fresher queue entry instead of being erased by this
+        stale result.
 
         Returns ``(ok, transient)``:
         - ``ok`` is ``True`` iff the record was successfully embedded.
@@ -164,8 +194,28 @@ class EmbedWorker:
         try:
             body, text_chunks, image_urls = self._read_for_embed(memory_id)
         except _RecordMissingError:
-            # Vault file gone — drop the queue entry; nothing to embed.
-            self.index.dequeue_embed(memory_id)
+            rel_path = self.index.get_path(memory_id)
+            if rel_path is None:
+                # memories row deleted mid-embed; the cascade already
+                # removed our queue row — make sure and move on.
+                self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
+            elif not (self.vault.root / rel_path).is_file():
+                # Canonical markdown deleted — prune the whole record
+                # (memories/FTS/vec/queue/state), not just the queue
+                # entry; orphaned index rows would keep serving search
+                # results for content that no longer exists.
+                self.index.delete(memory_id)
+                logger.info(
+                    "embed worker %d: pruned %s — vault file %s deleted",
+                    self.worker_id,
+                    memory_id,
+                    rel_path,
+                )
+            else:
+                # The file exists after all: the record's path moved (or
+                # the file reappeared) between our path lookup and the
+                # read. Hand the row back and retry next tick.
+                self.index.release_embed_claim(memory_id)
             return False, False
         except InvalidFrontmatterError as exc:
             # Vault file exists but its frontmatter no longer validates
@@ -189,7 +239,7 @@ class EmbedWorker:
             # Empty body still counts as a successful "embed" — record
             # the state so the pipeline doesn't keep re-enqueueing it.
             self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
-            self.index.dequeue_embed(memory_id)
+            self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
             return True, False
 
         try:
@@ -210,6 +260,10 @@ class EmbedWorker:
                 memory_id,
                 exc,
             )
+            # Hand the row straight back instead of letting the claim age
+            # out — a healthier worker (or this one, next tick) can retry
+            # immediately.
+            self.index.release_embed_claim(memory_id)
             return False, True
         except EmbeddingError as exc:
             logger.warning("embed worker %d: failed for %s: %s", self.worker_id, memory_id, exc)
@@ -242,7 +296,7 @@ class EmbedWorker:
             return False, False
 
         self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
-        self.index.dequeue_embed(memory_id)
+        self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
         return True, False
 
     def _read_for_embed(self, memory_id: str) -> tuple[str, list[str], list[str]]:

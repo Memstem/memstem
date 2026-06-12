@@ -59,24 +59,24 @@ class EmbeddingConfig(BaseModel):
     """Override the provider's default base URL. Defaults to ``http://localhost:11434``
     for ollama; provider-specific defaults for openai/gemini/voyage."""
 
-    dimensions: int = 768
+    dimensions: int = Field(default=768, ge=1)
 
     api_key_env: str | None = None
     """Name of the environment variable holding the API key. Defaults
     to ``OPENAI_API_KEY`` / ``GEMINI_API_KEY`` / ``VOYAGE_API_KEY``
     depending on provider; ignored for ollama."""
 
-    workers: int = 2
+    workers: int = Field(default=2, ge=1)
     """Concurrent embedding workers draining the queue. CPU-bound Ollama
     is happiest at 1; API providers tolerate higher values (4 is a
     sensible cap to avoid hitting per-account rate limits)."""
 
-    batch_size: int = 8
+    batch_size: int = Field(default=8, ge=1)
     """How many records the worker pulls from the queue per iteration.
     Each record's chunks are batched in a single API call when the
     backend supports it."""
 
-    max_request_inputs: int | None = None
+    max_request_inputs: int | None = Field(default=None, ge=1)
     """Max inputs per embedding request (openai provider only). ``None``
     auto-picks by endpoint: 100 for OpenAI Inc., 32 for self-hosted
     OpenAI-compatible servers (vLLM/TGI/LM Studio), which cap lower — our
@@ -170,10 +170,10 @@ class RerankerConfig(BaseModel):
 class SearchConfig(BaseModel):
     """Hybrid search configuration."""
 
-    rrf_k: int = 60
+    rrf_k: int = Field(default=60, ge=1)
     bm25_weight: float = 1.0
     vector_weight: float = 1.0
-    default_limit: int = 10
+    default_limit: int = Field(default=10, ge=1)
     importance_weight: float = 0.2
     """ADR 0008 Tier 1 alpha. ``final = rrf * (1 + alpha * importance)``.
 
@@ -205,7 +205,7 @@ class SearchConfig(BaseModel):
     little relevance for more topic spread (the value validated on Brad's
     corpus), ``1.0`` reduces to identity. See :meth:`Search.search`."""
 
-    rerank_top_n: int | None = None
+    rerank_top_n: int | None = Field(default=None, ge=1)
     """Cross-encoder rerank pool size (ADR 0017) applied in the daemon /
     MCP / CLI search path. ``None`` (default) skips rerank entirely. An
     integer N re-scores the top-N materialized candidates via the
@@ -224,7 +224,7 @@ class HygieneConfig(BaseModel):
     """Hygiene worker configuration."""
 
     dedup_threshold: float = 0.95
-    decay_half_life_days: int = 90
+    decay_half_life_days: int = Field(default=90, ge=1)
     skill_extraction_enabled: bool = True
     query_log_enabled: bool = True
     """ADR 0008 Tier 1 query log (search/get exposure log).
@@ -236,7 +236,7 @@ class HygieneConfig(BaseModel):
     entirely — useful for shared-host setups where the query text is
     sensitive."""
 
-    query_log_max_rows: int = 100_000
+    query_log_max_rows: int = Field(default=100_000, ge=0)
     """Row cap for the ``query_log`` table. When exceeded, the oldest
     rows are pruned by id to keep the table bounded between hygiene
     sweeps. 100k is roughly 30 days at 100 queries/day with 30 hits
@@ -254,29 +254,29 @@ class HygieneConfig(BaseModel):
     multi-tenant containers where the operator hasn't authorized LLM
     spend."""
 
-    loop_poll_interval_seconds: int = 60
+    loop_poll_interval_seconds: int = Field(default=60, ge=1)
     """How often the loop wakes to check stage timers."""
 
-    distill_interval_seconds: int = 6 * 3600
+    distill_interval_seconds: int = Field(default=6 * 3600, ge=0)
     """Cadence for the ``distill-sessions`` stage."""
 
-    dedup_interval_seconds: int = 24 * 3600
+    dedup_interval_seconds: int = Field(default=24 * 3600, ge=0)
     """Cadence for the ``dedup-candidates`` + ``dedup-judge`` stages."""
 
-    importance_interval_seconds: int = 3600
+    importance_interval_seconds: int = Field(default=3600, ge=0)
     """Cadence for the ``importance`` stage."""
 
-    project_records_interval_seconds: int = 24 * 3600
+    project_records_interval_seconds: int = Field(default=24 * 3600, ge=0)
     """Cadence for the ``project-records`` stage."""
 
-    distill_max_per_cycle: int = 50
+    distill_max_per_cycle: int = Field(default=50, ge=0)
     """Cap on distillations applied per cycle. Prevents a cold vault
     from running thousands of LLM calls on the first tick."""
 
-    dedup_max_per_cycle: int = 100
+    dedup_max_per_cycle: int = Field(default=100, ge=0)
     """Cap on candidate pairs judged per dedup cycle."""
 
-    dedup_max_outer_memories: int = 500
+    dedup_max_outer_memories: int = Field(default=500, ge=0)
     """Cap on the outer-loop scan in ``find_dedup_candidate_pairs``.
     Candidate generation is O(N²) on the indexed memory count — a full
     walk on a multi-thousand-record vault can take tens of minutes,
@@ -336,7 +336,7 @@ class HygieneConfig(BaseModel):
     when the value is a dummy (self-hosted servers) to avoid
     polluting the canonical ``OPENAI_API_KEY``."""
 
-    stage_lock_max_age_seconds: int = 3600
+    stage_lock_max_age_seconds: int = Field(default=3600, ge=1)
     """A ``running_since:<stage>`` lock older than this is treated as
     crashed and cleared on the next acquire attempt. Keeps the loop
     self-healing across daemon crashes mid-cycle."""
@@ -355,7 +355,7 @@ class HttpServerConfig(BaseModel):
 
     enabled: bool = True
     host: str = "127.0.0.1"
-    port: int = 7821
+    port: int = Field(default=7821, ge=1, le=65535)
 
 
 class McpServerConfig(BaseModel):
@@ -375,7 +375,7 @@ class McpServerConfig(BaseModel):
     periods).
     """
 
-    idle_timeout_seconds: int = 1800  # 30 minutes
+    idle_timeout_seconds: int = Field(default=1800, ge=0)  # 30 minutes
 
 
 class OpenClawLayout(BaseModel):
@@ -495,7 +495,7 @@ class AdaptersConfig(BaseModel):
     claude_code: ClaudeCodeAdapterConfig = Field(default_factory=ClaudeCodeAdapterConfig)
     codex: CodexAdapterConfig = Field(default_factory=CodexAdapterConfig)
 
-    reconcile_interval_seconds: int = 6 * 3600
+    reconcile_interval_seconds: int = Field(default=6 * 3600, ge=0)
     """Cadence of the periodic catch-up reconcile (B4 self-heal).
 
     The daemon re-runs every adapter's reconcile sweep on this interval,

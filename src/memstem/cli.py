@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import typer
 import yaml
@@ -189,10 +189,26 @@ def _load_config(vault_path: Path) -> Config:
     return Config.model_validate(raw)
 
 
-def _open_index(config: Config) -> Index:
+def _open_index(
+    config: Config, on_dimension_mismatch: Literal["fail", "rebuild"] = "fail"
+) -> Index:
+    """Connect to the index, enforcing the A5 embedder guards.
+
+    ``connect()`` fails loud (:class:`EmbeddingDimensionMismatchError`)
+    when the config's dimensions no longer match the vec table — pass
+    ``on_dimension_mismatch="rebuild"`` only from ``memstem reindex``,
+    the documented remedy, which drops the vectors and re-embeds. The
+    signature check then warns + requeues on a same-dimensions embedder
+    switch.
+    """
     db_path = config.index_path or config.vault_path / "_meta" / "index.db"
-    idx = Index(db_path, dimensions=config.embedding.dimensions)
+    idx = Index(
+        db_path,
+        dimensions=config.embedding.dimensions,
+        on_dimension_mismatch=on_dimension_mismatch,
+    )
     idx.connect()
+    idx.verify_embedding_signature(_embedding_signature(config))
     return idx
 
 
@@ -659,7 +675,9 @@ def reindex(
 
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
-    index = _open_index(cfg)
+    # reindex is the documented remedy for an embedder dimension change:
+    # opt into the vec-table rebuild instead of the fail-loud default.
+    index = _open_index(cfg, on_dimension_mismatch="rebuild")
     try:
         count = 0
         reseeded = 0
@@ -679,7 +697,13 @@ def reindex(
             if embed:
                 index.enqueue_embed(str(target.id))
             count += 1
+        # Rebuild means mirror-the-vault: rows whose markdown is gone are
+        # pruned unconditionally (explicit operator action — no safety
+        # valve, unlike the daemon's automatic sweeps).
+        pruned = _prune_deleted_vault_files(vault_obj, index, max_fraction=None)
         typer.echo(f"reindexed {count} memories")
+        if pruned:
+            typer.echo(f"pruned {pruned} record(s) whose vault file no longer exists")
         if reseed_importance:
             typer.echo(f"reseeded importance on {reseeded} record(s)")
         if embed:
@@ -1058,6 +1082,53 @@ def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     return index.find_memory_id_for_body_hash(normalized_body_hash(record.body)) == existing_id
 
 
+def _prune_deleted_vault_files(
+    vault: Vault, index: Index, *, max_fraction: float | None = 0.5
+) -> int:
+    """Remove index rows whose canonical markdown file is gone.
+
+    The markdown vault is canonical and the index is derived — but
+    nothing used to notice a deleted vault file, so its memories / FTS /
+    vec rows kept serving search results for content that no longer
+    existed. This sweep stats every indexed path and prunes the rows
+    whose file is missing. Returns the number pruned.
+
+    ``max_fraction`` is a safety valve for the daemon's automatic sweeps:
+    when more than ``max(10, max_fraction * total)`` records are missing,
+    the cause is far more likely a missing/misconfigured vault mount than
+    a mass deletion, and pruning would wipe a healthy index. The sweep is
+    skipped with a loud error instead; ``memstem reindex`` (an explicit
+    operator action) passes ``None`` to prune unconditionally.
+
+    ``record_map`` rows are intentionally kept: if the upstream source
+    still exists and re-emits, the record is re-ingested under its old
+    id (stable ids), and its vault file is recreated — deleting the vault
+    copy of an adapter-backed record only "forgets" it until the next
+    reconcile. Deleting the upstream source (or an MCP-born record's
+    file) forgets it permanently.
+    """
+    rows = index.all_paths()
+    missing = [(mid, p) for mid, p in rows if not (vault.root / p).is_file()]
+    if not missing:
+        return 0
+    if max_fraction is not None and len(missing) > max(10, int(len(rows) * max_fraction)):
+        logger.error(
+            "vault-delete prune skipped: %d of %d indexed records have no vault "
+            "file — that looks like a missing or misconfigured vault mount, not "
+            "deletions. Fix the vault path, or run `memstem reindex` to force "
+            "the prune.",
+            len(missing),
+            len(rows),
+        )
+        return 0
+    for memory_id, path in missing:
+        index.delete(memory_id)
+        logger.info("pruned %s: vault file %s deleted", memory_id, path)
+    if missing:
+        logger.info("vault-delete prune removed %d record(s)", len(missing))
+    return len(missing)
+
+
 async def _reconcile_all(
     pipeline: Pipeline,
     streams: list[tuple[AsyncGenerator[MemoryRecord, None], str]],
@@ -1078,6 +1149,9 @@ async def _reconcile_all(
         await asyncio.sleep(0)
         for stream, label in streams:
             await _reconcile_into_pipeline(pipeline, stream, label)
+        # After every adapter has had its say, drop index rows whose
+        # canonical vault file was deleted while the daemon was down.
+        await asyncio.to_thread(_prune_deleted_vault_files, pipeline.vault, pipeline.index)
         logger.info("startup reconcile complete for all adapters")
     except Exception:
         logger.exception("startup reconcile failed; live watchers remain active")
@@ -1107,6 +1181,7 @@ async def _periodic_reconcile(
         try:
             for stream, label in make_streams():
                 await _reconcile_into_pipeline(pipeline, stream, label)
+            await asyncio.to_thread(_prune_deleted_vault_files, pipeline.vault, pipeline.index)
             logger.info("periodic reconcile complete for all adapters")
         except Exception:
             logger.exception("periodic reconcile failed; retrying next interval")

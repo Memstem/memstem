@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -12,7 +13,12 @@ from uuid import uuid4
 import pytest
 
 from memstem.core.frontmatter import Frontmatter, validate
-from memstem.core.index import Index, body_hash, extract_wikilinks
+from memstem.core.index import (
+    EmbeddingDimensionMismatchError,
+    Index,
+    body_hash,
+    extract_wikilinks,
+)
 from memstem.core.storage import Memory
 
 
@@ -97,8 +103,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 11 in ADRs 0020/0021 (summarizer_cache table).
-        assert version == 11
+        # Bumped to 13 for the index_meta embedder-signature table (A5).
+        assert version == 13
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -115,7 +121,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [11]
+            assert [r["version"] for r in rows] == [13]
         finally:
             idx.close()
 
@@ -623,6 +629,225 @@ class TestEmbedState:
                 idx._db = real_db
         finally:
             idx.close()
+
+
+class TestDimensionGuard:
+    """A5: a dimension change must fail loud at connect, not surface as
+    per-record insert failures (or silently broken vector search) later.
+    """
+
+    def test_reopen_with_changed_dimensions_fails_loud(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        idx.close()
+        with pytest.raises(EmbeddingDimensionMismatchError, match=r"8-dim.*asks for 16"):
+            Index(db_path, dimensions=16).connect()
+
+    def test_reopen_with_same_dimensions_is_fine(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        Index(db_path, dimensions=8).connect()
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        idx.close()
+
+    def test_rebuild_mode_drops_vectors_and_embed_state(self, tmp_path: Path) -> None:
+        """`memstem reindex` path: rebuild the vec table at the new
+        dimensions, and clear embed_state so every record counts as
+        never-embedded (its rows would otherwise certify vectors that no
+        longer exist)."""
+        db_path = tmp_path / "index.db"
+        idx = Index(db_path, dimensions=8)
+        idx.connect()
+        memory = _make_memory()
+        idx.upsert(memory)
+        idx.upsert_vectors(str(memory.id), ["chunk"], [_fake_embedding(1, dims=8)])
+        idx.record_embed_state(str(memory.id), body_hash(memory.body), "p:m:8")
+        idx.close()
+
+        idx2 = Index(db_path, dimensions=16, on_dimension_mismatch="rebuild")
+        idx2.connect()
+        try:
+            assert idx2.db.execute("SELECT COUNT(*) AS n FROM memories_vec").fetchone()["n"] == 0
+            assert idx2.db.execute("SELECT COUNT(*) AS n FROM embed_state").fetchone()["n"] == 0
+            # The memory itself (canonical metadata/FTS) survives, and the
+            # rebuilt table accepts the new dimensions.
+            assert idx2.get_path(str(memory.id)) is not None
+            idx2.upsert_vectors(str(memory.id), ["chunk"], [_fake_embedding(2, dims=16)])
+        finally:
+            idx2.close()
+
+
+class TestEmbeddingSignatureVerify:
+    """A5: the index-level embedder signature is persisted, and a
+    same-dimensions embedder switch requeues every record still carrying
+    the old signature (records that never re-emit would otherwise keep
+    old-model vectors forever — silently mixed vector spaces)."""
+
+    def test_first_verify_stamps_then_ok(self, index: Index) -> None:
+        assert index.verify_embedding_signature("p:m:768") == "stamped"
+        assert index.verify_embedding_signature("p:m:768") == "ok"
+
+    def test_change_requeues_stale_records(self, index: Index) -> None:
+        memory = _make_memory()
+        index.upsert(memory)
+        index.record_embed_state(str(memory.id), body_hash(memory.body), "old:model:768")
+        assert index.verify_embedding_signature("old:model:768") == "stamped"
+        assert index.queue_stats()["pending"] == 0
+
+        assert index.verify_embedding_signature("new:model:768") == "changed"
+        assert index.queue_stats()["pending"] == 1
+        row = index.db.execute(
+            "SELECT 1 FROM embed_queue WHERE memory_id = ? AND failed = 0",
+            (str(memory.id),),
+        ).fetchone()
+        assert row is not None
+        # And the new signature is now the recorded one.
+        assert index.verify_embedding_signature("new:model:768") == "ok"
+
+    def test_change_grandfathers_legacy_null_signatures(self, index: Index) -> None:
+        memory = _make_memory()
+        index.upsert(memory)
+        with index.lock, index.db:
+            index.db.execute(
+                "INSERT INTO embed_state(memory_id, body_hash, embed_signature, embedded_at) "
+                "VALUES (?, ?, NULL, '2026-01-01T00:00:00+00:00')",
+                (str(memory.id), body_hash(memory.body)),
+            )
+        index.verify_embedding_signature("a:b:768")
+        assert index.verify_embedding_signature("c:d:768") == "changed"
+        assert index.queue_stats()["pending"] == 0
+
+    def test_change_skips_records_already_on_new_signature(self, index: Index) -> None:
+        memory = _make_memory()
+        index.upsert(memory)
+        index.record_embed_state(str(memory.id), body_hash(memory.body), "new:model:768")
+        index.verify_embedding_signature("old:model:768")
+        assert index.verify_embedding_signature("new:model:768") == "changed"
+        assert index.queue_stats()["pending"] == 0
+
+
+class TestClaimLease:
+    """A4: workers claim queue rows atomically, with a crash-safe lease.
+
+    ``claim_pending`` must hand each pending row to exactly one claimant
+    (across threads AND across processes / connections), and a claim
+    must expire after its lease so rows from a crashed worker get
+    reclaimed instead of stranded.
+    """
+
+    def _enqueue_n(self, index: Index, n: int) -> list[str]:
+        ids: list[str] = []
+        for _ in range(n):
+            m = _make_memory()
+            index.upsert(m)
+            index.enqueue_embed(str(m.id))
+            ids.append(str(m.id))
+        return ids
+
+    def test_claimed_rows_invisible_to_second_claimant(self, index: Index) -> None:
+        ids = self._enqueue_n(index, 3)
+        claimed = index.claim_pending(limit=10, claimant="w0")
+        assert sorted(mid for mid, _ in claimed) == sorted(ids)
+        assert index.claim_pending(limit=10, claimant="w1") == []
+
+    def test_claim_respects_limit_and_leaves_rest_claimable(self, index: Index) -> None:
+        ids = self._enqueue_n(index, 4)
+        first = index.claim_pending(limit=3, claimant="w0")
+        rest = index.claim_pending(limit=10, claimant="w1")
+        assert len(first) == 3
+        assert len(rest) == 1
+        assert {mid for mid, _ in first} | {mid for mid, _ in rest} == set(ids)
+
+    def test_concurrent_connections_get_disjoint_rows(self, tmp_path: Path) -> None:
+        """Two connections on the same file — the cross-process shape
+        (daemon workers vs a parallel `memstem embed`)."""
+        db_path = tmp_path / "claim.db"
+        a = Index(db_path, dimensions=768)
+        a.connect()
+        b = Index(db_path, dimensions=768)
+        b.connect()
+        try:
+            ids = self._enqueue_n(a, 6)
+            got_a = a.claim_pending(limit=3, claimant="procA")
+            got_b = b.claim_pending(limit=10, claimant="procB")
+            ids_a = {mid for mid, _ in got_a}
+            ids_b = {mid for mid, _ in got_b}
+            assert ids_a.isdisjoint(ids_b)
+            assert ids_a | ids_b == set(ids)
+        finally:
+            a.close()
+            b.close()
+
+    def test_expired_lease_is_reclaimable(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        assert index.claim_pending(limit=1, claimant="crashed") != []
+        time.sleep(0.01)
+        reclaimed = index.claim_pending(limit=1, claimant="rescuer", lease_seconds=0.0)
+        assert [m for m, _ in reclaimed] == [mid]
+
+    def test_live_lease_blocks_reclaim(self, index: Index) -> None:
+        self._enqueue_n(index, 1)
+        assert index.claim_pending(limit=1, claimant="w0", lease_seconds=300.0) != []
+        assert index.claim_pending(limit=1, claimant="w1", lease_seconds=300.0) == []
+
+    def test_release_makes_row_immediately_reclaimable(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        index.claim_pending(limit=1, claimant="w0")
+        index.release_embed_claim(mid)
+        reclaimed = index.claim_pending(limit=1, claimant="w1")
+        assert [m for m, _ in reclaimed] == [mid]
+
+    def test_mark_embed_error_clears_claim(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        index.claim_pending(limit=1, claimant="w0")
+        index.mark_embed_error(mid, "boom", max_retries=5)
+        reclaimed = index.claim_pending(limit=1, claimant="w1")
+        assert [m for m, _ in reclaimed] == [mid]
+
+    def test_failed_rows_are_not_claimable(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        index.mark_embed_error(mid, "boom", max_retries=1)
+        assert index.claim_pending(limit=10, claimant="w0") == []
+
+    def test_claim_token_is_row_enqueued_at(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        [(claimed_id, token)] = index.claim_pending(limit=1, claimant="w0")
+        row = index.db.execute(
+            "SELECT enqueued_at, claimed_by FROM embed_queue WHERE memory_id = ?",
+            (mid,),
+        ).fetchone()
+        assert claimed_id == mid
+        assert token == row["enqueued_at"]
+        assert row["claimed_by"] == "w0"
+
+
+class TestGuardedDequeue:
+    """A6: a worker's dequeue must not erase a queue row that was
+    re-enqueued (content changed) while the worker was embedding the
+    old body — the fresher request has to survive the stale result."""
+
+    def _enqueue_one(self, index: Index) -> str:
+        m = _make_memory()
+        index.upsert(m)
+        index.enqueue_embed(str(m.id))
+        return str(m.id)
+
+    def test_consumes_row_when_token_matches(self, index: Index) -> None:
+        mid = self._enqueue_one(index)
+        [(_, token)] = index.claim_pending(limit=1, claimant="w0")
+        assert index.dequeue_embed_if_unchanged(mid, token) is True
+        assert index.queue_stats()["total"] == 0
+
+    def test_leaves_reenqueued_row_and_releases_claim(self, index: Index) -> None:
+        mid = self._enqueue_one(index)
+        [(_, token)] = index.claim_pending(limit=1, claimant="w0")
+        time.sleep(0.001)  # ensure the re-enqueue gets a later timestamp
+        index.enqueue_embed(mid)  # content changed mid-embed
+        assert index.dequeue_embed_if_unchanged(mid, token) is False
+        # The fresher request survives AND is immediately claimable.
+        reclaimed = index.claim_pending(limit=1, claimant="w1")
+        assert [m for m, _ in reclaimed] == [mid]
 
 
 class TestBackfillEmbedState:

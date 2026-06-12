@@ -198,7 +198,11 @@ class TestTick:
             is None
         )
 
-    def test_drops_queue_entry_when_vault_file_missing(self, vault: Vault, index: Index) -> None:
+    def test_prunes_record_when_vault_file_missing(self, vault: Vault, index: Index) -> None:
+        """Vault-delete prune at the worker: a deleted canonical file
+        removes the whole record from the index (not just the queue
+        entry — orphaned memories/FTS rows would keep serving search
+        results for content that no longer exists)."""
         pipe = Pipeline(vault, index)
         memory = _processed(pipe, _record())
         # Delete the file out from under us.
@@ -213,6 +217,13 @@ class TestTick:
         )
         asyncio.run(worker.tick())
         assert index.queue_stats() == {"pending": 0, "failed": 0, "total": 0}
+        assert index.get_path(str(memory.id)) is None
+        assert (
+            index.db.execute(
+                "SELECT 1 FROM memories_fts WHERE memory_id = ?", (str(memory.id),)
+            ).fetchone()
+            is None
+        )
 
 
 class TestTransientHandling:
@@ -260,6 +271,27 @@ class TestTransientHandling:
             ).fetchone()
             is None
         )
+
+    def test_transient_failure_releases_claim(self, vault: Vault, index: Index) -> None:
+        """A4: a transient failure must hand the row straight back (claim
+        cleared) so another worker can retry immediately instead of
+        waiting out the 5-minute lease."""
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record())
+        embedder = _StubEmbedder()
+        embedder.transient_always = True
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=1, idle_sleep=0
+        )
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT claimed_at, claimed_by FROM embed_queue WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchone()
+        assert row["claimed_at"] is None
+        assert row["claimed_by"] is None
+        # And a sibling claimant can take it right away.
+        assert index.claim_pending(limit=1, claimant="other") != []
 
     def test_transient_streak_drives_backoff(self, vault: Vault, index: Index) -> None:
         """Consecutive transient ticks bump the worker's backoff
@@ -407,6 +439,57 @@ class TestQueueOps:
         n = index.reset_failed_queue()
         assert n == 1
         assert index.queue_stats() == {"pending": 1, "failed": 0, "total": 1}
+
+
+class TestGuardedDequeue:
+    """A6 at the worker level: a record re-enqueued mid-embed (its
+    content changed while the worker was round-tripping the embedder)
+    must stay queued and get re-embedded with the new content."""
+
+    def test_reenqueued_record_survives_and_reembeds(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="original body"))
+        mid = str(memory.id)
+
+        class _ReenqueuingEmbedder(_StubEmbedder):
+            """Re-enqueues the record mid-flight, simulating the
+            pipeline ingesting a content change while the worker is
+            inside the embedder round trip."""
+
+            def __init__(self, idx: Index) -> None:
+                super().__init__()
+                self._idx = idx
+                self.reenqueue_next = True
+
+            def embed_batch(self, texts: list[str]) -> list[list[float]]:
+                if self.reenqueue_next:
+                    self.reenqueue_next = False
+                    time.sleep(0.001)  # later enqueued_at than the claim token
+                    self._idx.enqueue_embed(mid)
+                return super().embed_batch(texts)
+
+        embedder = _ReenqueuingEmbedder(index)
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=1, idle_sleep=0
+        )
+
+        # First tick embeds the (stale) body; the guarded dequeue must
+        # leave the fresher queue entry in place, unclaimed.
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT failed, claimed_at FROM embed_queue WHERE memory_id = ?",
+            (mid,),
+        ).fetchone()
+        assert row is not None, "re-enqueued row was erased by the stale dequeue"
+        assert row["failed"] == 0
+        assert row["claimed_at"] is None
+
+        # Second tick re-embeds and consumes the queue entry normally.
+        asyncio.run(worker.tick())
+        assert (
+            index.db.execute("SELECT 1 FROM embed_queue WHERE memory_id = ?", (mid,)).fetchone()
+            is None
+        )
 
 
 class TestEmbedStateOnSuccess:

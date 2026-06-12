@@ -17,9 +17,9 @@ import struct
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import sqlite_vec
 
@@ -29,8 +29,9 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
+_VEC_DIMS_RE = re.compile(r"FLOAT\[(\d+)\]", re.IGNORECASE)
 
 # SQLite extended error code for `FOREIGN KEY constraint failed` (787 = base
 # SQLITE_CONSTRAINT (19) | (3 << 8)). See https://www.sqlite.org/rescode.html
@@ -57,6 +58,19 @@ def _is_foreign_key_violation(exc: sqlite3.Error) -> bool:
     # Fallback for older bindings / wrapped exceptions where the extended
     # code didn't make it through. SQLite's own message is stable.
     return "FOREIGN KEY constraint failed" in str(exc)
+
+
+class EmbeddingDimensionMismatchError(RuntimeError):
+    """The configured embedding dimensions don't match the vec table.
+
+    Raised on connect when ``memories_vec`` was created with different
+    dimensions than the config now asks for. Mixing dimensions would
+    make every vector insert fail (or, worse, silently break vector
+    search), so the daemon must refuse to start rather than limp along.
+    The remedy is ``memstem reindex`` (which rebuilds the vec table at
+    the new dimensions and re-embeds everything) — or reverting the
+    config change.
+    """
 
 
 def body_hash(body: str) -> str:
@@ -354,6 +368,39 @@ MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_summarizer_cache_ts ON summarizer_cache(ts);
     """,
+    12: """
+        -- Worker claim/lease on the embed queue. `queue_pending` used to
+        -- hand the same rows to every concurrently polling worker (the
+        -- daemon's N workers, or a parallel `memstem embed`), so a slow
+        -- record could be embedded several times in flight — idempotent
+        -- on the vec table, but each duplicate burns an embedder round
+        -- trip. `claim_pending` now stamps `claimed_at`/`claimed_by`
+        -- atomically before a worker touches a row; a claim older than
+        -- its lease is treated as crashed and reclaimable, so a dead
+        -- worker strands nothing.
+        --
+        -- Marker-only entry (like v8): ALTER TABLE ADD COLUMN is not
+        -- idempotent and the migration loop must stay replay-safe, so
+        -- the columns are added by `_ensure_embed_queue_claim_columns`
+        -- in `_migrate()`, gated on PRAGMA table_info.
+        SELECT 1;
+    """,
+    13: """
+        -- Index-level metadata (A5). Currently holds one key,
+        -- `embedding_signature` — the `<provider>:<model>:<dimensions>`
+        -- string the whole index was last verified against. Per-memory
+        -- signatures in `embed_state` drive lazy re-embeds on re-emit,
+        -- but records that never re-emit (MCP upserts, settled vaults)
+        -- would keep old-model vectors forever after an embedder
+        -- switch — silently mixing vector spaces. Persisting the
+        -- index-level signature lets `verify_embedding_signature`
+        -- detect the switch at startup, warn loudly, and requeue the
+        -- stale records.
+        CREATE TABLE IF NOT EXISTS index_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """,
 }
 
 
@@ -383,9 +430,15 @@ class Index:
     class — so worker concurrency on the network side is preserved.
     """
 
-    def __init__(self, db_path: Path | str, dimensions: int = 768) -> None:
+    def __init__(
+        self,
+        db_path: Path | str,
+        dimensions: int = 768,
+        on_dimension_mismatch: Literal["fail", "rebuild"] = "fail",
+    ) -> None:
         self.db_path = Path(db_path)
         self.dimensions = dimensions
+        self.on_dimension_mismatch = on_dimension_mismatch
         self._db: sqlite3.Connection | None = None
         self._lock = threading.RLock()
 
@@ -471,6 +524,7 @@ class Index:
             self.db.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
 
         self._ensure_vec_table()
+        self._ensure_embed_queue_claim_columns()
         # Pre-ADR-0014 this ran on every connect and was the dominant
         # cost of opening a populated index (~35 s on a 1 GB vec0). Now
         # it runs at most once: when an install crosses v8, either via
@@ -550,10 +604,52 @@ class Index:
             payload,
         )
 
+    def _ensure_embed_queue_claim_columns(self) -> None:
+        """Add the v12 claim/lease columns to ``embed_queue`` if absent.
+
+        Lives outside the SQL migration loop because ``ALTER TABLE ADD
+        COLUMN`` has no ``IF NOT EXISTS`` form and the migration scripts
+        must stay replay-safe (the legacy-upgrade path re-runs them
+        against an already-current schema).
+        """
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(embed_queue)")}
+        if "claimed_at" not in cols:
+            self.db.execute("ALTER TABLE embed_queue ADD COLUMN claimed_at TEXT")
+        if "claimed_by" not in cols:
+            self.db.execute("ALTER TABLE embed_queue ADD COLUMN claimed_by TEXT")
+
     def _ensure_vec_table(self) -> None:
         # vec0 virtual tables can't be created in executescript() reliably across
         # versions, and the column dimensions depend on the embedder, so we
         # create it explicitly after the main schema is in place.
+        #
+        # A5 guard: CREATE IF NOT EXISTS silently keeps an existing table
+        # whose dimensions differ from the config — every subsequent
+        # vector insert then fails (or vector search silently degrades).
+        # Detect the mismatch here and fail loud, unless the caller opted
+        # into a rebuild (`memstem reindex`, which re-embeds everything).
+        existing_dims = self._vec_table_dimensions()
+        if existing_dims is not None and existing_dims != self.dimensions:
+            if self.on_dimension_mismatch == "fail":
+                raise EmbeddingDimensionMismatchError(
+                    f"index at {self.db_path} was built with {existing_dims}-dim "
+                    f"vectors but the config now asks for {self.dimensions}. "
+                    "Run `memstem reindex` to rebuild the vector table at the "
+                    "new dimensions (re-embeds every record), or revert the "
+                    "embedding config."
+                )
+            logger.warning(
+                "rebuilding memories_vec: dimensions changed %d -> %d; all "
+                "existing vectors dropped and every record will re-embed",
+                existing_dims,
+                self.dimensions,
+            )
+            self.db.execute("DROP TABLE memories_vec")
+            # The old embed_state rows certify vectors that no longer
+            # exist (a non-NULL body_hash means "has a vector" to
+            # needs_reembed) — clear them so every record counts as
+            # never-embedded.
+            self.db.execute("DELETE FROM embed_state")
         self.db.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
@@ -564,6 +660,21 @@ class Index:
             )
             """
         )
+
+    def _vec_table_dimensions(self) -> int | None:
+        """Dimensions of the existing ``memories_vec`` table, or None.
+
+        Read from the table's CREATE statement in ``sqlite_master`` —
+        vec0 virtual tables expose no PRAGMA for their column types, but
+        the original DDL (with its ``FLOAT[N]``) is preserved verbatim.
+        """
+        row = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'"
+        ).fetchone()
+        if row is None or row["sql"] is None:
+            return None
+        match = _VEC_DIMS_RE.search(row["sql"])
+        return int(match.group(1)) if match else None
 
     def upsert(self, memory: Memory) -> None:
         """Insert or replace a memory's metadata, tags, links, and FTS row.
@@ -812,6 +923,70 @@ class Index:
                     memory_id,
                 )
 
+    def verify_embedding_signature(self, signature: str) -> str:
+        """Reconcile the index-level embedder signature with ``signature``.
+
+        Returns one of:
+        - ``"stamped"`` — no signature was recorded yet (fresh index or
+          first open after upgrading to schema v13); the current one is
+          persisted.
+        - ``"ok"`` — recorded signature matches.
+        - ``"changed"`` — the embedder changed since the index was last
+          verified. The new signature is persisted, a loud warning is
+          logged, and every record whose ``embed_state`` row still
+          carries a different non-NULL signature is re-enqueued so the
+          vault converges back to a single vector space. (Records that
+          re-emit get this lazily via ``needs_reembed``; records that
+          never re-emit — MCP upserts, settled vaults — only converge
+          through this startup sweep.)
+
+        Dimension *changes* never reach here: ``connect()`` fails loud
+        (or rebuilds, for ``memstem reindex``) before any caller can
+        verify. Legacy NULL per-memory signatures stay grandfathered —
+        we don't know what embedder produced them, and re-embedding the
+        whole vault on upgrade is exactly what the NULL convention
+        avoids.
+        """
+        now = datetime.now(tz=UTC).isoformat()
+        with self._lock, self.db:
+            row = self.db.execute(
+                "SELECT value FROM index_meta WHERE key = 'embedding_signature'"
+            ).fetchone()
+            stored = row["value"] if row is not None else None
+            if stored == signature:
+                return "ok"
+            self.db.execute(
+                """
+                INSERT INTO index_meta(key, value) VALUES ('embedding_signature', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (signature,),
+            )
+            if stored is None:
+                return "stamped"
+            cur = self.db.execute(
+                """
+                INSERT INTO embed_queue(memory_id, enqueued_at, retry_count, last_error, failed)
+                SELECT memory_id, ?, 0, NULL, 0 FROM embed_state
+                WHERE embed_signature IS NOT NULL AND embed_signature != ?
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    enqueued_at = excluded.enqueued_at,
+                    retry_count = 0,
+                    last_error = NULL,
+                    failed = 0
+                """,
+                (now, signature),
+            )
+            requeued = int(cur.rowcount)
+        logger.warning(
+            "embedder signature changed (%s -> %s): re-enqueued %d record(s) "
+            "whose vectors were produced by the previous embedder",
+            stored,
+            signature,
+            requeued,
+        )
+        return "changed"
+
     # ---- Embed queue ------------------------------------------------------
 
     def enqueue_embed(self, memory_id: str) -> None:
@@ -837,9 +1012,42 @@ class Index:
             )
 
     def dequeue_embed(self, memory_id: str) -> None:
-        """Remove `memory_id` from the queue (called after a successful embed)."""
+        """Remove `memory_id` from the queue unconditionally.
+
+        For tests and operator tooling. The embed worker uses
+        :meth:`dequeue_embed_if_unchanged` instead, so a stale result
+        can't erase a fresher pending request.
+        """
         with self._lock, self.db:
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
+
+    def dequeue_embed_if_unchanged(self, memory_id: str, enqueued_at: str) -> bool:
+        """Consume a queue row only if it wasn't re-enqueued since claim.
+
+        ``enqueued_at`` is the claim token from :meth:`claim_pending`.
+        ``enqueue_embed`` bumps the stored value on every (re-)enqueue,
+        so a mismatch means the record changed while this worker was
+        embedding the old body — the unconditional DELETE here used to
+        erase that fresher request, leaving the new content unembedded
+        until a later reconcile happened to notice.
+
+        Returns True when the row was consumed. On mismatch the row is
+        left pending and this worker's claim is released, so the fresher
+        request is immediately claimable (by anyone, including us next
+        tick) instead of waiting out the lease.
+        """
+        with self._lock, self.db:
+            cur = self.db.execute(
+                "DELETE FROM embed_queue WHERE memory_id = ? AND enqueued_at = ?",
+                (memory_id, enqueued_at),
+            )
+            if cur.rowcount:
+                return True
+            self.db.execute(
+                "UPDATE embed_queue SET claimed_at = NULL, claimed_by = NULL WHERE memory_id = ?",
+                (memory_id,),
+            )
+        return False
 
     def mark_embed_error(
         self,
@@ -860,14 +1068,21 @@ class Index:
                 UPDATE embed_queue
                 SET retry_count = retry_count + 1,
                     last_error = ?,
-                    failed = CASE WHEN retry_count + 1 >= ? THEN 1 ELSE 0 END
+                    failed = CASE WHEN retry_count + 1 >= ? THEN 1 ELSE 0 END,
+                    claimed_at = NULL,
+                    claimed_by = NULL
                 WHERE memory_id = ?
                 """,
                 (error[:500], max_retries, memory_id),
             )
 
     def queue_pending(self, limit: int) -> list[str]:
-        """Return up to `limit` memory_ids that are pending embedding (not failed)."""
+        """Return up to `limit` memory_ids that are pending embedding (not failed).
+
+        Read-only introspection — workers must use :meth:`claim_pending`
+        instead, which atomically marks the rows as taken so concurrent
+        workers (or a parallel ``memstem embed``) don't double-embed.
+        """
         with self._lock:
             rows = self.db.execute(
                 """
@@ -879,6 +1094,63 @@ class Index:
                 (limit,),
             ).fetchall()
         return [r["memory_id"] for r in rows]
+
+    def claim_pending(
+        self,
+        limit: int,
+        claimant: str,
+        lease_seconds: float = 300.0,
+    ) -> list[tuple[str, str]]:
+        """Atomically claim up to `limit` pending rows for `claimant`.
+
+        Returns ``(memory_id, enqueued_at)`` pairs. The ``enqueued_at``
+        value is the claim token: pass it back to
+        :meth:`dequeue_embed_if_unchanged` so a record that was
+        re-enqueued (content changed) while this worker was embedding it
+        is not erased from the queue by the stale result.
+
+        The claim is a single UPDATE statement, so it is atomic both
+        across worker threads sharing this connection and across
+        processes sharing the database file — two concurrent claimants
+        get disjoint rows. A row whose ``claimed_at`` is older than
+        ``lease_seconds`` is treated as abandoned by a crashed or hung
+        worker and is reclaimable; finished work always releases its
+        claim sooner via dequeue, :meth:`mark_embed_error`, or
+        :meth:`release_embed_claim`.
+        """
+        now = datetime.now(tz=UTC)
+        cutoff = (now - timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock, self.db:
+            rows = self.db.execute(
+                """
+                UPDATE embed_queue
+                SET claimed_at = ?, claimed_by = ?
+                WHERE failed = 0
+                  AND (claimed_at IS NULL OR claimed_at < ?)
+                  AND memory_id IN (
+                    SELECT memory_id FROM embed_queue
+                    WHERE failed = 0 AND (claimed_at IS NULL OR claimed_at < ?)
+                    ORDER BY enqueued_at ASC, retry_count ASC
+                    LIMIT ?
+                  )
+                RETURNING memory_id, enqueued_at
+                """,
+                (now.isoformat(), claimant, cutoff, cutoff, limit),
+            ).fetchall()
+        return [(r["memory_id"], r["enqueued_at"]) for r in rows]
+
+    def release_embed_claim(self, memory_id: str) -> None:
+        """Release a claim without consuming the row (transient failure).
+
+        The row becomes immediately reclaimable instead of waiting out
+        the lease — a worker that hit a network blip shouldn't make the
+        record invisible to healthier workers for minutes.
+        """
+        with self._lock, self.db:
+            self.db.execute(
+                "UPDATE embed_queue SET claimed_at = NULL, claimed_by = NULL WHERE memory_id = ?",
+                (memory_id,),
+            )
 
     def get_path(self, memory_id: str) -> str | None:
         """Return the vault-relative path for a memory id, or None if missing.
@@ -898,6 +1170,17 @@ class Index:
                 "SELECT path FROM memories WHERE id = ?", (str(memory_id),)
             ).fetchone()
         return row["path"] if row else None
+
+    def all_paths(self) -> list[tuple[str, str]]:
+        """Return ``(memory_id, vault-relative path)`` for every indexed memory.
+
+        Used by the vault-delete prune sweep to find rows whose canonical
+        markdown file no longer exists. Locked like every other read on
+        the shared connection.
+        """
+        with self._lock:
+            rows = self.db.execute("SELECT id, path FROM memories").fetchall()
+        return [(r["id"], r["path"]) for r in rows]
 
     def find_memory_id_for_body_hash(self, body_hash: str) -> str | None:
         """Return the memory_id already storing this normalized body hash, or None.
