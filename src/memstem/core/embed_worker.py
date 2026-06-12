@@ -152,8 +152,8 @@ class EmbedWorker:
 
         embedded = 0
         any_transient = False
-        for memory_id, _enqueued_at in claimed:
-            ok, transient = await asyncio.to_thread(self._embed_one, memory_id)
+        for memory_id, enqueued_at in claimed:
+            ok, transient = await asyncio.to_thread(self._embed_one, memory_id, enqueued_at)
             if ok:
                 embedded += 1
             elif transient:
@@ -168,9 +168,15 @@ class EmbedWorker:
             self._transient_streak += 1
         return embedded
 
-    def _embed_one(self, memory_id: str) -> tuple[bool, bool]:
+    def _embed_one(self, memory_id: str, claim_token: str) -> tuple[bool, bool]:
         """Embed one record. Sync — runs under :func:`asyncio.to_thread`
         so HTTP and SQLite I/O don't block the event loop.
+
+        ``claim_token`` is the row's ``enqueued_at`` as observed by
+        :meth:`Index.claim_pending`; every dequeue here is guarded on it
+        so a record that was re-enqueued (content changed) mid-embed
+        keeps its fresher queue entry instead of being erased by this
+        stale result.
 
         Returns ``(ok, transient)``:
         - ``ok`` is ``True`` iff the record was successfully embedded.
@@ -182,7 +188,9 @@ class EmbedWorker:
             body, text_chunks, image_urls = self._read_for_embed(memory_id)
         except _RecordMissingError:
             # Vault file gone — drop the queue entry; nothing to embed.
-            self.index.dequeue_embed(memory_id)
+            # Guarded: a re-enqueue means the record was just rewritten
+            # (its file may exist again) — leave that request alone.
+            self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
             return False, False
         except InvalidFrontmatterError as exc:
             # Vault file exists but its frontmatter no longer validates
@@ -206,7 +214,7 @@ class EmbedWorker:
             # Empty body still counts as a successful "embed" — record
             # the state so the pipeline doesn't keep re-enqueueing it.
             self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
-            self.index.dequeue_embed(memory_id)
+            self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
             return True, False
 
         try:
@@ -263,7 +271,7 @@ class EmbedWorker:
             return False, False
 
         self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
-        self.index.dequeue_embed(memory_id)
+        self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
         return True, False
 
     def _read_for_embed(self, memory_id: str) -> tuple[str, list[str], list[str]]:

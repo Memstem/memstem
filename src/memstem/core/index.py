@@ -1012,9 +1012,42 @@ class Index:
             )
 
     def dequeue_embed(self, memory_id: str) -> None:
-        """Remove `memory_id` from the queue (called after a successful embed)."""
+        """Remove `memory_id` from the queue unconditionally.
+
+        For tests and operator tooling. The embed worker uses
+        :meth:`dequeue_embed_if_unchanged` instead, so a stale result
+        can't erase a fresher pending request.
+        """
         with self._lock, self.db:
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
+
+    def dequeue_embed_if_unchanged(self, memory_id: str, enqueued_at: str) -> bool:
+        """Consume a queue row only if it wasn't re-enqueued since claim.
+
+        ``enqueued_at`` is the claim token from :meth:`claim_pending`.
+        ``enqueue_embed`` bumps the stored value on every (re-)enqueue,
+        so a mismatch means the record changed while this worker was
+        embedding the old body — the unconditional DELETE here used to
+        erase that fresher request, leaving the new content unembedded
+        until a later reconcile happened to notice.
+
+        Returns True when the row was consumed. On mismatch the row is
+        left pending and this worker's claim is released, so the fresher
+        request is immediately claimable (by anyone, including us next
+        tick) instead of waiting out the lease.
+        """
+        with self._lock, self.db:
+            cur = self.db.execute(
+                "DELETE FROM embed_queue WHERE memory_id = ? AND enqueued_at = ?",
+                (memory_id, enqueued_at),
+            )
+            if cur.rowcount:
+                return True
+            self.db.execute(
+                "UPDATE embed_queue SET claimed_at = NULL, claimed_by = NULL WHERE memory_id = ?",
+                (memory_id,),
+            )
+        return False
 
     def mark_embed_error(
         self,

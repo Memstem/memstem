@@ -430,6 +430,57 @@ class TestQueueOps:
         assert index.queue_stats() == {"pending": 1, "failed": 0, "total": 1}
 
 
+class TestGuardedDequeue:
+    """A6 at the worker level: a record re-enqueued mid-embed (its
+    content changed while the worker was round-tripping the embedder)
+    must stay queued and get re-embedded with the new content."""
+
+    def test_reenqueued_record_survives_and_reembeds(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record(body="original body"))
+        mid = str(memory.id)
+
+        class _ReenqueuingEmbedder(_StubEmbedder):
+            """Re-enqueues the record mid-flight, simulating the
+            pipeline ingesting a content change while the worker is
+            inside the embedder round trip."""
+
+            def __init__(self, idx: Index) -> None:
+                super().__init__()
+                self._idx = idx
+                self.reenqueue_next = True
+
+            def embed_batch(self, texts: list[str]) -> list[list[float]]:
+                if self.reenqueue_next:
+                    self.reenqueue_next = False
+                    time.sleep(0.001)  # later enqueued_at than the claim token
+                    self._idx.enqueue_embed(mid)
+                return super().embed_batch(texts)
+
+        embedder = _ReenqueuingEmbedder(index)
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=1, idle_sleep=0
+        )
+
+        # First tick embeds the (stale) body; the guarded dequeue must
+        # leave the fresher queue entry in place, unclaimed.
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT failed, claimed_at FROM embed_queue WHERE memory_id = ?",
+            (mid,),
+        ).fetchone()
+        assert row is not None, "re-enqueued row was erased by the stale dequeue"
+        assert row["failed"] == 0
+        assert row["claimed_at"] is None
+
+        # Second tick re-embeds and consumes the queue entry normally.
+        asyncio.run(worker.tick())
+        assert (
+            index.db.execute("SELECT 1 FROM embed_queue WHERE memory_id = ?", (mid,)).fetchone()
+            is None
+        )
+
+
 class TestEmbedStateOnSuccess:
     """The worker stamps `embed_state` with body_hash + signature after
     a successful embed so the next pipeline pass can skip the record

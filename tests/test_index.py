@@ -822,6 +822,34 @@ class TestClaimLease:
         assert row["claimed_by"] == "w0"
 
 
+class TestGuardedDequeue:
+    """A6: a worker's dequeue must not erase a queue row that was
+    re-enqueued (content changed) while the worker was embedding the
+    old body — the fresher request has to survive the stale result."""
+
+    def _enqueue_one(self, index: Index) -> str:
+        m = _make_memory()
+        index.upsert(m)
+        index.enqueue_embed(str(m.id))
+        return str(m.id)
+
+    def test_consumes_row_when_token_matches(self, index: Index) -> None:
+        mid = self._enqueue_one(index)
+        [(_, token)] = index.claim_pending(limit=1, claimant="w0")
+        assert index.dequeue_embed_if_unchanged(mid, token) is True
+        assert index.queue_stats()["total"] == 0
+
+    def test_leaves_reenqueued_row_and_releases_claim(self, index: Index) -> None:
+        mid = self._enqueue_one(index)
+        [(_, token)] = index.claim_pending(limit=1, claimant="w0")
+        time.sleep(0.001)  # ensure the re-enqueue gets a later timestamp
+        index.enqueue_embed(mid)  # content changed mid-embed
+        assert index.dequeue_embed_if_unchanged(mid, token) is False
+        # The fresher request survives AND is immediately claimable.
+        reclaimed = index.claim_pending(limit=1, claimant="w1")
+        assert [m for m, _ in reclaimed] == [mid]
+
+
 class TestBackfillEmbedState:
     """On schema v3 upgrade, memories that already have vectors should
     get `embed_state` rows written so the daemon doesn't re-enqueue
