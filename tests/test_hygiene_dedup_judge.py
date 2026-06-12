@@ -78,7 +78,12 @@ def _make_memory(
     return memory
 
 
-def _make_pair(a_id: str = "a", b_id: str = "b") -> DedupCandidatePair:
+def _make_pair(
+    a_id: str = "a",
+    b_id: str = "b",
+    a_body: str = "",
+    b_body: str = "",
+) -> DedupCandidatePair:
     return DedupCandidatePair(
         a_id=a_id,
         b_id=b_id,
@@ -89,6 +94,8 @@ def _make_pair(a_id: str = "a", b_id: str = "b") -> DedupCandidatePair:
         b_path=f"memories/{b_id}.md",
         a_type="memory",
         b_type="memory",
+        a_body=a_body,
+        b_body=b_body,
     )
 
 
@@ -320,6 +327,28 @@ class TestOllamaJudgeMocked:
         result = judge.judge_pair(_make_pair())
         assert result.verdict is Verdict.UNRELATED
 
+    def test_prompt_carries_bodies_not_titles(self) -> None:
+        # The verdict has to be judged on what the records SAY, not on
+        # their titles — two memories titled "meeting notes" can be
+        # unrelated, and two differently-titled records can be
+        # duplicates.
+        client = self._FakeClient({"response": '{"verdict": "DUPLICATE", "rationale": "ok"}'})
+        judge = OllamaDedupJudge(
+            client=client,
+            prompt_template="NEW={new_body} EXISTING={existing_body} ({new_id},{existing_id})",
+        )
+        judge.judge_pair(
+            _make_pair(a_body="brad approved the Q3 budget", b_body="Q3 budget was approved")
+        )
+        assert client.last_call is not None
+        sent = client.last_call["json"]
+        assert isinstance(sent, dict)
+        prompt = str(sent["prompt"])
+        assert "brad approved the Q3 budget" in prompt
+        assert "Q3 budget was approved" in prompt
+        assert "title-a" not in prompt
+        assert "title-b" not in prompt
+
 
 class TestOpenAIJudgeMocked:
     """Exercise OpenAIDedupJudge without a real OpenAI / vLLM call.
@@ -419,6 +448,27 @@ class TestOpenAIJudgeMocked:
         assert result.verdict is Verdict.UNRELATED
         assert "model call failed" in result.rationale
 
+    def test_prompt_carries_bodies_not_titles(self) -> None:
+        # Mirrors the Ollama-side test: the judge must compare record
+        # contents, not titles, now that the candidate generator ships
+        # full bodies on the pair.
+        client = self._FakeClient(self._payload('{"verdict": "DUPLICATE", "rationale": "ok"}'))
+        judge = OpenAIDedupJudge(
+            client=client,
+            prompt_template="NEW={new_body} EXISTING={existing_body} ({new_id},{existing_id})",
+        )
+        judge.judge_pair(
+            _make_pair(a_body="brad approved the Q3 budget", b_body="Q3 budget was approved")
+        )
+        assert client.last_call is not None
+        sent = client.last_call["json"]
+        assert isinstance(sent, dict)
+        prompt = str(sent["messages"][0]["content"])
+        assert "brad approved the Q3 budget" in prompt
+        assert "Q3 budget was approved" in prompt
+        assert "title-a" not in prompt
+        assert "title-b" not in prompt
+
     def test_custom_base_url_and_model_reflected_in_name(self) -> None:
         client = self._FakeClient(self._payload('{"verdict":"UNRELATED","rationale":"x"}'))
         judge = OpenAIDedupJudge(
@@ -467,6 +517,40 @@ class TestOpenAINamePrefix:
         from memstem.hygiene.dedup_judge import _openai_name_prefix
 
         assert _openai_name_prefix(base_url) == expected
+
+
+class TestPromptBodyHelper:
+    """Unit tests for ``_prompt_body`` — body-first with graceful fallbacks."""
+
+    def test_prefers_body(self) -> None:
+        from memstem.hygiene.dedup_judge import _prompt_body
+
+        assert _prompt_body("the actual fact", "a title", "an-id") == "the actual fact"
+
+    def test_falls_back_to_title_when_body_empty(self) -> None:
+        from memstem.hygiene.dedup_judge import _prompt_body
+
+        assert _prompt_body("", "a title", "an-id") == "a title"
+        assert _prompt_body("   \n ", "a title", "an-id") == "a title"
+
+    def test_falls_back_to_id_when_body_and_title_empty(self) -> None:
+        from memstem.hygiene.dedup_judge import _prompt_body
+
+        assert _prompt_body("", None, "an-id") == "an-id"
+
+    def test_long_body_truncated_with_marker(self) -> None:
+        from memstem.hygiene.dedup_judge import _MAX_PROMPT_BODY_CHARS, _prompt_body
+
+        long_body = "x" * (_MAX_PROMPT_BODY_CHARS + 500)
+        out = _prompt_body(long_body, None, "an-id")
+        assert out.endswith("…[truncated]")
+        assert len(out) <= _MAX_PROMPT_BODY_CHARS + len(" …[truncated]")
+
+    def test_short_body_not_truncated(self) -> None:
+        from memstem.hygiene.dedup_judge import _MAX_PROMPT_BODY_CHARS, _prompt_body
+
+        body = "y" * _MAX_PROMPT_BODY_CHARS
+        assert _prompt_body(body, None, "an-id") == body
 
 
 class TestParseResponseHelper:

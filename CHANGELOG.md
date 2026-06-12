@@ -5,6 +5,30 @@ All notable changes to Memstem will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Dedup judge now sees record bodies, not titles.** Both live judges
+  (`OllamaDedupJudge`, `OpenAIDedupJudge`) formatted the verdict prompt with
+  the pair's *titles* (falling back to bare UUIDs) in the NEW/EXISTING body
+  slots, so DUPLICATE/CONTRADICTS verdicts were judged on labels instead of
+  content. The candidate generator now captures full bodies during the vault
+  read it already performed, and the judges interpolate them (capped at 4k
+  chars per side, with a truncation marker; title → id fallback for empty
+  bodies).
+- **Dedup candidate pairs are oriented by recency, not UUID order.** Pairs
+  were canonicalized `a_id < b_id` lexicographically, so the judge prompt's
+  NEW slot — whose CONTRADICTS rule reads "the newer fact invalidates the
+  older one" — held an arbitrary side. Side `a` is now the more recently
+  updated record (tie → lexicographic; pair identity still collapses a→b/b→a),
+  and `dedup_audit.new_id`/`existing_id` are now semantically truthful.
+- **Capped dedup sweeps scan newest-first.** The candidate generator's outer
+  loop ordered by `memory_id`, so a `dedup_max_outer_memories`-capped hygiene
+  cycle re-examined the same lexicographic-first slice every time and never
+  reached newer memories. The sweep now orders by `updated DESC`, covering the
+  records where new duplicates actually appear.
+
 ## [0.16.0] - 2026-06-12
 
 Third reliability batch — embed-queue claim/lease, embedder-change guards,

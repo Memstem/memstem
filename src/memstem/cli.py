@@ -2345,8 +2345,8 @@ def hygiene_dedup_candidates(
             f"  cos={pair.cosine:.3f}{skill_marker}  "
             f"{pair.a_title or pair.a_id}  ↔  {pair.b_title or pair.b_id}"
         )
-        typer.echo(f"    a: {pair.a_path}  ({pair.a_id})")
-        typer.echo(f"    b: {pair.b_path}  ({pair.b_id})")
+        typer.echo(f"    new:      {pair.a_path}  ({pair.a_id}, updated {pair.a_updated or '?'})")
+        typer.echo(f"    existing: {pair.b_path}  ({pair.b_id}, updated {pair.b_updated or '?'})")
 
 
 @hygiene_app.command("dedup-judge")

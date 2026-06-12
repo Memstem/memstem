@@ -36,9 +36,11 @@ manually.
   vectors. For cross-provider safety, the planner re-computes a
   *true* cosine from the raw vectors after vec_search returns
   candidates — the L2 proxy is only used to bound the candidate pool.
-- **Pair canonicalization.** Pairs are canonicalized so a→b and b→a
-  produce one entry (``a < b`` lexicographically); the same pair
-  cannot appear twice.
+- **Pair canonicalization + recency orientation.** Pair *identity* is
+  canonical (a→b and b→a produce one entry; the same pair cannot
+  appear twice), while the pair's *sides* are oriented by recency:
+  ``a`` is the more recently updated record, ``b`` the older one —
+  matching the judge prompt's NEW/EXISTING slots.
 - **No mutation.** This module does not write to the vault, the
   index, or the hygiene state. It's read-only by design.
 """
@@ -72,9 +74,18 @@ beyond rank-5 is rarely a true near-duplicate."""
 class DedupCandidatePair:
     """One audit-worthy near-duplicate pair.
 
-    The pair is *canonical*: ``a_id < b_id`` lexicographically. Both
-    sides include path/title metadata so the CLI can render a useful
-    report without a second vault round-trip.
+    The pair is *oriented by recency*: side ``a`` is the more recently
+    updated record (the judge's "NEW fact") and side ``b`` the older
+    one (the "EXISTING fact"). The dedup-judge prompt's CONTRADICTS
+    semantics — "the newer fact invalidates the older one" — depend on
+    this orientation, so it is load-bearing, not cosmetic. When both
+    sides carry the same ``updated`` timestamp the tie breaks to
+    lexicographic id order, keeping output deterministic. Pair
+    *identity* is still canonical regardless of orientation: a→b and
+    b→a collapse to one entry.
+
+    Both sides include path/title/body metadata so the CLI report and
+    the LLM judge work without a second vault round-trip.
     """
 
     a_id: str
@@ -91,6 +102,10 @@ class DedupCandidatePair:
     b_path: str
     a_type: str
     b_type: str
+    a_body: str = ""
+    b_body: str = ""
+    a_updated: str | None = None
+    b_updated: str | None = None
 
     @property
     def involves_skill(self) -> bool:
@@ -165,9 +180,11 @@ def find_dedup_candidate_pairs(
        cosine from the raw vectors.
     4. If ``cosine >= min_cosine``, record the canonical pair.
 
-    Pairs are deduplicated via canonical ordering (``a_id < b_id``)
-    so each pair appears exactly once. The output is sorted by
-    cosine descending so the strongest candidates appear first. When
+    Pair identity is canonicalized (a→b and b→a collapse to one entry)
+    and each pair is *oriented by recency* — side ``a`` is the more
+    recently updated record, side ``b`` the older one (see
+    :class:`DedupCandidatePair`). The output is sorted by cosine
+    descending so the strongest candidates appear first. When
     ``limit`` is set, only the top ``limit`` pairs are returned —
     handy for "show me the top 20 candidates" CLI use.
 
@@ -177,44 +194,55 @@ def find_dedup_candidate_pairs(
     work scales roughly as O(N²) in vault size — on a ~1k-memory vault
     this is several tens of seconds, on a 5k-memory vault it's minutes.
     For a bounded "preview" run, set ``max_memories`` to cap the outer
-    loop at the first M memory ids (sorted lexicographically); the
-    sweep then runs in O(M·N) and finishes in a few seconds. Production
-    full scans should run async, not inside a smoke test with a 45-second
-    timeout.
+    loop at the M *most recently updated* memories; the sweep then runs
+    in O(M·N) and finishes in a few seconds. Recency ordering means a
+    capped sweep examines the records where new duplicates actually
+    appear, instead of the same lexicographic-first slice every cycle.
+    Production full scans should run async, not inside a smoke test
+    with a 45-second timeout.
 
     The function is read-only on both vault and index. Failures to
     read individual memories are logged and skipped; the sweep does
     not abort on a single missing file.
     """
-    # Get every memory_id that has at least one chunk vector. Any
-    # memory without vectors is skipped — there's nothing to compare.
+    # Get every memory_id that has at least one chunk vector, newest
+    # `updated` first. Any memory without vectors is skipped — there's
+    # nothing to compare. Recency ordering matters because of the
+    # max_memories cap below: a bounded sweep should examine the
+    # records where new duplicates appear (recent writes), not the
+    # same arbitrary lexicographic-first slice every cycle. The id
+    # tiebreak keeps the order fully deterministic.
     with index._lock:
         rows = index.db.execute(
             """
-            SELECT DISTINCT memory_id FROM memories_vec ORDER BY memory_id
+            SELECT DISTINCT v.memory_id, m.updated
+            FROM memories_vec v JOIN memories m ON m.id = v.memory_id
+            ORDER BY m.updated DESC, v.memory_id
             """
         ).fetchall()
     memory_ids = [r["memory_id"] for r in rows]
 
     # Outer-loop cap: lets the CLI ship a "preview / smoke" mode that
-    # finishes in bounded time. The lexicographic sort above means the
-    # subset is stable across runs.
+    # finishes in bounded time, scanning the most recently updated M.
     if max_memories is not None and max_memories >= 0:
         memory_ids = memory_ids[:max_memories]
 
-    # Cache type/title/path for *all* indexed memories in one SQL — we
-    # need the metadata for both the outer loop's memory_id and any
-    # neighbors that come back from query_vec (those neighbors aren't
-    # capped by max_memories). One query is cheap; N queries against
-    # the metadata table dominate small vaults.
+    # Cache type/title/path/updated for *all* indexed memories in one
+    # SQL — we need the metadata for both the outer loop's memory_id
+    # and any neighbors that come back from query_vec (those neighbors
+    # aren't capped by max_memories). One query is cheap; N queries
+    # against the metadata table dominate small vaults.
     metadata: dict[str, dict[str, str | None]] = {}
     with index._lock:
-        meta_rows = index.db.execute("SELECT id, title, path, type FROM memories").fetchall()
+        meta_rows = index.db.execute(
+            "SELECT id, title, path, type, updated FROM memories"
+        ).fetchall()
     for row in meta_rows:
         metadata[row["id"]] = {
             "title": row["title"],
             "path": row["path"],
             "type": row["type"],
+            "updated": row["updated"],
         }
 
     seen_pairs: dict[tuple[str, str], DedupCandidatePair] = {}
@@ -250,23 +278,35 @@ def find_dedup_candidate_pairs(
             if cosine < min_cosine:
                 continue
 
-            a_meta = metadata.get(pair_key[0]) or {}
-            b_meta = metadata.get(pair_key[1]) or {}
+            # Orient the pair by recency: side `a` is the more recently
+            # updated record (the judge prompt's "NEW fact"), side `b`
+            # the older one ("EXISTING"). `updated` is an ISO-8601 TEXT
+            # column, so string comparison orders correctly; on a tie
+            # the canonical (lexicographic) order from pair_key holds,
+            # keeping the output deterministic.
+            first_meta = metadata.get(pair_key[0]) or {}
+            second_meta = metadata.get(pair_key[1]) or {}
+            if (second_meta.get("updated") or "") > (first_meta.get("updated") or ""):
+                new_id, old_id = pair_key[1], pair_key[0]
+                a_meta, b_meta = second_meta, first_meta
+            else:
+                new_id, old_id = pair_key[0], pair_key[1]
+                a_meta, b_meta = first_meta, second_meta
             a_path = a_meta.get("path") or ""
             b_path = b_meta.get("path") or ""
             # Guard against vault-side path drift between index and
-            # filesystem (the index could outlive a vault deletion).
+            # filesystem (the index could outlive a vault deletion) —
+            # and capture the bodies while we're here, so the LLM judge
+            # gets full content instead of titles.
             try:
-                if a_path:
-                    vault.read(a_path)
-                if b_path:
-                    vault.read(b_path)
+                a_body = vault.read(a_path).body if a_path else ""
+                b_body = vault.read(b_path).body if b_path else ""
             except MemoryNotFoundError:
                 continue
 
             seen_pairs[pair_key] = DedupCandidatePair(
-                a_id=pair_key[0],
-                b_id=pair_key[1],
+                a_id=new_id,
+                b_id=old_id,
                 cosine=cosine,
                 a_title=a_meta.get("title"),
                 b_title=b_meta.get("title"),
@@ -274,6 +314,10 @@ def find_dedup_candidate_pairs(
                 b_path=b_path,
                 a_type=str(a_meta.get("type") or ""),
                 b_type=str(b_meta.get("type") or ""),
+                a_body=a_body,
+                b_body=b_body,
+                a_updated=a_meta.get("updated"),
+                b_updated=b_meta.get("updated"),
             )
 
     pairs = sorted(seen_pairs.values(), key=lambda p: p.cosine, reverse=True)
