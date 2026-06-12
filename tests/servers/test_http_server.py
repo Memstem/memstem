@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
+from memstem.adapters.base import Adapter, MemoryRecord
 from memstem.config import HttpServerConfig, SearchConfig
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
@@ -119,6 +120,68 @@ class TestHealth:
         set_last_run(index.db, STAGE_IMPORTANCE, ts)
         body = client.get("/health").json()
         assert body["hygiene"]["last_run"][STAGE_IMPORTANCE] == ts.isoformat()
+
+
+class _StubWatchAdapter(Adapter):
+    """Adapter stub with a controllable watcher_alive() for /health tests."""
+
+    def __init__(self, name: str, alive: bool | None) -> None:
+        self.name = name
+        self._alive = alive
+
+    async def watch(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+    async def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
+        return
+        yield  # pragma: no cover
+
+    def watcher_alive(self) -> bool | None:
+        return self._alive
+
+
+class TestWatcherLiveness:
+    """B4: /health surfaces per-adapter watchdog observer liveness."""
+
+    @staticmethod
+    def _client(vault: Vault, index: Index, adapters: list[Adapter]) -> TestClient:
+        return TestClient(build_app(vault, index, adapters=adapters))
+
+    def test_no_adapters_means_empty_block(self, client: TestClient) -> None:
+        body = client.get("/health").json()
+        assert body["watchers"] == {}
+        assert body["status"] == "ok"
+
+    def test_alive_watchers_reported_ok(self, vault: Vault, index: Index) -> None:
+        c = self._client(
+            vault,
+            index,
+            [_StubWatchAdapter("openclaw", True), _StubWatchAdapter("claude-code", True)],
+        )
+        body = c.get("/health").json()
+        assert body["watchers"] == {"openclaw": True, "claude-code": True}
+        assert body["status"] == "ok"
+        assert body["problems"] == []
+
+    def test_dead_watcher_degrades_health(self, vault: Vault, index: Index) -> None:
+        c = self._client(
+            vault,
+            index,
+            [_StubWatchAdapter("openclaw", True), _StubWatchAdapter("claude-code", False)],
+        )
+        body = c.get("/health").json()
+        assert body["watchers"]["claude-code"] is False
+        assert body["status"] == "degraded"
+        assert "watcher_dead:claude-code" in body["problems"]
+
+    def test_not_started_watcher_is_not_a_problem(self, vault: Vault, index: Index) -> None:
+        # None = watch() not running (startup, or nothing to observe) —
+        # reported for visibility but never degrades.
+        c = self._client(vault, index, [_StubWatchAdapter("codex", None)])
+        body = c.get("/health").json()
+        assert body["watchers"] == {"codex": None}
+        assert body["status"] == "ok"
 
 
 class TestVersion:

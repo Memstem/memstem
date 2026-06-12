@@ -1,12 +1,14 @@
 """Tests for `memstem.hygiene.state` (ADR 0023 — in-daemon hygiene loop).
 
 Cover: last-run timestamps round-trip, lock acquire/release semantics,
-stale lock reclamation, due-for-run gating, and the ``snapshot`` view
-used by ``/health``.
+stale lock reclamation, due-for-run gating, cross-process acquire
+atomicity, and the ``snapshot`` view used by ``/health``.
 """
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -114,6 +116,83 @@ class TestStageLock:
         assert acquire_stage_lock(index.db, STAGE_IMPORTANCE) is True
         # Different stage can still acquire its own lock
         assert acquire_stage_lock(index.db, STAGE_DEDUP_JUDGE) is True
+
+
+class TestCrossProcessLock:
+    """Acquire must be atomic across *separate connections* (C6).
+
+    A daemon hygiene cycle and a CLI ``memstem hygiene`` run live in
+    different processes, so the thread-level ``lock`` arg can't help —
+    the only shared state is the SQLite file itself. Each test races two
+    connections from a barrier; the single-statement claim (INSERT
+    ON CONFLICT DO NOTHING / compare-and-swap UPDATE) guarantees exactly
+    one winner regardless of interleaving.
+    """
+
+    @staticmethod
+    def _race(db_path: Path, *, plant: str | None = None) -> list[bool]:
+        seed = sqlite3.connect(db_path)
+        if plant is not None:
+            seed.execute(
+                "INSERT INTO hygiene_state (key, value) VALUES (?, ?)",
+                (f"running_since:{STAGE_IMPORTANCE}", plant),
+            )
+            seed.commit()
+        seed.close()
+
+        barrier = threading.Barrier(2)
+        results: list[bool] = []
+        results_lock = threading.Lock()
+
+        def runner() -> None:
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.execute("PRAGMA busy_timeout = 5000")
+            try:
+                barrier.wait()
+                got = acquire_stage_lock(conn, STAGE_IMPORTANCE)
+            finally:
+                conn.close()
+            with results_lock:
+                results.append(got)
+
+        threads = [threading.Thread(target=runner) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return results
+
+    def test_two_connections_racing_absent_lock_one_wins(self, index: Index) -> None:
+        db_path = index.db_path
+        index.close()  # only the two racing connections touch the file
+        results = self._race(db_path)
+        assert sorted(results) == [False, True]
+
+    def test_two_connections_racing_stale_reclaim_one_wins(self, index: Index) -> None:
+        db_path = index.db_path
+        stale = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        index.close()
+        results = self._race(db_path, plant=stale)
+        assert sorted(results) == [False, True]
+
+    def test_second_connection_sees_held_lock(self, index: Index) -> None:
+        assert acquire_stage_lock(index.db, STAGE_IMPORTANCE) is True
+        other = sqlite3.connect(index.db_path)
+        other.execute("PRAGMA busy_timeout = 5000")
+        try:
+            assert acquire_stage_lock(other, STAGE_IMPORTANCE) is False
+        finally:
+            other.close()
+
+    def test_legacy_unparseable_holder_is_reclaimed(self, index: Index) -> None:
+        index.db.execute(
+            "INSERT INTO hygiene_state (key, value) VALUES (?, ?)",
+            (f"running_since:{STAGE_IMPORTANCE}", "not-a-timestamp"),
+        )
+        index.db.commit()
+        assert acquire_stage_lock(index.db, STAGE_IMPORTANCE) is True
+        # The reclaim replaced the garbage value with a real timestamp.
+        assert get_lock_holder(index.db, STAGE_IMPORTANCE) is not None
 
 
 class TestDueForRun:

@@ -495,6 +495,17 @@ class AdaptersConfig(BaseModel):
     claude_code: ClaudeCodeAdapterConfig = Field(default_factory=ClaudeCodeAdapterConfig)
     codex: CodexAdapterConfig = Field(default_factory=CodexAdapterConfig)
 
+    reconcile_interval_seconds: int = 6 * 3600
+    """Cadence of the periodic catch-up reconcile (B4 self-heal).
+
+    The daemon re-runs every adapter's reconcile sweep on this interval,
+    so records whose file events were missed — most importantly because a
+    watchdog observer thread died silently — still get ingested without a
+    daemon restart. The sweep is cheap on a settled vault: ADR 0024's
+    skip-unchanged check drops records whose body already matches the
+    index before any vault I/O. ``0`` disables the periodic sweep
+    (startup reconcile still runs)."""
+
 
 class Config(BaseModel):
     """Top-level Memstem configuration."""

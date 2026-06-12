@@ -36,6 +36,11 @@ class Adapter(ABC):
     name: str
     """Unique identifier, e.g. 'claude-code', 'openclaw'."""
 
+    _observer: Any = None
+    """The running ``watch()``'s watchdog observer, registered after
+    ``observer.start()`` and cleared on shutdown. Read via
+    :meth:`watcher_alive`; never touched by callers directly."""
+
     @abstractmethod
     def watch(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         """Yield records as files change. Long-running async generator."""
@@ -45,3 +50,15 @@ class Adapter(ABC):
     def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         """Yield records by scanning paths from scratch. One-shot async generator."""
         ...
+
+    def watcher_alive(self) -> bool | None:
+        """Liveness of this adapter's watchdog observer thread.
+
+        ``None`` means no watch is running (``watch()`` not started yet,
+        shut down cleanly, or it has nothing to observe). ``False`` means
+        a watch IS running but its observer thread died — file events are
+        silently being dropped; ``/health`` reports this as a
+        ``watcher_dead:<name>`` problem. ``True`` is the healthy state.
+        """
+        observer = self._observer
+        return None if observer is None else bool(observer.is_alive())

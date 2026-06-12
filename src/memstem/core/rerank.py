@@ -22,8 +22,11 @@ This module ships scaffolding plus a production OllamaReranker. The
 
 Caching: every score computed by a non-NoOp reranker is written to
 ``rerank_cache`` keyed on ``(query_hash, memory_id, body_hash, judge)``.
-Cache hits skip the LLM round trip entirely. See ADR 0017 §Cache for
-the schema and rationale.
+Cache hits skip the LLM round trip entirely. Failed scoring calls are
+NOT cached — a backend outage returns ``0.0`` for that call only, and
+the pair is retried on the next query instead of staying buried until
+the document body changes. See ADR 0017 §Cache for the schema and
+rationale.
 """
 
 from __future__ import annotations
@@ -214,9 +217,13 @@ class Reranker(ABC):
     """Abstract base for cross-encoder rerankers.
 
     Subclasses override :meth:`score` to produce one query-document
-    relevance score in ``[0, 1]``. The :meth:`score_candidates`
-    orchestrator wraps each call in a cache lookup so repeat scores on
-    unchanged content skip the model.
+    relevance score in ``[0, 1]``. A :meth:`score` that cannot reach its
+    backend should raise rather than return a sentinel — the
+    :meth:`score_candidates` orchestrator catches the exception, falls
+    back to ``0.0`` for that call, and skips the cache write so the
+    failure isn't persisted as a real score. The orchestrator wraps each
+    call in a cache lookup so repeat scores on unchanged content skip
+    the model.
 
     Subclasses MUST set :attr:`name` to a stable identifier that ends
     up in the cache's ``judge`` column. Different models or prompt
@@ -241,7 +248,10 @@ class Reranker(ABC):
         Order of operations per candidate:
 
         1. Cache lookup on ``(query_hash, memory_id, body_hash, name)``.
-        2. On miss, call :meth:`score` and cache the result.
+        2. On miss, call :meth:`score` and cache the result. A raising
+           :meth:`score` yields ``0.0`` for this call but writes no cache
+           row — caching a failure would bury the pair at the bottom of
+           every future rerank until its body changed (C1).
 
         The cache is bypassed when ``db is None`` (used by tests that
         don't want to round-trip through SQLite) and by NoOp (which
@@ -272,6 +282,7 @@ class Reranker(ABC):
             if cached is not None:
                 scores.append(cached)
                 continue
+            failed = False
             try:
                 value = self.score(query, candidate)
             except Exception as exc:
@@ -285,9 +296,10 @@ class Reranker(ABC):
                 # downstream sort — the candidate's RRF tiebreak still
                 # gives it a relative position.
                 value = 0.0
+                failed = True
             value = max(0.0, min(1.0, value))
             scores.append(value)
-            if db is not None:
+            if db is not None and not failed:
                 with lock or nullcontext():
                     cache_write(
                         db,
@@ -408,8 +420,9 @@ class OllamaReranker(Reranker):
     The model is asked to return a ``[0, 100]`` integer score for
     ``(query, document)``. The response is parsed permissively (bare
     integer, JSON, or "Score: N" prose), normalized to ``[0, 1]``,
-    and clamped. HTTP failures are logged; the candidate falls back
-    to ``0.0`` for that score (the RRF tiebreak still positions it).
+    and clamped. HTTP failures propagate out of :meth:`score` so the
+    :meth:`~Reranker.score_candidates` orchestrator can fall back to
+    ``0.0`` without caching the failure as a real score.
 
     The constructor accepts an explicit ``client`` callable so tests
     can mock the HTTP layer. Production paths lazy-import ``httpx``
@@ -451,16 +464,9 @@ class OllamaReranker(Reranker):
             title=candidate.title or candidate.memory_id,
             body=_format_body_for_prompt(candidate.body),
         )
-        try:
-            response = self._call_model(prompt)
-        except Exception as exc:
-            logger.warning(
-                "OllamaReranker: model call failed for %s: %s",
-                candidate.memory_id,
-                exc,
-            )
-            return 0.0
-        return _parse_score(response)
+        # Backend failures propagate: score_candidates logs, scores the
+        # call 0.0, and skips the cache write (C1).
+        return _parse_score(self._call_model(prompt))
 
     def _call_model(self, prompt: str) -> str:
         client = self._http_client()
@@ -495,9 +501,11 @@ class OpenAIReranker(Reranker):
     ``docs/recall-models.md`` for the full upgrade ladder.
 
     The API key is read via :mod:`memstem.auth` — env var first,
-    ``~/.config/memstem/secrets.yaml`` second. Failures (auth, HTTP,
-    parse) fall back to ``0.0`` for that candidate; the search path
-    keeps moving.
+    ``~/.config/memstem/secrets.yaml`` second. Failures (auth, HTTP)
+    propagate out of :meth:`score`; the
+    :meth:`~Reranker.score_candidates` orchestrator falls back to
+    ``0.0`` without caching the failure, so the search path keeps
+    moving.
     """
 
     name_prefix = "openai"
@@ -553,16 +561,9 @@ class OpenAIReranker(Reranker):
             title=candidate.title or candidate.memory_id,
             body=_format_body_for_prompt(candidate.body),
         )
-        try:
-            response = self._call_model(prompt)
-        except Exception as exc:
-            logger.warning(
-                "OpenAIReranker: model call failed for %s: %s",
-                candidate.memory_id,
-                exc,
-            )
-            return 0.0
-        return _parse_score(response)
+        # Backend failures propagate: score_candidates logs, scores the
+        # call 0.0, and skips the cache write (C1).
+        return _parse_score(self._call_model(prompt))
 
     def _call_model(self, prompt: str) -> str:
         client = self._http_client()

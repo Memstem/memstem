@@ -453,14 +453,17 @@ class TestOllamaReranker:
         assert "query about the doc" in body["prompt"]
         assert "doc body" in body["prompt"]
 
-    def test_score_returns_zero_on_http_failure(self) -> None:
+    def test_score_propagates_http_failure(self) -> None:
+        # Backend failures must surface to score_candidates (which falls
+        # back to 0.0 WITHOUT caching), not be swallowed into a 0.0 that
+        # is indistinguishable from a real score (C1).
         client = _MockHttpClient(RuntimeError("boom"))
         reranker = OllamaReranker(client=client)
         candidate = RerankCandidate.from_memory(
             _memory("22222222-2222-2222-2222-222222222222", "b")
         )
-        # Score must NOT propagate the exception — fall through to 0.0.
-        assert reranker.score("q", candidate) == 0.0
+        with pytest.raises(RuntimeError, match="boom"):
+            reranker.score("q", candidate)
 
     def test_score_truncates_oversize_body_in_prompt(self) -> None:
         """OllamaReranker must also truncate — qwen2.5:7b has a 32k context."""
@@ -543,6 +546,56 @@ def test_score_candidates_swallows_per_call_failures(index: Index) -> None:
     assert scores == [0.0]
 
 
+class _FlakyReranker(Reranker):
+    """Raises on the first call, returns a real score afterwards."""
+
+    name = "flaky"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def score(self, query: str, candidate: RerankCandidate) -> float:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("backend down")
+        return 0.7
+
+
+def test_score_candidates_does_not_cache_failures(index: Index) -> None:
+    """A failed scoring call must not write a 0.0 cache row (C1).
+
+    Before the fix, a rerank-backend outage cached 0.0 for every
+    (query, doc) pair touched during the outage, permanently burying
+    those pairs until the document body changed.
+    """
+    memory_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    index.db.execute(
+        """INSERT INTO memories(id, type, source, title, body, path, created, updated)
+           VALUES (?, 'memory', 'test', 't', 'b', 'pa.md', '2026-01-01', '2026-01-01')""",
+        (memory_id,),
+    )
+    reranker = _FlakyReranker()
+    candidate = RerankCandidate.from_memory(_memory(memory_id, "b"))
+
+    scores = reranker.score_candidates("q", [candidate], db=index.db)
+    assert scores == [0.0]
+    rows = index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()
+    assert rows[0] == 0, "failure must not be cached"
+
+    # Backend recovers: the pair is re-scored (not served a cached 0.0)
+    # and the real score is cached this time.
+    scores = reranker.score_candidates("q", [candidate], db=index.db)
+    assert scores == [pytest.approx(0.7)]
+    assert reranker.calls == 2
+    rows = index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()
+    assert rows[0] == 1
+
+    # Third call is now a cache hit.
+    scores = reranker.score_candidates("q", [candidate], db=index.db)
+    assert scores == [pytest.approx(0.7)]
+    assert reranker.calls == 2
+
+
 def test_default_constants_exposed() -> None:
     assert DEFAULT_RERANK_TOP_N >= 1
     assert DEFAULT_OLLAMA_MODEL
@@ -616,13 +669,16 @@ class TestOpenAIReranker:
         # even if the truncated slice happens to be identical.
         assert candidate.body == big_body
 
-    def test_score_returns_zero_on_http_failure(self) -> None:
+    def test_score_propagates_http_failure(self) -> None:
+        # Same contract as OllamaReranker: failures surface to
+        # score_candidates rather than masquerading as a 0.0 score (C1).
         client = _MockHttpClient(RuntimeError("boom"))
         reranker = OpenAIReranker(client=client)
         candidate = RerankCandidate.from_memory(
             _memory("22222222-2222-2222-2222-222222222222", "b")
         )
-        assert reranker.score("q", candidate) == 0.0
+        with pytest.raises(RuntimeError, match="boom"):
+            reranker.score("q", candidate)
 
     def test_score_handles_empty_choices(self) -> None:
         client = _MockHttpClient(_MockHttpResponse(body={"choices": []}))

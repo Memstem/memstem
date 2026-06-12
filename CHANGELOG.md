@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-11
+
+Second reliability batch — the three fixes deferred from the 0.14.0 review.
+
+### Fixed
+
+- **Hygiene stage locks are atomic across processes.** `acquire_stage_lock` was
+  check-then-set, so a daemon hygiene cycle and a CLI `memstem hygiene` run in
+  separate processes could both win the same stage. The claim is now a single
+  atomic SQL statement (insert-if-absent, or compare-and-swap for stale-lock
+  reclaim) — exactly one acquirer wins regardless of interleaving.
+- **Rerank backend failures are no longer cached as `0.0` scores.** A rerank
+  outage used to write `0.0` into `rerank_cache` for every (query, doc) pair it
+  touched, permanently burying those pairs until the document body changed.
+  Failed calls still score `0.0` for that query but skip the cache write, so
+  the pair is re-scored once the backend recovers.
+
+### Added
+
+- **`/health` reports watcher-thread liveness.** A new `watchers` block shows
+  each adapter's watchdog observer state (`true` healthy / `false` dead /
+  `null` not running); a dead observer degrades `status` with
+  `watcher_dead:<name>`. Previously a watcher thread could die silently and
+  the daemon dropped file events while reporting green.
+- **Periodic catch-up reconcile.** The daemon re-runs every adapter's
+  reconcile sweep on a low cadence (`adapters.reconcile_interval_seconds`,
+  default 6h, `0` disables), so records missed by a dead watcher or inotify
+  overflow are ingested without a daemon restart.
+
 ## [0.14.0] - 2026-06-11
 
 Reliability batch from a full-codebase review — durability, concurrency, and

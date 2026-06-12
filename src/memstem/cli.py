@@ -7,7 +7,7 @@ import logging
 import os
 import sqlite3
 import sys
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +17,7 @@ import typer
 import yaml
 
 import memstem
-from memstem.adapters.base import MemoryRecord
+from memstem.adapters.base import Adapter, MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter
 from memstem.adapters.codex import CodexAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
@@ -1083,6 +1083,35 @@ async def _reconcile_all(
         logger.exception("startup reconcile failed; live watchers remain active")
 
 
+async def _periodic_reconcile(
+    pipeline: Pipeline,
+    make_streams: Callable[[], list[tuple[AsyncGenerator[MemoryRecord, None], str]]],
+    interval_seconds: float,
+) -> None:
+    """Low-frequency catch-up sweep so missed file events self-heal (B4).
+
+    The live watchers are the primary ingestion path, but a watchdog
+    observer thread can die silently (it only surfaces in ``/health`` as
+    ``watcher_dead:<name>``) and inotify can drop events under overflow.
+    Re-running the adapters' reconcile on a low cadence guarantees every
+    record is eventually ingested without a daemon restart. ADR 0024's
+    skip-unchanged check keeps the sweep cheap on a settled vault.
+
+    ``make_streams`` builds FRESH reconcile generators per cycle — they
+    are one-shot. A failed sweep is logged and retried next interval.
+    """
+    if interval_seconds <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            for stream, label in make_streams():
+                await _reconcile_into_pipeline(pipeline, stream, label)
+            logger.info("periodic reconcile complete for all adapters")
+        except Exception:
+            logger.exception("periodic reconcile failed; retrying next interval")
+
+
 def _build_openclaw_adapter(cfg: Config) -> tuple[OpenClawAdapter, list[Path]]:
     """Build the OpenClaw adapter from config; fall back to legacy paths.
 
@@ -1172,6 +1201,7 @@ async def _run_daemon(
     http_config: Any = None,
     search_config: Any = None,
     hygiene_config: Any = None,
+    reconcile_interval_seconds: int = 0,
 ) -> None:
     # Build the boot-echo hash set up front: walk every watched workspace +
     # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
@@ -1200,13 +1230,17 @@ async def _run_daemon(
     # running them inline blocked the HTTP/MCP server from binding until
     # the entire vault had been re-scanned (minutes, on a large vault).
     # They run as a background task below instead, so the daemon serves
-    # immediately and catches up concurrently.
-    reconcile_streams: list[tuple[AsyncGenerator[MemoryRecord, None], str]] = [
-        (openclaw_adapter.reconcile(openclaw_paths), "openclaw"),
-        (claude_adapter.reconcile(claude_paths), "claude-code"),
-    ]
-    if codex_adapter is not None:
-        reconcile_streams.append((codex_adapter.reconcile([]), "codex"))
+    # immediately and catches up concurrently. A factory rather than a
+    # list because the periodic sweep (B4) needs fresh one-shot
+    # generators each cycle.
+    def make_reconcile_streams() -> list[tuple[AsyncGenerator[MemoryRecord, None], str]]:
+        streams: list[tuple[AsyncGenerator[MemoryRecord, None], str]] = [
+            (openclaw_adapter.reconcile(openclaw_paths), "openclaw"),
+            (claude_adapter.reconcile(claude_paths), "claude-code"),
+        ]
+        if codex_adapter is not None:
+            streams.append((codex_adapter.reconcile([]), "codex"))
+        return streams
 
     tasks: list[asyncio.Task[Any]] = [
         asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
@@ -1233,6 +1267,10 @@ async def _run_daemon(
     if http_config is not None and getattr(http_config, "enabled", False):
         from memstem.servers.http_server import serve as serve_http
 
+        # /health reports each adapter's watcher-thread liveness (B4).
+        adapters: list[Adapter] = [openclaw_adapter, claude_adapter]
+        if codex_adapter is not None:
+            adapters.append(codex_adapter)
         tasks.append(
             asyncio.create_task(
                 serve_http(
@@ -1242,6 +1280,7 @@ async def _run_daemon(
                     embedder,
                     search_config=search_config,
                     hygiene_config=hygiene_config,
+                    adapters=adapters,
                 )
             )
         )
@@ -1258,8 +1297,17 @@ async def _run_daemon(
         tasks.append(asyncio.create_task(hygiene_loop.run()))
 
     # Startup catch-up runs last and in the background so it never delays
-    # the server/watchers/workers coming up (see reconcile_streams above).
-    tasks.append(asyncio.create_task(_reconcile_all(pipeline, reconcile_streams)))
+    # the server/watchers/workers coming up (see make_reconcile_streams above).
+    tasks.append(asyncio.create_task(_reconcile_all(pipeline, make_reconcile_streams())))
+
+    # Low-frequency repeat of the same sweep (B4 self-heal) — catches up
+    # records whose file events were missed, e.g. after a watcher death.
+    if reconcile_interval_seconds > 0:
+        tasks.append(
+            asyncio.create_task(
+                _periodic_reconcile(pipeline, make_reconcile_streams, reconcile_interval_seconds)
+            )
+        )
 
     try:
         await asyncio.gather(*tasks)
@@ -1575,6 +1623,7 @@ def daemon(
                 http_config=cfg.http,
                 search_config=cfg.search,
                 hygiene_config=cfg.hygiene,
+                reconcile_interval_seconds=cfg.adapters.reconcile_interval_seconds,
             )
         )
     except KeyboardInterrupt:

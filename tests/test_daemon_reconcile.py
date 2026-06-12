@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from memstem.adapters.base import MemoryRecord
-from memstem.cli import _reconcile_all, _reconcile_skip_unchanged
+from memstem.cli import _periodic_reconcile, _reconcile_all, _reconcile_skip_unchanged
 from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
@@ -173,3 +173,66 @@ async def test_reconcile_skips_unchanged_records_on_second_pass(vault: Vault, in
     assert all(_reconcile_skip_unchanged(pipeline, rec) for rec in records)
     await _reconcile_all(pipeline, [(_stream(list(records)), "openclaw")])
     assert _memory_count(index) == 5
+
+
+# ─── periodic reconcile (B4 self-heal) ────────────────────────────
+
+
+async def test_periodic_reconcile_repeats_with_fresh_streams(vault: Vault, index: Index) -> None:
+    """Each cycle ingests via a FRESH set of one-shot generators, so a
+    record that appeared after a watcher died is still picked up."""
+    pipeline = Pipeline(vault, index)
+    cycles = 0
+
+    def make_streams() -> list[tuple[AsyncGenerator[MemoryRecord, None], str]]:
+        nonlocal cycles
+        cycles += 1
+        return [(_stream([_record(f"/p/{cycles}.md", f"body {cycles}")]), "openclaw")]
+
+    task = asyncio.create_task(_periodic_reconcile(pipeline, make_streams, 0.01))
+    try:
+        async with asyncio.timeout(5):
+            while cycles < 2:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert _memory_count(index) >= 2
+
+
+async def test_periodic_reconcile_survives_a_failed_cycle(vault: Vault, index: Index) -> None:
+    """A failed sweep is logged and retried next interval, never fatal."""
+    pipeline = Pipeline(vault, index)
+    attempts = 0
+
+    def make_streams() -> list[tuple[AsyncGenerator[MemoryRecord, None], str]]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("adapter walk blew up")
+        return [(_stream([_record("/p/late.md", "late body")]), "openclaw")]
+
+    task = asyncio.create_task(_periodic_reconcile(pipeline, make_streams, 0.01))
+    try:
+        async with asyncio.timeout(5):
+            while _memory_count(index) < 1:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert attempts >= 2
+
+
+async def test_periodic_reconcile_disabled_returns_immediately(vault: Vault, index: Index) -> None:
+    pipeline = Pipeline(vault, index)
+
+    def make_streams() -> list[tuple[AsyncGenerator[MemoryRecord, None], str]]:
+        raise AssertionError("must not be called when disabled")
+
+    await asyncio.wait_for(_periodic_reconcile(pipeline, make_streams, 0), timeout=1)

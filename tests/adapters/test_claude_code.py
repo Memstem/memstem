@@ -326,3 +326,38 @@ class TestExtraFiles:
         adapter = ClaudeCodeAdapter(extra_files=[extra])
         # Constructor stored it as the resolved version.
         assert all(p.is_absolute() for p in adapter.extra_files)
+
+    async def test_watcher_alive_lifecycle(self, tmp_path: Path) -> None:
+        """B4: watcher_alive() tracks the observer thread through its life.
+
+        None before watch starts, True while the observer thread runs,
+        False after the thread dies underneath a still-running watch (the
+        silent failure /health needs to see), None again after shutdown.
+        """
+        root = tmp_path / "projects"
+        root.mkdir()
+        adapter = ClaudeCodeAdapter()
+        assert adapter.watcher_alive() is None
+
+        watcher = adapter.watch([root])
+        task = asyncio.create_task(watcher.__anext__())
+        for _ in range(200):
+            if adapter.watcher_alive() is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert adapter.watcher_alive() is True
+
+        # Kill the observer thread without touching the generator — the
+        # watch loop keeps awaiting its queue, blind to the death.
+        observer = adapter._observer
+        observer.stop()
+        observer.join()
+        assert adapter.watcher_alive() is False
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await watcher.aclose()
+        assert adapter.watcher_alive() is None
