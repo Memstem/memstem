@@ -261,6 +261,27 @@ class TestTransientHandling:
             is None
         )
 
+    def test_transient_failure_releases_claim(self, vault: Vault, index: Index) -> None:
+        """A4: a transient failure must hand the row straight back (claim
+        cleared) so another worker can retry immediately instead of
+        waiting out the 5-minute lease."""
+        pipe = Pipeline(vault, index)
+        memory = _processed(pipe, _record())
+        embedder = _StubEmbedder()
+        embedder.transient_always = True
+        worker = EmbedWorker(
+            vault=vault, index=index, embedder=embedder, batch_size=1, idle_sleep=0
+        )
+        asyncio.run(worker.tick())
+        row = index.db.execute(
+            "SELECT claimed_at, claimed_by FROM embed_queue WHERE memory_id = ?",
+            (str(memory.id),),
+        ).fetchone()
+        assert row["claimed_at"] is None
+        assert row["claimed_by"] is None
+        # And a sibling claimant can take it right away.
+        assert index.claim_pending(limit=1, claimant="other") != []
+
     def test_transient_streak_drives_backoff(self, vault: Vault, index: Index) -> None:
         """Consecutive transient ticks bump the worker's backoff
         counter, so the next sleep gets longer. A successful tick

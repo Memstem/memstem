@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -97,8 +98,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 11 in ADRs 0020/0021 (summarizer_cache table).
-        assert version == 11
+        # Bumped to 12 for the embed-queue claim/lease columns (A4).
+        assert version == 12
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -115,7 +116,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [11]
+            assert [r["version"] for r in rows] == [12]
         finally:
             idx.close()
 
@@ -623,6 +624,101 @@ class TestEmbedState:
                 idx._db = real_db
         finally:
             idx.close()
+
+
+class TestClaimLease:
+    """A4: workers claim queue rows atomically, with a crash-safe lease.
+
+    ``claim_pending`` must hand each pending row to exactly one claimant
+    (across threads AND across processes / connections), and a claim
+    must expire after its lease so rows from a crashed worker get
+    reclaimed instead of stranded.
+    """
+
+    def _enqueue_n(self, index: Index, n: int) -> list[str]:
+        ids: list[str] = []
+        for _ in range(n):
+            m = _make_memory()
+            index.upsert(m)
+            index.enqueue_embed(str(m.id))
+            ids.append(str(m.id))
+        return ids
+
+    def test_claimed_rows_invisible_to_second_claimant(self, index: Index) -> None:
+        ids = self._enqueue_n(index, 3)
+        claimed = index.claim_pending(limit=10, claimant="w0")
+        assert sorted(mid for mid, _ in claimed) == sorted(ids)
+        assert index.claim_pending(limit=10, claimant="w1") == []
+
+    def test_claim_respects_limit_and_leaves_rest_claimable(self, index: Index) -> None:
+        ids = self._enqueue_n(index, 4)
+        first = index.claim_pending(limit=3, claimant="w0")
+        rest = index.claim_pending(limit=10, claimant="w1")
+        assert len(first) == 3
+        assert len(rest) == 1
+        assert {mid for mid, _ in first} | {mid for mid, _ in rest} == set(ids)
+
+    def test_concurrent_connections_get_disjoint_rows(self, tmp_path: Path) -> None:
+        """Two connections on the same file — the cross-process shape
+        (daemon workers vs a parallel `memstem embed`)."""
+        db_path = tmp_path / "claim.db"
+        a = Index(db_path, dimensions=768)
+        a.connect()
+        b = Index(db_path, dimensions=768)
+        b.connect()
+        try:
+            ids = self._enqueue_n(a, 6)
+            got_a = a.claim_pending(limit=3, claimant="procA")
+            got_b = b.claim_pending(limit=10, claimant="procB")
+            ids_a = {mid for mid, _ in got_a}
+            ids_b = {mid for mid, _ in got_b}
+            assert ids_a.isdisjoint(ids_b)
+            assert ids_a | ids_b == set(ids)
+        finally:
+            a.close()
+            b.close()
+
+    def test_expired_lease_is_reclaimable(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        assert index.claim_pending(limit=1, claimant="crashed") != []
+        time.sleep(0.01)
+        reclaimed = index.claim_pending(limit=1, claimant="rescuer", lease_seconds=0.0)
+        assert [m for m, _ in reclaimed] == [mid]
+
+    def test_live_lease_blocks_reclaim(self, index: Index) -> None:
+        self._enqueue_n(index, 1)
+        assert index.claim_pending(limit=1, claimant="w0", lease_seconds=300.0) != []
+        assert index.claim_pending(limit=1, claimant="w1", lease_seconds=300.0) == []
+
+    def test_release_makes_row_immediately_reclaimable(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        index.claim_pending(limit=1, claimant="w0")
+        index.release_embed_claim(mid)
+        reclaimed = index.claim_pending(limit=1, claimant="w1")
+        assert [m for m, _ in reclaimed] == [mid]
+
+    def test_mark_embed_error_clears_claim(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        index.claim_pending(limit=1, claimant="w0")
+        index.mark_embed_error(mid, "boom", max_retries=5)
+        reclaimed = index.claim_pending(limit=1, claimant="w1")
+        assert [m for m, _ in reclaimed] == [mid]
+
+    def test_failed_rows_are_not_claimable(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        index.mark_embed_error(mid, "boom", max_retries=1)
+        assert index.claim_pending(limit=10, claimant="w0") == []
+
+    def test_claim_token_is_row_enqueued_at(self, index: Index) -> None:
+        [mid] = self._enqueue_n(index, 1)
+        [(claimed_id, token)] = index.claim_pending(limit=1, claimant="w0")
+        row = index.db.execute(
+            "SELECT enqueued_at, claimed_by FROM embed_queue WHERE memory_id = ?",
+            (mid,),
+        ).fetchone()
+        assert claimed_id == mid
+        assert token == row["enqueued_at"]
+        assert row["claimed_by"] == "w0"
 
 
 class TestBackfillEmbedState:

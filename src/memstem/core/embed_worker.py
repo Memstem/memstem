@@ -9,14 +9,17 @@ configurable number of attempts so a single bad record doesn't block
 the queue.
 
 Concurrency is task-level: ``run_workers(N, ...)`` spawns N async tasks
-that share the queue. SQLite serializes writes, so the workers
-naturally take different memory_ids without explicit locking.
+that share the queue. Each worker claims its rows atomically via
+``Index.claim_pending`` (a leased claim, recoverable if the worker
+crashes), so concurrent workers — including a parallel ``memstem
+embed`` process — never embed the same record twice in flight.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from memstem.core.embeddings import (
@@ -54,6 +57,13 @@ class EmbedWorker:
     # provider gets picked up promptly.
     MAX_TRANSIENT_BACKOFF: float = 60.0
 
+    # How long a queue-row claim stays valid. Generous relative to a
+    # batch (8 records x a few seconds each); only a worker that crashed
+    # or hung mid-batch ever lets a claim age out, at which point the
+    # row becomes reclaimable by any worker. Normal completion releases
+    # the claim within seconds via dequeue / mark_embed_error / release.
+    CLAIM_LEASE_SECONDS: float = 300.0
+
     def __init__(
         self,
         *,
@@ -76,6 +86,9 @@ class EmbedWorker:
         self.backoff_base = backoff_base
         self.worker_id = worker_id
         self.embedding_signature = embedding_signature
+        # Queue-claim identity: distinguishes this worker from siblings in
+        # the same daemon AND from a parallel `memstem embed` process.
+        self._claimant = f"pid{os.getpid()}:w{worker_id}"
         # Consecutive transient-error count, used for exponential backoff
         # between ticks. Reset to 0 on any successful tick.
         self._transient_streak = 0
@@ -129,13 +142,17 @@ class EmbedWorker:
         - ``False`` after a permanent error → leave the streak alone
           (don't punish the queue for a single bad record).
         """
-        pending = self.index.queue_pending(limit=self.batch_size)
-        if not pending:
+        claimed = self.index.claim_pending(
+            limit=self.batch_size,
+            claimant=self._claimant,
+            lease_seconds=self.CLAIM_LEASE_SECONDS,
+        )
+        if not claimed:
             return 0
 
         embedded = 0
         any_transient = False
-        for memory_id in pending:
+        for memory_id, _enqueued_at in claimed:
             ok, transient = await asyncio.to_thread(self._embed_one, memory_id)
             if ok:
                 embedded += 1
@@ -210,6 +227,10 @@ class EmbedWorker:
                 memory_id,
                 exc,
             )
+            # Hand the row straight back instead of letting the claim age
+            # out — a healthier worker (or this one, next tick) can retry
+            # immediately.
+            self.index.release_embed_claim(memory_id)
             return False, True
         except EmbeddingError as exc:
             logger.warning("embed worker %d: failed for %s: %s", self.worker_id, memory_id, exc)

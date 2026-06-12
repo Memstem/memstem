@@ -17,7 +17,7 @@ import struct
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Self
 
@@ -29,7 +29,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 
 # SQLite extended error code for `FOREIGN KEY constraint failed` (787 = base
@@ -354,6 +354,23 @@ MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_summarizer_cache_ts ON summarizer_cache(ts);
     """,
+    12: """
+        -- Worker claim/lease on the embed queue. `queue_pending` used to
+        -- hand the same rows to every concurrently polling worker (the
+        -- daemon's N workers, or a parallel `memstem embed`), so a slow
+        -- record could be embedded several times in flight — idempotent
+        -- on the vec table, but each duplicate burns an embedder round
+        -- trip. `claim_pending` now stamps `claimed_at`/`claimed_by`
+        -- atomically before a worker touches a row; a claim older than
+        -- its lease is treated as crashed and reclaimable, so a dead
+        -- worker strands nothing.
+        --
+        -- Marker-only entry (like v8): ALTER TABLE ADD COLUMN is not
+        -- idempotent and the migration loop must stay replay-safe, so
+        -- the columns are added by `_ensure_embed_queue_claim_columns`
+        -- in `_migrate()`, gated on PRAGMA table_info.
+        SELECT 1;
+    """,
 }
 
 
@@ -471,6 +488,7 @@ class Index:
             self.db.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
 
         self._ensure_vec_table()
+        self._ensure_embed_queue_claim_columns()
         # Pre-ADR-0014 this ran on every connect and was the dominant
         # cost of opening a populated index (~35 s on a 1 GB vec0). Now
         # it runs at most once: when an install crosses v8, either via
@@ -549,6 +567,20 @@ class Index:
             """,
             payload,
         )
+
+    def _ensure_embed_queue_claim_columns(self) -> None:
+        """Add the v12 claim/lease columns to ``embed_queue`` if absent.
+
+        Lives outside the SQL migration loop because ``ALTER TABLE ADD
+        COLUMN`` has no ``IF NOT EXISTS`` form and the migration scripts
+        must stay replay-safe (the legacy-upgrade path re-runs them
+        against an already-current schema).
+        """
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(embed_queue)")}
+        if "claimed_at" not in cols:
+            self.db.execute("ALTER TABLE embed_queue ADD COLUMN claimed_at TEXT")
+        if "claimed_by" not in cols:
+            self.db.execute("ALTER TABLE embed_queue ADD COLUMN claimed_by TEXT")
 
     def _ensure_vec_table(self) -> None:
         # vec0 virtual tables can't be created in executescript() reliably across
@@ -860,14 +892,21 @@ class Index:
                 UPDATE embed_queue
                 SET retry_count = retry_count + 1,
                     last_error = ?,
-                    failed = CASE WHEN retry_count + 1 >= ? THEN 1 ELSE 0 END
+                    failed = CASE WHEN retry_count + 1 >= ? THEN 1 ELSE 0 END,
+                    claimed_at = NULL,
+                    claimed_by = NULL
                 WHERE memory_id = ?
                 """,
                 (error[:500], max_retries, memory_id),
             )
 
     def queue_pending(self, limit: int) -> list[str]:
-        """Return up to `limit` memory_ids that are pending embedding (not failed)."""
+        """Return up to `limit` memory_ids that are pending embedding (not failed).
+
+        Read-only introspection — workers must use :meth:`claim_pending`
+        instead, which atomically marks the rows as taken so concurrent
+        workers (or a parallel ``memstem embed``) don't double-embed.
+        """
         with self._lock:
             rows = self.db.execute(
                 """
@@ -879,6 +918,63 @@ class Index:
                 (limit,),
             ).fetchall()
         return [r["memory_id"] for r in rows]
+
+    def claim_pending(
+        self,
+        limit: int,
+        claimant: str,
+        lease_seconds: float = 300.0,
+    ) -> list[tuple[str, str]]:
+        """Atomically claim up to `limit` pending rows for `claimant`.
+
+        Returns ``(memory_id, enqueued_at)`` pairs. The ``enqueued_at``
+        value is the claim token: pass it back to
+        :meth:`dequeue_embed_if_unchanged` so a record that was
+        re-enqueued (content changed) while this worker was embedding it
+        is not erased from the queue by the stale result.
+
+        The claim is a single UPDATE statement, so it is atomic both
+        across worker threads sharing this connection and across
+        processes sharing the database file — two concurrent claimants
+        get disjoint rows. A row whose ``claimed_at`` is older than
+        ``lease_seconds`` is treated as abandoned by a crashed or hung
+        worker and is reclaimable; finished work always releases its
+        claim sooner via dequeue, :meth:`mark_embed_error`, or
+        :meth:`release_embed_claim`.
+        """
+        now = datetime.now(tz=UTC)
+        cutoff = (now - timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock, self.db:
+            rows = self.db.execute(
+                """
+                UPDATE embed_queue
+                SET claimed_at = ?, claimed_by = ?
+                WHERE failed = 0
+                  AND (claimed_at IS NULL OR claimed_at < ?)
+                  AND memory_id IN (
+                    SELECT memory_id FROM embed_queue
+                    WHERE failed = 0 AND (claimed_at IS NULL OR claimed_at < ?)
+                    ORDER BY enqueued_at ASC, retry_count ASC
+                    LIMIT ?
+                  )
+                RETURNING memory_id, enqueued_at
+                """,
+                (now.isoformat(), claimant, cutoff, cutoff, limit),
+            ).fetchall()
+        return [(r["memory_id"], r["enqueued_at"]) for r in rows]
+
+    def release_embed_claim(self, memory_id: str) -> None:
+        """Release a claim without consuming the row (transient failure).
+
+        The row becomes immediately reclaimable instead of waiting out
+        the lease — a worker that hit a network blip shouldn't make the
+        record invisible to healthier workers for minutes.
+        """
+        with self._lock, self.db:
+            self.db.execute(
+                "UPDATE embed_queue SET claimed_at = NULL, claimed_by = NULL WHERE memory_id = ?",
+                (memory_id,),
+            )
 
     def get_path(self, memory_id: str) -> str | None:
         """Return the vault-relative path for a memory id, or None if missing.
