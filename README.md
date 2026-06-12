@@ -1,6 +1,7 @@
 # Memstem
 
 [![Stars](https://img.shields.io/github/stars/Memstem/memstem?style=social)](https://github.com/Memstem/memstem/stargazers)
+[![PyPI](https://img.shields.io/pypi/v/memstem)](https://pypi.org/project/memstem/)
 [![CI](https://github.com/Memstem/memstem/actions/workflows/ci.yml/badge.svg)](https://github.com/Memstem/memstem/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
@@ -173,10 +174,10 @@ memstem doctor                                       # `Embed queue: N pending` 
 
 Embedding is **always queued** rather than inline (see ADR 0009): the migrate finishes in seconds and the daemon's embed worker drains the queue at its own pace. On CPU-only Ollama that means semantic search becomes "good" over an hour or two; on the API providers above it's done in seconds.
 
-Manual install if you'd rather not pipe a script (Memstem isn't on PyPI yet — install from source):
+Manual install if you'd rather not pipe a script:
 
 ```bash
-pipx install git+https://github.com/Memstem/memstem.git
+pipx install memstem                         # or: pip install memstem
 ollama pull nomic-embed-text                 # 768-dim local embedder
 memstem init ~/memstem-vault                 # interactive wizard
 memstem migrate --apply                      # one-shot history import
