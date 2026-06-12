@@ -37,6 +37,7 @@ from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
+from memstem.servers.request_limits import clamp_limit
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +396,7 @@ def build_server(
         activity.touch()
         results = res.search.search(
             query=query,
-            limit=limit,
+            limit=clamp_limit(limit),
             types=types,
             rrf_k=sc.rrf_k,
             bm25_weight=sc.bm25_weight,
@@ -494,9 +495,23 @@ def build_server(
         unrecognized `type` is kept as a tag and stored as a `memory`. The save
         always lands — the agent is never required to produce perfect metadata.
         If `path` is omitted, a vault-relative path is generated from type + id.
+        Underscore-prefixed path components (`_meta/...`) are reserved for
+        vault internals and rejected; omit `path` instead.
         """
         activity.touch()
         fm = coerce(frontmatter)
+        # The metadata-normalization promise above does not extend to `path`:
+        # `_meta/` holds the index DB and daemon config, so an explicit path
+        # into an underscore-prefixed directory is refused outright rather
+        # than coerced. (Traversal outside the vault is separately blocked by
+        # Vault._resolve.) The content is never lost — retrying without
+        # `path` always lands at an auto-generated location.
+        if path is not None and any(part.startswith("_") for part in Path(path).parts):
+            raise ValueError(
+                f"path {path!r} touches an underscore-prefixed directory, which is "
+                "reserved for vault internals (e.g. _meta). Omit `path` to store at "
+                "an auto-generated location."
+            )
         target_path = Path(path) if path else _auto_path(fm)
         memory = Memory(frontmatter=fm, body=body, path=target_path)
         res.vault.write(memory)

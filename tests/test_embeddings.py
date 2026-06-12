@@ -324,6 +324,7 @@ class TestGeminiEmbedder:
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen["url"] = str(request.url)
+            seen["headers"] = dict(request.headers)
             seen["body"] = json.loads(request.content)
             return httpx.Response(
                 200,
@@ -345,7 +346,10 @@ class TestGeminiEmbedder:
             emb.close()
         assert len(vecs) == 2
         assert vecs[0] == [0.5] * 4
-        assert "key=AIza-test" in seen["url"]
+        # The key must travel in the x-goog-api-key header, never the URL —
+        # query strings leak into access/proxy logs and error messages.
+        assert seen["headers"]["x-goog-api-key"] == "AIza-test"
+        assert "AIza-test" not in seen["url"]
         assert "batchEmbedContents" in seen["url"]
         assert seen["body"]["requests"][0]["model"] == "models/text-embedding-004"
         assert seen["body"]["requests"][0]["content"]["parts"][0]["text"] == "a"

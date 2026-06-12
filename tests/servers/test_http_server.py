@@ -311,3 +311,118 @@ class TestHttpServerConfig:
     def test_can_disable(self) -> None:
         c = HttpServerConfig(enabled=False)
         assert c.enabled is False
+
+    def test_auth_token_env_default(self) -> None:
+        c = HttpServerConfig()
+        assert c.auth_token_env == "MEMSTEM_HTTP_TOKEN"
+
+
+class TestBearerAuth:
+    """Optional bearer auth: on when build_app gets a token, off otherwise."""
+
+    @pytest.fixture
+    def auth_client(self, vault: Vault, index: Index) -> TestClient:
+        app = build_app(vault, index, auth_token="sekrit")
+        return TestClient(app)
+
+    def test_no_token_means_open(self, client: TestClient) -> None:
+        # The loopback default: no token configured, everything works bare.
+        assert client.get("/version").status_code == 200
+
+    def test_missing_header_is_401(self, auth_client: TestClient) -> None:
+        assert auth_client.get("/version").status_code == 401
+        assert auth_client.post("/search", json={"query": "x"}).status_code == 401
+        assert auth_client.get("/memory/anything").status_code == 401
+
+    def test_wrong_token_is_401(self, auth_client: TestClient) -> None:
+        r = auth_client.get("/version", headers={"Authorization": "Bearer wrong"})
+        assert r.status_code == 401
+
+    def test_malformed_scheme_is_401(self, auth_client: TestClient) -> None:
+        # Wrong scheme, bare token, and empty value all fail closed.
+        # (Non-ASCII header bytes can't be expressed through httpx's
+        # TestClient; the middleware compares as bytes so they 401 too.)
+        for bad in ("Basic c2VrcmV0", "sekrit", "Bearer", ""):
+            r = auth_client.get("/version", headers={"Authorization": bad})
+            assert r.status_code == 401, bad
+
+    def test_correct_token_passes(self, auth_client: TestClient) -> None:
+        r = auth_client.get("/version", headers={"Authorization": "Bearer sekrit"})
+        assert r.status_code == 200
+
+    def test_health_stays_open(self, auth_client: TestClient) -> None:
+        # Monitoring must keep working when auth is enabled.
+        assert auth_client.get("/health").status_code == 200
+
+
+class TestRequestClamps:
+    """Caller-supplied limit / rerank_top_n are clamped at the edge."""
+
+    def test_huge_limit_clamped(self, vault: Vault, index: Index) -> None:
+        from typing import Any
+
+        from memstem.core.search import Search
+        from memstem.servers.request_limits import MAX_SEARCH_LIMIT
+
+        _write_memory(vault, index, body="clamp probe")
+        seen: dict[str, Any] = {}
+        original = Search.search
+
+        def spy(self: Search, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return original(self, **kwargs)
+
+        app = build_app(vault, index)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Search, "search", spy)
+            client = TestClient(app)
+            r = client.post("/search", json={"query": "clamp", "limit": 10**9})
+        assert r.status_code == 200
+        assert seen["limit"] == MAX_SEARCH_LIMIT
+
+    def test_request_rerank_top_n_clamped(self, vault: Vault, index: Index) -> None:
+        from typing import Any
+
+        from memstem.core.search import Search
+        from memstem.servers.request_limits import MAX_RERANK_TOP_N
+
+        _write_memory(vault, index, body="clamp probe")
+        seen: dict[str, Any] = {}
+        original = Search.search
+
+        def spy(self: Search, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return original(self, **kwargs)
+
+        app = build_app(vault, index)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Search, "search", spy)
+            client = TestClient(app)
+            r = client.post("/search", json={"query": "clamp", "rerank_top_n": 10**6})
+        assert r.status_code == 200
+        assert seen["rerank_top_n"] == MAX_RERANK_TOP_N
+
+    def test_config_default_rerank_not_clamped(self, vault: Vault, index: Index) -> None:
+        # Operator-configured defaults are trusted; only request-supplied
+        # values get clamped. With no rerank_top_n in the request, whatever
+        # effective default the app computed flows through untouched.
+        from typing import Any
+
+        from memstem.core.search import Search
+
+        _write_memory(vault, index, body="clamp probe")
+        seen: dict[str, Any] = {}
+        original = Search.search
+
+        def spy(self: Search, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return original(self, **kwargs)
+
+        app = build_app(vault, index)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Search, "search", spy)
+            client = TestClient(app)
+            r = client.post("/search", json={"query": "clamp"})
+        assert r.status_code == 200
+        # Reranker disabled in default SearchConfig → effective default is None.
+        assert seen["rerank_top_n"] is None

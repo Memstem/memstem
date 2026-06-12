@@ -526,9 +526,12 @@ class GeminiEmbedder(Embedder):
             "requests": [{**request_template, "content": {"parts": [{"text": t}]}} for t in texts]
         }
         try:
+            # Key travels in the x-goog-api-key header, not a `?key=` query
+            # param — query strings leak into access logs, proxy logs, and
+            # error messages that embed the URL; headers don't.
             response = self._client.post(
                 f"/{full_model}:batchEmbedContents",
-                params={"key": self._api_key},
+                headers={"x-goog-api-key": self._api_key},
                 json=body,
             )
             response.raise_for_status()

@@ -352,12 +352,22 @@ class HttpServerConfig(BaseModel):
     the same `Search` / `Vault` / `Index` instances the watch loop uses,
     without spawning a per-query subprocess.
 
-    Loopback-only by design — there's no auth surface in v0.1.
+    Loopback-only by design. For non-loopback binds (e.g. a container
+    daemon reachable across a Docker network) an optional bearer token
+    can be required: set the environment variable named by
+    ``auth_token_env`` and every endpoint except ``/health`` demands
+    ``Authorization: Bearer <token>``. Unset (the default) means no
+    auth, which is fine on loopback and warned about on anything else.
     """
 
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = Field(default=7821, ge=1, le=65535)
+    auth_token_env: str = "MEMSTEM_HTTP_TOKEN"
+    """Name of the environment variable holding the bearer token. The
+    token lives in the daemon's environment, not in this config file —
+    config.yaml sits inside the vault, and the vault is exactly what the
+    token protects. Empty string disables the lookup entirely."""
 
 
 class McpServerConfig(BaseModel):

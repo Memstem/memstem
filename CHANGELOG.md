@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Caller-supplied `limit`/`rerank_top_n` are clamped at the request edge.**
+  An agent passing a pathological `limit` (MCP or HTTP search) no longer
+  triggers an unbounded scan/MMR pass, and a huge HTTP `rerank_top_n` no
+  longer fans that many documents out to the shared reranker LLM. Limits
+  clamp to `[1, 100]`, `rerank_top_n` to `[1, 50]`; operator-configured
+  defaults are not clamped.
+- **`memstem_upsert` rejects underscore-prefixed path components.** An
+  explicit `path` like `_meta/...` could previously write inside the vault's
+  internals directory (`index.db` and `config.yaml` live there). Such paths
+  now fail with a clear error telling the agent to retry without `path`;
+  metadata normalization (coerce-never-reject) is unaffected.
+- **Optional bearer-token auth for the HTTP server.** Setting the env var
+  named by `http_server.auth_token_env` (default `MEMSTEM_HTTP_TOKEN`)
+  requires `Authorization: Bearer <token>` on every endpoint except
+  `/health` (kept open for monitoring; it exposes counts/version, never
+  vault content). Default remains no-auth on loopback; the non-loopback
+  no-auth startup warning now points at the env var.
+- **Gemini embedder sends its API key in the `x-goog-api-key` header**
+  instead of a `?key=` URL query parameter, which leaked into access/proxy
+  logs and URL-bearing error messages.
+
 ### Fixed
 
 - **README install instructions actually work now.** The quickstart pointed at
