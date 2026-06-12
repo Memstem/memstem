@@ -77,6 +77,13 @@ class EmbedWorker:
         worker_id: int = 0,
         embedding_signature: str = "",
     ) -> None:
+        if batch_size < 1:
+            # batch_size=0 wouldn't crash — claim_pending(limit=0) returns
+            # nothing, so the worker would idle forever while the queue
+            # grows. (And SQLite treats a negative LIMIT as unlimited.)
+            # Config validation catches config.yaml; this catches direct
+            # callers like `memstem embed --batch-size`.
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
         self.vault = vault
         self.index = index
         self.embedder = embedder
