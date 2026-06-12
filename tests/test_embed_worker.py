@@ -198,7 +198,11 @@ class TestTick:
             is None
         )
 
-    def test_drops_queue_entry_when_vault_file_missing(self, vault: Vault, index: Index) -> None:
+    def test_prunes_record_when_vault_file_missing(self, vault: Vault, index: Index) -> None:
+        """Vault-delete prune at the worker: a deleted canonical file
+        removes the whole record from the index (not just the queue
+        entry — orphaned memories/FTS rows would keep serving search
+        results for content that no longer exists)."""
         pipe = Pipeline(vault, index)
         memory = _processed(pipe, _record())
         # Delete the file out from under us.
@@ -213,6 +217,13 @@ class TestTick:
         )
         asyncio.run(worker.tick())
         assert index.queue_stats() == {"pending": 0, "failed": 0, "total": 0}
+        assert index.get_path(str(memory.id)) is None
+        assert (
+            index.db.execute(
+                "SELECT 1 FROM memories_fts WHERE memory_id = ?", (str(memory.id),)
+            ).fetchone()
+            is None
+        )
 
 
 class TestTransientHandling:

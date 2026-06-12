@@ -194,10 +194,28 @@ class EmbedWorker:
         try:
             body, text_chunks, image_urls = self._read_for_embed(memory_id)
         except _RecordMissingError:
-            # Vault file gone — drop the queue entry; nothing to embed.
-            # Guarded: a re-enqueue means the record was just rewritten
-            # (its file may exist again) — leave that request alone.
-            self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
+            rel_path = self.index.get_path(memory_id)
+            if rel_path is None:
+                # memories row deleted mid-embed; the cascade already
+                # removed our queue row — make sure and move on.
+                self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
+            elif not (self.vault.root / rel_path).is_file():
+                # Canonical markdown deleted — prune the whole record
+                # (memories/FTS/vec/queue/state), not just the queue
+                # entry; orphaned index rows would keep serving search
+                # results for content that no longer exists.
+                self.index.delete(memory_id)
+                logger.info(
+                    "embed worker %d: pruned %s — vault file %s deleted",
+                    self.worker_id,
+                    memory_id,
+                    rel_path,
+                )
+            else:
+                # The file exists after all: the record's path moved (or
+                # the file reappeared) between our path lookup and the
+                # read. Hand the row back and retry next tick.
+                self.index.release_embed_claim(memory_id)
             return False, False
         except InvalidFrontmatterError as exc:
             # Vault file exists but its frontmatter no longer validates

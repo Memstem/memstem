@@ -1171,6 +1171,17 @@ class Index:
             ).fetchone()
         return row["path"] if row else None
 
+    def all_paths(self) -> list[tuple[str, str]]:
+        """Return ``(memory_id, vault-relative path)`` for every indexed memory.
+
+        Used by the vault-delete prune sweep to find rows whose canonical
+        markdown file no longer exists. Locked like every other read on
+        the shared connection.
+        """
+        with self._lock:
+            rows = self.db.execute("SELECT id, path FROM memories").fetchall()
+        return [(r["id"], r["path"]) for r in rows]
+
     def find_memory_id_for_body_hash(self, body_hash: str) -> str | None:
         """Return the memory_id already storing this normalized body hash, or None.
 
