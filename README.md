@@ -307,10 +307,10 @@ embedding:
 adapters:
   openclaw:
     agent_workspaces:
-      - { path: ~/ari, tag: ari }
-      - { path: ~/blake, tag: blake }
+      - { path: ~/assistant, tag: assistant }
+      - { path: ~/support-agent, tag: support }
     shared_files:
-      - ~/ari/HARD-RULES.md
+      - ~/assistant/RULES.md
   claude_code:
     project_roots:
       - ~/.claude/projects
@@ -375,7 +375,7 @@ Memstem doctor (vault=/home/ubuntu/memstem-vault):
   ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly
   ✓ Ollama at http://localhost:11434 (nomic-embed-text)  (768 dims)
-  ✓ OpenClaw workspace: /home/ubuntu/ari (tag=ari)
+  ✓ OpenClaw workspace: /home/ubuntu/assistant (tag=assistant)
   ✓ Claude Code root: /home/ubuntu/.claude/projects
 
 All checks passed.

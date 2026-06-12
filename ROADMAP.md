@@ -18,12 +18,12 @@
 - [x] OpenClaw adapter (memory dir watcher) — multi-agent
 - [x] MCP server with `memstem_search`, `memstem_get`, `memstem_list_skills`, `memstem_get_skill`, `memstem_upsert`
 - [x] CLI: `memstem init`, `daemon`, `search`, `reindex`, `embed`, `migrate`, `mcp`, `doctor`, `connect-clients`
-- [x] Migration script: import existing `~/ari/memory/` + Claude Code sessions
+- [x] Migration script: import existing OpenClaw agent memory + Claude Code sessions
 - [x] `memstem connect-clients` registers the MCP server in `~/.claude.json` and patches CLAUDE.md
 - [x] `install.sh` end-to-end installer + `memstem doctor`
 - [x] Cross-platform CI matrix (Linux + macOS + Windows)
 
-**Goal:** running locally, replacing FlipClaw end-to-end. Achieved in v0.2.0.
+**Goal:** running locally, replacing the maintainer’s legacy memory pipeline end-to-end. Achieved in v0.2.0.
 
 ## Phase 2 — v0.2–v0.9 (production-ready single-user)
 

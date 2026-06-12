@@ -126,7 +126,7 @@ One PR. Layout:
 | `docs/decisions/0015-eval-harness.md`      | This ADR                                 |
 
 The query set ships as a starter (12 queries across 4 classes). It
-grows as new failure modes surface — Brad adds queries; Claude Code
+grows as new failure modes surface — the maintainer adds queries; Claude Code
 reviews; both can approve. The contract is "real failure modes from
 real recall problems" — synthetic queries are forbidden because they
 optimize the harness, not the system.
@@ -155,7 +155,7 @@ optimize the harness, not the system.
 - Per-class breakdown surfaces asymmetric effects before merge.
 - The query set is itself a working agenda — failed queries are the
   next things to fix.
-- Cheap to run (under 60s on Brad's box).
+- Cheap to run (under 60s on the maintainer's box).
 
 **Cons:**
 

@@ -1,7 +1,7 @@
 # Recall-quality eval results — 2026-04-30
 
 > Captures the first end-to-end measurement of W5 (cross-encoder
-> rerank, ADR 0017) and W6 (HyDE, ADR 0018) against Brad's live vault
+> rerank, ADR 0017) and W6 (HyDE, ADR 0018) against the maintainer's live vault
 > using `gpt-4o-mini` via OpenAI. The eval gates from ADR 0015 are
 > explicit; this document records that **neither feature passes the
 > default-on gate on this vault as configured**, and walks through

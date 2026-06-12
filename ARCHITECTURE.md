@@ -40,7 +40,7 @@
                           │ inotify watches
 ┌──────────────────────────────────────────────────────────┐
 │              External AI Filesystems                     │
-│  ~/.claude/projects/  ~/ari/memory/  ~/codex/sessions/   │
+│  ~/.claude/projects/  ~/<agent>/memory/  ~/.codex/sessions/   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +84,7 @@ If the index is ever corrupted, lost, or becomes incompatible: `memstem reindex`
 Each adapter is a small module that knows how to read one external AI's filesystem.
 
 - **Claude Code adapter**: watches `~/.claude/projects/*/sessions/*.jsonl` with `inotify`, extracts user/assistant turns, dedupes, writes a clean memory record into `memories/sessions/`.
-- **OpenClaw adapter**: watches `~/ari/memory/`, `~/ari/skills/`, daily logs. Mirrors directly into the canonical vault.
+- **OpenClaw adapter**: watches each configured agent workspace’s `memory/`, `skills/`, and daily logs. Mirrors directly into the canonical vault.
 - **Codex adapter** (planned): watches `~/.codex/sessions/`.
 - **Cursor adapter** (planned): watches Cursor's local memory store.
 - **Generic file adapter** (planned): watches an arbitrary directory provided by the user.

@@ -21,7 +21,7 @@ land in a path an adapter watches.
 
 **Skill authoring** — observing a session, deciding it represents a
 reusable procedure, and writing a `SKILL.md` from it — is a different
-problem. Other systems Brad has used in the past have included it:
+problem. Other systems the maintainer has used in the past have included it:
 
 - **FlipClaw** (`~/ari/toolkit/flipclaw/scripts/skill-extractor.py`,
   ~1,440 lines) — a session-end pipeline that gates on local
@@ -106,7 +106,7 @@ maintenance MemStem's architecture was designed to avoid.
 
 Claude Code's `skill-creator` knows Claude Code's session shape and
 emits Claude-Code-shaped SKILL.md. Hermes does the same in its
-context. FlipClaw still works for OpenClaw sessions if Brad keeps
+context. FlipClaw still works for OpenClaw sessions if the maintainer keeps
 running it. The capability exists where it belongs — close to the
 session source, in the format the producing AI uses.
 
@@ -197,5 +197,5 @@ read-files-from-disk design eliminates.
   — atomic-fact extraction's one-shot scope is preserved per the
   boundary discussion above.
 - RECALL-PLAN.md — W7 removed.
-- FlipClaw `skill-extractor.py` — reference design Brad has used in
+- FlipClaw `skill-extractor.py` — reference design the maintainer has used in
   the past for skill authoring at the AI layer.

@@ -39,7 +39,7 @@ and replaces ADR 0008's simple cosine step.
 Skills (`SKILL.md` files) require an extra gate. They are
 high-leverage and used by every agent that touches MemStem; an
 incorrect auto-merge of two skills causes hours of debugging when one
-gets used and behaves like the other. Brad called this out
+gets used and behaves like the other. The maintainer called this out
 specifically: "we need just one source of truth without duplications"
 applies to memories *and* skills, but skills must never be silently
 merged.
@@ -340,7 +340,7 @@ path; budget two weeks including the eval suite.
 
 - Should the judge call be batched across multiple `(new, candidates)`
   pairs in one prompt for throughput? Decide in PR-C with a real
-  benchmark on Brad's box.
+  benchmark on the maintainer's box.
 - For very long bodies (>16KB), do we hash on the full body or the
   first 4KB? Current draft: full body — collisions are not a real
   risk and partial-hash false negatives reintroduce the feedback
@@ -355,7 +355,7 @@ path; budget two weeks including the eval suite.
 
 Layer 1 (the SHA-256 body-hash check) was originally framed as
 write-time only — it catches duplicates as new records arrive. On
-2026-04-29 a read-only audit of Brad's live vault found ~20% of
+2026-04-29 a read-only audit of the maintainer's live vault found ~20% of
 records (240 collision groups, 245 deprecate candidates) were
 already-stuck duplicates from re-ingestion that pre-dated the
 Layer 1 PR. Write-time semantics alone can't recover that damage.
@@ -387,7 +387,7 @@ Same heuristic as the audit script that prototyped this work:
 A `coin_flip = True` flag surfaces when (1)-(3) all match and only
 (4) breaks the tie — useful for the operator to verify the winner
 choice on byte-identical bodies where it doesn't matter. The audit
-showed 88% of groups in Brad's vault are coin flips today (because
+showed 88% of groups in the maintainer's vault are coin flips today (because
 importance is null and retrievals are 0 for most records); shipping
 W1 first reduces this materially.
 

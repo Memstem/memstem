@@ -1,6 +1,6 @@
 # CLAUDE.md — Project context for Memstem
 
-This file is loaded automatically by Claude Code when working in `~/memstem/`.
+This file is loaded automatically by AI coding agents working in this repo.
 Read it first; it tells you how to operate on this codebase.
 
 ## What this project is
@@ -9,52 +9,32 @@ Read it first; it tells you how to operate on this codebase.
 
 Architectural advantage: immune to upgrade churn in any client because we depend only on the files each AI drops on disk — no hooks, no push APIs, no internal SDKs.
 
-This will replace the current FlipClaw / Ari memory pipeline.
+## Where to start
 
-## Where to start every session
-
-1. **Read [`PLAN.md`](./PLAN.md) first.** It has the current state, the full Phase 1 to-do list, and conventions.
-2. **Read [`ARCHITECTURE.md`](./ARCHITECTURE.md)** for the design.
-3. **Read the ADRs in [`docs/decisions/`](./docs/decisions/)** for locked decisions.
-
-## Current phase
-
-**Phase 1: v0.1 implementation.** Goal is a working local daemon that ingests from Claude Code + Ari, exposes MCP search, and lets us retire FlipClaw.
-
-The repo is public (MIT) at https://github.com/Memstem/memstem.
+1. **Read [README.md](./README.md)** for what's shipping and how it's used.
+2. **Read [ARCHITECTURE.md](./ARCHITECTURE.md)** for the design.
+3. **Read the ADRs in [docs/decisions/](./docs/decisions/)** for locked decisions. If a change touches storage, search ranking, or the adapter interface, write an ADR before implementing.
+4. **Check [ROADMAP.md](./ROADMAP.md)** for what's planned vs. out of scope.
 
 ## How to work
 
-- **Read PLAN.md, pick the first unchecked Phase 1 to-do, work top-down.**
-- Branch from `main`: `git checkout -b feat/<area>`
+- Branch from `main`: `git checkout -b feat/<area>` (or `fix/`, `docs/`, `chore/`)
 - Tests for every new module
 - `ruff format`, `ruff check`, `mypy src/` must pass before commit
 - Pre-commit hooks enforce the above; don't bypass with `--no-verify`
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`
 - Open a PR for every change; CI must pass; squash on merge
-- Update PLAN.md checkboxes as items complete
-- Update CHANGELOG.md for user-facing changes
+- Update CHANGELOG.md (`[Unreleased]` section) for user-facing changes
+- New dependencies need justification in the PR description
 
 ## What lives where
 
 | Path | Purpose |
 |---|---|
-| `~/memstem/` | This repo |
+| `src/memstem/` | The package — `core/` (storage, index, search), `adapters/`, CLI, MCP + HTTP servers |
 | `~/memstem-vault/` | Canonical markdown store (NOT inside the repo) |
 | `~/memstem-vault/_meta/index.db` | SQLite index (rebuildable) |
 | `~/memstem-vault/_meta/config.yaml` | Daemon config |
-
-## Memory system rule (still applies)
-
-The user's global `~/.claude/CLAUDE.md` says: do NOT use Claude Code's built-in memory directory; Ari is the source of truth for personal/organizational knowledge.
-
-**This still applies during Memstem development.** The Memstem codebase is engineering work; it doesn't override the personal-memory rule. Continue to:
-
-- Read Ari's memory via `cd ~/ari && OPENCLAW_CONFIG_PATH=/home/ubuntu/ari/openclaw.json openclaw memory search "query"`
-- Check `~/ari/MEMORY.md` and `~/ari/memory/*.md` for facts
-- Don't write to `~/.claude/projects/-home-ubuntu-memstem/memory/` or anywhere else under Claude Code's memory dir
-
-Once Memstem itself is working in Phase 1, this changes — Memstem's vault becomes the source of truth and the `MEMSTEM_VAULT` env var points sessions there. But until then, follow the existing rule.
 
 ## Conventions specific to this project
 
@@ -76,16 +56,15 @@ Adapters live in `src/memstem/adapters/`. They produce normalized `MemoryRecord`
 
 ## When in doubt
 
-- If you don't know what to do, **ask Brad** before guessing.
 - If a decision touches storage, search ranking, or the adapter interface, write an ADR (`docs/decisions/NNNN-<slug>.md`) before implementing.
-- If you need to add a new dependency, justify it in the PR description.
+- If it's still not clear, open an issue or ask the maintainer before guessing.
 
 ## Quick reference
 
-- Full plan + to-do list: [`PLAN.md`](./PLAN.md)
-- System design: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- Roadmap (phases 1-5): [`ROADMAP.md`](./ROADMAP.md)
-- Frontmatter schema: [`docs/frontmatter-spec.md`](./docs/frontmatter-spec.md)
-- MCP API: [`docs/mcp-api.md`](./docs/mcp-api.md)
-- Decisions: [`docs/decisions/`](./docs/decisions/)
+- System design: [ARCHITECTURE.md](./ARCHITECTURE.md)
+- Roadmap (phases 1–5): [ROADMAP.md](./ROADMAP.md)
+- Install guide: [docs/install.md](./docs/install.md)
+- Frontmatter schema: [docs/frontmatter-spec.md](./docs/frontmatter-spec.md)
+- MCP API: [docs/mcp-api.md](./docs/mcp-api.md)
+- Decisions: [docs/decisions/](./docs/decisions/)
 - Repo: https://github.com/Memstem/memstem
