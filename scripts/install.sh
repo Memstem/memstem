@@ -4,16 +4,16 @@
 # Designed so an agent (or a human) can install memstem and its
 # dependencies with a single curl-and-pipe:
 #
-#   curl -fsSL https://memstem.com/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh | bash
 #
 # For an unattended ("agent runs this for the user") install, pass --yes:
 #
-#   curl -fsSL https://memstem.com/install.sh | bash -s -- --yes
+#   curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh | bash -s -- --yes
 #
 # A complete cutover (install + import history + start daemon + wire
 # clients) is one invocation:
 #
-#   curl -fsSL https://memstem.com/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh \
 #     | bash -s -- --yes --connect-clients --migrate --start-daemon
 #
 # Steps, all idempotent:
@@ -220,12 +220,12 @@ ${RED}✗${RESET} SQLite extension loading is disabled in this Python build.
   ${BOLD}Recommended (Homebrew):${RESET}
       brew install python@3.12
       hash -r   # let your shell pick up the new python3 from Homebrew
-      curl -fsSL https://memstem.com/install.sh | bash    # re-run
+      curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh | bash    # re-run
 
   ${BOLD}Alternative (pyenv):${RESET}
       pyenv install 3.12.5
       pyenv global 3.12.5
-      curl -fsSL https://memstem.com/install.sh | bash    # re-run
+      curl -fsSL https://raw.githubusercontent.com/Memstem/memstem/main/scripts/install.sh | bash    # re-run
 
   See https://github.com/Memstem/memstem#macos-install for more.
 EOF
