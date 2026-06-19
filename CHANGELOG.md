@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reconciliation no longer starves the `/search` handler (#142).** A
+  reconcile pass ran `Pipeline.process` (synchronous markdown writes + index
+  upserts) inline on the asyncio event loop, pinning the loop thread at 100%
+  CPU and holding `Index._lock` in back-to-back upserts — so HTTP/MCP
+  `/search` saw ~15–20s latency mid-reconcile. The per-record
+  `await asyncio.sleep(0)` added in 0.12.2 was insufficient (it cedes one tick,
+  then the loop immediately resumes the next upsert). Reconcile now runs each
+  `process` in a worker thread (`asyncio.to_thread`), freeing the loop;
+  `Index._lock` keeps the shared SQLite connection safe across the reconcile,
+  embed, and search workers. The MCP `memstem_search` tool is likewise moved
+  off the event loop (the HTTP `/search` handler already did this), so a slow
+  embedder or a running reconcile can't block it.
+
 - **README hero image and intro no longer overclaim adapter support.** Both
   listed Cursor/Aider (and Hermes in the text) as connectable clients; only
   Claude Code, OpenClaw, and Codex adapters ship today. The hero is rebuilt
