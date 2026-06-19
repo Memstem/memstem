@@ -58,6 +58,19 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
+_AUTHORED_TYPES = frozenset({MemoryType.MEMORY, MemoryType.SKILL, MemoryType.DAILY})
+
+
+def _is_authored_type(record: MemoryRecord) -> bool:
+    """True if the record's resolved type is an authored, user-deletable file
+    type (memory/skill/daily) — ADR 0026. Keeps a session/derived body-hash
+    collision from attaching its ref to an authored memory in the dedup path."""
+    try:
+        return coerce(record.metadata or {}).type in _AUTHORED_TYPES
+    except Exception:  # coercion never raises in practice; default permissive
+        return True
+
+
 def _agent_tag(record: MemoryRecord) -> str | None:
     """Extract `agent:<tag>` from record tags, returning the tag or None.
 
@@ -158,8 +171,8 @@ class Pipeline:
 
         # ADR 0012, Layer 1: exact-body dedup. The hash check catches the
         # recall feedback loop (mem0's 808-copy failure mode) for free.
-        # We check BEFORE assigning a memory_id so a true duplicate doesn't
-        # leave a record_map entry that would fight with the canonical one.
+        # We check BEFORE assigning a fresh memory_id so a duplicate reuses
+        # the canonical id instead of minting a competing one.
         body_dedup_hash = normalized_body_hash(record.body)
         existing_id_for_ref = self._lookup_id_or_none(record.source, record.ref)
         # Locked Index method, not a bare find_existing_memory_for_hash(index.db, ...):
@@ -169,8 +182,23 @@ class Pipeline:
             existing_id_for_ref is None or existing_id_for_hash != str(existing_id_for_ref)
         )
         if is_cross_record_duplicate:
+            assert existing_id_for_hash is not None  # narrowed by is_cross_record_duplicate
             with self.index._lock, self.index.db:
                 increment_seen_count(self.index.db, body_dedup_hash)
+            # ADR 0026: record THIS (source, ref) → the canonical id so every
+            # source contributing identical content is tracked — otherwise the
+            # source-deletion sweep can't see this duplicate's source and would
+            # tombstone the memory when the canonical source is deleted even
+            # though this identical source still exists. Gated twice for safety:
+            #   - only when the ref is NEW (existing_id_for_ref is None): never
+            #     repoint a ref that already maps to another memory, which would
+            #     orphan that memory (leave it with zero record_map rows).
+            #   - only when this record's type is authored (not session/derived):
+            #     a body-hash collision between a session and an authored memory
+            #     must not attach a session ref to the authored memory's id, or
+            #     rotating that .jsonl would look like a dead authored source.
+            if existing_id_for_ref is None and _is_authored_type(record):
+                self._record_mapping(record.source, record.ref, UUID(existing_id_for_hash))
             logger.info(
                 "dedup: skipped exact body duplicate (source=%s, ref=%s, points_to=%s)",
                 record.source,

@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Source-deletion tombstone (ADR 0026).** Deleting an authored source file
+  (a `memory`, `skill`, or `daily` log) in a connected agent's workspace now
+  removes the corresponding memory from search. A reconcile-time
+  source-liveness sweep marks such records with a new `deleted_at` frontmatter
+  field (filtered out of search by default like `valid_to`/`deprecated_by`, and
+  recoverable via `include_deleted=True`); the marker is cleared automatically
+  if the source is restored. Session logs (`type=session`) and generated
+  records (distillations, project records) are never affected — the guard is
+  the record's `type`, not its ref shape. Includes a per-source safety valve
+  (a vanished workspace mount is skipped, not mass-tombstoned), a containing-
+  directory guard, and orphan `record_map` cleanup. Schema v14.
 - **Memstem is on PyPI**: `pip install memstem` / `pipx install memstem`
   ([pypi.org/project/memstem](https://pypi.org/project/memstem/), first
   published release: 0.17.0). The release workflow now builds sdist + wheel

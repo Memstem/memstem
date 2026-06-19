@@ -74,6 +74,12 @@ class Frontmatter(BaseModel):
     valid_to: datetime | None = None
     embedding_version: int | None = None
     deprecated_by: UUID | None = None
+    deleted_at: datetime | None = None
+    """ADR 0026: set when the upstream authored source file (memory/skill/daily)
+    was deleted locally. Filtered out of search by default like ``valid_to`` /
+    ``deprecated_by``; cleared automatically if the source is re-ingested. A
+    distinct field from ``valid_to`` so user-deletion never collides with the
+    noise filter's TTL (which overwrites ``valid_to`` on re-ingest)."""
 
     scope: str | None = None
     prerequisites: list[str] = Field(default_factory=list)
