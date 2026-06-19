@@ -17,7 +17,12 @@ from pathlib import Path
 import pytest
 
 from memstem.adapters.base import MemoryRecord
-from memstem.cli import _periodic_reconcile, _reconcile_all, _reconcile_skip_unchanged
+from memstem.cli import (
+    _periodic_reconcile,
+    _reconcile_all,
+    _reconcile_into_pipeline,
+    _reconcile_skip_unchanged,
+)
 from memstem.core.index import Index
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
@@ -126,6 +131,55 @@ async def test_reconcile_cedes_control_to_event_loop(vault: Vault, index: Index)
     assert _memory_count(index) == 150
 
 
+async def test_reconcile_keeps_loop_responsive_when_process_is_slow(
+    vault: Vault, index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow per-record upsert must not starve the event loop (issue #142).
+
+    ``Pipeline.process`` does synchronous markdown writes + index upserts.
+    Running it inline on the loop pinned the loop thread at 100% CPU and held
+    ``Index._lock`` back-to-back, so the HTTP/MCP ``/search`` handler saw
+    ~15-20s latency mid-reconcile. The prior mitigation (a per-record
+    ``await asyncio.sleep(0)``) was NOT enough: it cedes one tick, then the
+    next synchronous ``process`` immediately reblocks the loop. The fix runs
+    ``process`` in a worker thread (``asyncio.to_thread``), keeping the loop
+    free for other coroutines.
+
+    Here each ``process`` blocks its thread for 50ms; a concurrent 5ms
+    heartbeat must keep ticking throughout. With the work on the loop the
+    heartbeat is starved (a handful of ticks); off the loop it advances freely.
+    """
+    import time
+
+    pipeline = Pipeline(vault, index)
+    records = [_record(f"/slow/{i}.md", f"body number {i}") for i in range(10)]
+
+    def _slow_process(_rec: MemoryRecord) -> None:
+        time.sleep(0.05)  # simulate a heavy upsert; blocks the calling thread
+
+    monkeypatch.setattr(pipeline, "process", _slow_process)
+
+    done = asyncio.Event()
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while not done.is_set():
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    hb = asyncio.create_task(heartbeat())
+    try:
+        await _reconcile_into_pipeline(pipeline, _stream(records), "openclaw")
+    finally:
+        done.set()
+        await hb
+
+    # ~0.5s of blocking work ran off the loop, so the 5ms heartbeat had room to
+    # advance many times. Inline (the bug) it would be in the single digits.
+    assert ticks >= 20
+
+
 def test_skip_unchanged_true_for_identical_record(vault: Vault, index: Index) -> None:
     """An already-stored, identical record is skipped (ADR 0024).
 
@@ -191,8 +245,13 @@ async def test_periodic_reconcile_repeats_with_fresh_streams(vault: Vault, index
 
     task = asyncio.create_task(_periodic_reconcile(pipeline, make_streams, 0.01))
     try:
+        # Wait on the committed count, not the `cycles` counter: `cycles`
+        # increments when a stream is BUILT, but processing now yields the loop
+        # (records upsert in a worker thread, issue #142), so a record may not
+        # be committed yet when its cycle's stream is built. Two committed
+        # records require two cycles with fresh streams — exactly the intent.
         async with asyncio.timeout(5):
-            while cycles < 2:
+            while _memory_count(index) < 2:
                 await asyncio.sleep(0.01)
     finally:
         task.cancel()
@@ -201,6 +260,7 @@ async def test_periodic_reconcile_repeats_with_fresh_streams(vault: Vault, index
         except asyncio.CancelledError:
             pass
     assert _memory_count(index) >= 2
+    assert cycles >= 2
 
 
 async def test_periodic_reconcile_survives_a_failed_cycle(vault: Vault, index: Index) -> None:
