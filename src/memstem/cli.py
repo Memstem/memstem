@@ -1129,9 +1129,228 @@ def _prune_deleted_vault_files(
     return len(missing)
 
 
+# Memory types whose source IS a single authored, user-deletable file (ADR 0026).
+# `session` is excluded even though its ref is a real `.jsonl` path — rotating
+# session logs must never hide them or the distillations derived from them.
+# Generated types (`distillation`, `project`, …) have no deletable source file.
+_SOURCE_DELETABLE_TYPES = {"memory", "skill", "daily"}
+
+
+def _set_source_tombstone(vault: Vault, index: Index, memory_id: str, *, deleted: bool) -> bool:
+    """Set or clear ``deleted_at`` on one memory (ADR 0026). Returns True if changed.
+
+    Writes through the vault (canonical) then the index, never the index
+    alone — the storage invariant. ``deleted=True`` stamps ``deleted_at=now``
+    if unset; ``deleted=False`` clears it if set (clear-on-restore). The body
+    is untouched, so ``upsert`` does not re-enqueue an embed.
+    """
+    from memstem.core.storage import Memory, MemoryNotFoundError
+
+    path = index.get_path(memory_id)
+    if path is None:
+        return False
+    try:
+        memory = vault.read(path)
+    except MemoryNotFoundError:
+        return False
+    currently_deleted = memory.frontmatter.deleted_at is not None
+    if currently_deleted == deleted:
+        return False
+    new_value = datetime.now(tz=UTC) if deleted else None
+    new_fm = memory.frontmatter.model_copy(update={"deleted_at": new_value})
+    vault.write(Memory(frontmatter=new_fm, body=memory.body, path=memory.path))
+    index.upsert(Memory(frontmatter=new_fm, body=memory.body, path=memory.path))
+    return True
+
+
+def _sweep_deleted_sources(
+    vault: Vault,
+    index: Index,
+    adapters_by_source: dict[str, Adapter],
+    *,
+    max_fraction: float | None = 0.5,
+) -> int:
+    """Tombstone authored memories whose upstream source file was deleted (ADR 0026).
+
+    Reconcile-driven detection: ``stat()`` at reconcile time reflects final
+    state, so atomic-save churn (write-temp + rename) never produces a false
+    tombstone. For every ``record_map`` row joined to its memory type, an
+    authored memory (``memory``/``skill``/``daily``) whose source file is gone
+    has its dead ref removed; when a memory has no surviving ref left it is
+    soft-tombstoned (``deleted_at``), and when a tombstoned memory regains a
+    live ref it is restored. Returns the number of memories tombstoned.
+
+    Guards:
+    - **Type join** is the authored-vs-derived guard — ``session`` refs are
+      file-backed too, so the ``type`` filter (not ref shape) protects them.
+    - **Root liveness:** a dead ref is a real deletion only if its owning
+      configured root (``adapter.source_roots()``) still exists. If the whole
+      root is gone (unmounted / moved), every ref under it is skipped — never
+      mass-tombstoned. Refs with no declared root fall back to a
+      containing-directory check.
+    - **Per-root valve:** if one root has more than
+      ``max(10, max_fraction * authored_total_in_root)`` dead refs in a sweep,
+      that is treated as a vanished/partly-mounted root → skipped with a loud
+      error. ``max_fraction=None`` forces the sweep (operator action).
+    - **Orphan cleanup:** ``record_map`` rows whose memory row is gone (e.g.
+      hard-pruned by the vault-delete sweep) are deleted.
+
+    Ordering: when a dead ref is the memory's last surviving ref, the tombstone
+    is written BEFORE its ``record_map`` row is deleted — so a failed write
+    leaves the row in place for the next sweep instead of stranding a visible,
+    unfindable memory.
+    """
+    from collections import defaultdict
+
+    mappings = index.all_source_mappings()
+    if not mappings:
+        return 0
+
+    roots_by_source: dict[str, list[Path]] = {
+        name: adapter.source_roots() for name, adapter in adapters_by_source.items()
+    }
+
+    by_memory: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    orphan_rows: list[tuple[str, str]] = []
+    for source, ref, memory_id, mtype in mappings:
+        if mtype is None:
+            orphan_rows.append((source, ref))
+            continue
+        by_memory[memory_id].append((source, ref, mtype))
+
+    # Classify every authored ref as alive / dead / skip (unverifiable), and
+    # tag it with the root key it belongs to (for the per-root valve).
+    # Each entry: (source, ref, status, root_key).
+    total_by_root: dict[str, int] = defaultdict(int)
+    memory_classes: dict[str, list[tuple[str, str, str, str]]] = {}
+    for memory_id, rows in by_memory.items():
+        if rows[0][2] not in _SOURCE_DELETABLE_TYPES:
+            continue  # derived/generated — never source-tombstoned
+        classified: list[tuple[str, str, str, str]] = []
+        for source, ref, _mtype in rows:
+            owning = _owning_root(ref, roots_by_source.get(source, []))
+            root_key = str(owning) if owning is not None else f"{source}::noroot"
+            total_by_root[root_key] += 1
+            adapter = adapters_by_source.get(source)
+            if adapter is None:
+                classified.append((source, ref, "skip", root_key))  # unknown source
+            elif adapter.source_exists(ref):
+                classified.append((source, ref, "alive", root_key))
+            elif not _root_alive(owning, ref):
+                logger.warning(
+                    "source-deletion sweep: skipping %s (ref=%s) — its root is "
+                    "missing, which looks like a moved/unmounted root, not a file "
+                    "deletion. Run `memstem reindex` to force.",
+                    memory_id,
+                    ref,
+                )
+                classified.append((source, ref, "skip", root_key))
+            else:
+                classified.append((source, ref, "dead", root_key))
+        memory_classes[memory_id] = classified
+
+    # Per-root safety valve over confirmed-dead refs.
+    blocked_roots: set[str] = set()
+    if max_fraction is not None:
+        dead_by_root: dict[str, int] = defaultdict(int)
+        for classified in memory_classes.values():
+            for _source, _ref, status, root_key in classified:
+                if status == "dead":
+                    dead_by_root[root_key] += 1
+        for root_key, dead_count in dead_by_root.items():
+            total = total_by_root.get(root_key, 0)
+            if dead_count > max(10, int(total * max_fraction)):
+                logger.error(
+                    "source-deletion sweep skipped for root=%s: %d of %d authored "
+                    "records have no source file — that looks like a partly-missing "
+                    "mount, not deletions. Fix the path, or run `memstem reindex`.",
+                    root_key,
+                    dead_count,
+                    total,
+                )
+                blocked_roots.add(root_key)
+
+    # Apply orphan cleanup first.
+    for source, ref in orphan_rows:
+        index.delete_record_mapping(source, ref)
+
+    tombstoned = 0
+    restored = 0
+    for memory_id, classified in memory_classes.items():
+        live_now: list[tuple[str, str]] = []
+        dead_now: list[tuple[str, str]] = []
+        unverified = False  # skip refs / blocked-root dead refs → can't conclude
+        for source, ref, status, root_key in classified:
+            if status == "skip" or (status == "dead" and root_key in blocked_roots):
+                unverified = True
+                continue
+            # Re-stat right before acting (alive or dead): a delete/restore that
+            # raced classify must not produce a wrong tombstone or wrong clear.
+            adapter = adapters_by_source.get(source)
+            if adapter is not None and adapter.source_exists(ref):
+                live_now.append((source, ref))
+            else:
+                dead_now.append((source, ref))
+
+        if dead_now and not live_now and not unverified:
+            # Every ref is gone → tombstone FIRST, then drop the dead mappings
+            # only if the write succeeded (so a failure is retried, not stranded).
+            if _set_source_tombstone(vault, index, memory_id, deleted=True):
+                tombstoned += 1
+                for source, ref in dead_now:
+                    index.delete_record_mapping(source, ref)
+                logger.info("source-deletion tombstone: %s (source file deleted)", memory_id)
+        else:
+            # Memory keeps a live/unverifiable ref → never tombstone. Confirmed-
+            # dead refs here are not the last one, so dropping them is safe.
+            for source, ref in dead_now:
+                index.delete_record_mapping(source, ref)
+            if live_now:
+                # Clear-on-restore (re-stat above already confirmed a live ref).
+                if _set_source_tombstone(vault, index, memory_id, deleted=False):
+                    restored += 1
+                    logger.info(
+                        "source-deletion restore: %s (source file present again)", memory_id
+                    )
+
+    if tombstoned or restored:
+        logger.info("source-deletion sweep: %d tombstoned, %d restored", tombstoned, restored)
+    return tombstoned
+
+
+def _owning_root(ref: str, roots: list[Path]) -> Path | None:
+    """Return the longest configured root that contains ``ref``, or None."""
+    try:
+        p = Path(ref).resolve()
+    except (OSError, ValueError):
+        return None
+    best: Path | None = None
+    for root in roots:
+        try:
+            rr = root.resolve()
+        except (OSError, ValueError):
+            continue
+        if p == rr or rr in p.parents:
+            if best is None or len(str(rr)) > len(str(best)):
+                best = rr
+    return best
+
+
+def _root_alive(owning: Path | None, ref: str) -> bool:
+    """Is the ref's root live? Uses the declared root when known (ADR 0026),
+    else falls back to the ref's containing directory."""
+    try:
+        if owning is not None:
+            return owning.is_dir()
+        return Path(ref).parent.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 async def _reconcile_all(
     pipeline: Pipeline,
     streams: list[tuple[AsyncGenerator[MemoryRecord, None], str]],
+    adapters_by_source: dict[str, Adapter] | None = None,
 ) -> None:
     """Run every adapter's startup reconcile as one background task.
 
@@ -1149,6 +1368,13 @@ async def _reconcile_all(
         await asyncio.sleep(0)
         for stream, label in streams:
             await _reconcile_into_pipeline(pipeline, stream, label)
+        # ADR 0026: tombstone authored memories whose source file was deleted.
+        # Runs BEFORE the vault-delete prune so it acts on rows that still
+        # exist; the prune then handles any vault copies removed on disk.
+        if adapters_by_source:
+            await asyncio.to_thread(
+                _sweep_deleted_sources, pipeline.vault, pipeline.index, adapters_by_source
+            )
         # After every adapter has had its say, drop index rows whose
         # canonical vault file was deleted while the daemon was down.
         await asyncio.to_thread(_prune_deleted_vault_files, pipeline.vault, pipeline.index)
@@ -1161,6 +1387,7 @@ async def _periodic_reconcile(
     pipeline: Pipeline,
     make_streams: Callable[[], list[tuple[AsyncGenerator[MemoryRecord, None], str]]],
     interval_seconds: float,
+    adapters_by_source: dict[str, Adapter] | None = None,
 ) -> None:
     """Low-frequency catch-up sweep so missed file events self-heal (B4).
 
@@ -1181,6 +1408,10 @@ async def _periodic_reconcile(
         try:
             for stream, label in make_streams():
                 await _reconcile_into_pipeline(pipeline, stream, label)
+            if adapters_by_source:
+                await asyncio.to_thread(
+                    _sweep_deleted_sources, pipeline.vault, pipeline.index, adapters_by_source
+                )
             await asyncio.to_thread(_prune_deleted_vault_files, pipeline.vault, pipeline.index)
             logger.info("periodic reconcile complete for all adapters")
         except Exception:
@@ -1371,16 +1602,32 @@ async def _run_daemon(
         hygiene_loop = HygieneLoop(vault_obj, index, hygiene_config)
         tasks.append(asyncio.create_task(hygiene_loop.run()))
 
+    # ADR 0026: map adapter name -> adapter so the source-deletion sweep can
+    # ask the owning adapter whether each record_map ref still exists on disk.
+    adapters_by_source: dict[str, Adapter] = {
+        openclaw_adapter.name: openclaw_adapter,
+        claude_adapter.name: claude_adapter,
+    }
+    if codex_adapter is not None:
+        adapters_by_source[codex_adapter.name] = codex_adapter
+
     # Startup catch-up runs last and in the background so it never delays
     # the server/watchers/workers coming up (see make_reconcile_streams above).
-    tasks.append(asyncio.create_task(_reconcile_all(pipeline, make_reconcile_streams())))
+    tasks.append(
+        asyncio.create_task(_reconcile_all(pipeline, make_reconcile_streams(), adapters_by_source))
+    )
 
     # Low-frequency repeat of the same sweep (B4 self-heal) — catches up
     # records whose file events were missed, e.g. after a watcher death.
     if reconcile_interval_seconds > 0:
         tasks.append(
             asyncio.create_task(
-                _periodic_reconcile(pipeline, make_reconcile_streams, reconcile_interval_seconds)
+                _periodic_reconcile(
+                    pipeline,
+                    make_reconcile_streams,
+                    reconcile_interval_seconds,
+                    adapters_by_source,
+                )
             )
         )
 

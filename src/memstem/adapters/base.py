@@ -51,6 +51,37 @@ class Adapter(ABC):
         """Yield records by scanning paths from scratch. One-shot async generator."""
         ...
 
+    def source_exists(self, ref: str) -> bool:
+        """Does the upstream source for this ``ref`` still exist on disk?
+
+        Used by the source-deletion sweep (ADR 0026) as the liveness check
+        for authored records (``memory`` / ``skill`` / ``daily``). For every
+        current adapter a ref IS the on-disk source path (``ref=str(path)``),
+        so the default is a plain file check. The sweep's *derived-vs-authored*
+        guard is the record's ``type`` (a join in the index), NOT this method —
+        a ``session`` ``.jsonl`` is just as file-backed as a memory, so
+        ``source_exists`` must not be relied on to exclude it.
+
+        Override only if a future adapter uses a non-path ref (a session id,
+        a synthetic/aggregate key); such an adapter's authored records should
+        either not be swept or return a meaningful liveness here.
+        """
+        return Path(ref).is_file()
+
+    def source_roots(self) -> list[Path]:
+        """Configured root directories this adapter ingests from (ADR 0026).
+
+        The source-deletion sweep uses these to tell a real file deletion
+        (the root still exists, a file under it is gone → tombstone) from a
+        vanished/unmounted root (the root itself is gone → skip everything
+        under it, never mass-tombstone). It also scopes the sweep's safety
+        valve PER ROOT, so one workspace's bulk cleanup never blocks another.
+
+        Default empty: adapters that don't declare roots fall back to a
+        per-ref containing-directory heuristic in the sweep.
+        """
+        return []
+
     def watcher_alive(self) -> bool | None:
         """Liveness of this adapter's watchdog observer thread.
 

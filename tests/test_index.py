@@ -103,8 +103,8 @@ class TestSchema:
         version = index.db.execute(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
-        # Bumped to 13 for the index_meta embedder-signature table (A5).
-        assert version == 13
+        # Bumped to 14 for the memories.deleted_at source-deletion tombstone (ADR 0026).
+        assert version == 14
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -121,7 +121,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [13]
+            assert [r["version"] for r in rows] == [14]
         finally:
             idx.close()
 

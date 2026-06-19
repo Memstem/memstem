@@ -217,6 +217,7 @@ class Search:
         type_bias: dict[str, float] | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
+        include_deleted: bool = False,
         mmr_lambda: float | None = None,
         rerank_top_n: int | None = None,
         use_hyde: bool = False,
@@ -267,6 +268,11 @@ class Search:
         retro pass and future Layer 3 resolutions both set this) are
         also filtered by default. Pass ``include_deprecated=True`` to
         surface them.
+
+        Records carrying a ``deleted_at`` tombstone (ADR 0026 — set by the
+        source-deletion sweep when an authored source file was deleted
+        locally) are also filtered by default. Pass ``include_deleted=True``
+        to surface them for audit or recovery.
 
         ``mmr_lambda`` enables Maximal Marginal Relevance diversification
         (ADR 0016) on the materialized top-K. ``None`` (the default)
@@ -339,6 +345,7 @@ class Search:
             type_bias=type_bias,
             include_expired=include_expired,
             include_deprecated=include_deprecated,
+            include_deleted=include_deleted,
         )
         if rerank_top_n is not None and rerank_top_n > 0 and results:
             results = self._apply_rerank(query, results, top_n=rerank_top_n)
@@ -484,6 +491,7 @@ class Search:
         type_bias: dict[str, float] | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
+        include_deleted: bool = False,
     ) -> list[Result]:
         """Read each fused hit's `Memory` from the vault, optionally re-score, sort, truncate.
 
@@ -527,6 +535,8 @@ class Search:
             if not include_expired and self._is_expired(memory, now):
                 continue
             if not include_deprecated and memory.frontmatter.deprecated_by is not None:
+                continue
+            if not include_deleted and memory.frontmatter.deleted_at is not None:
                 continue
             score = self._apply_importance(hit.score, memory, importance_weight)
             score = self._apply_type_bias(score, memory, type_bias)

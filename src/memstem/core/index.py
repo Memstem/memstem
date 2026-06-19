@@ -29,7 +29,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 _VEC_DIMS_RE = re.compile(r"FLOAT\[(\d+)\]", re.IGNORECASE)
 
@@ -401,6 +401,17 @@ MIGRATIONS: dict[int, str] = {
             value TEXT NOT NULL
         );
     """,
+    14: """
+        -- ADR 0026: source-deletion tombstone. `memories.deleted_at` is
+        -- set when an authored source file (memory/skill/daily) was
+        -- deleted locally; search filters it out by default.
+        --
+        -- Marker-only entry (like v8/v12): ALTER TABLE ADD COLUMN is not
+        -- idempotent and the migration loop must stay replay-safe, so the
+        -- column is added by `_ensure_deleted_at_column` in `_migrate()`,
+        -- gated on PRAGMA table_info.
+        SELECT 1;
+    """,
 }
 
 
@@ -525,6 +536,7 @@ class Index:
 
         self._ensure_vec_table()
         self._ensure_embed_queue_claim_columns()
+        self._ensure_deleted_at_column()
         # Pre-ADR-0014 this ran on every connect and was the dominant
         # cost of opening a populated index (~35 s on a 1 GB vec0). Now
         # it runs at most once: when an install crosses v8, either via
@@ -617,6 +629,19 @@ class Index:
             self.db.execute("ALTER TABLE embed_queue ADD COLUMN claimed_at TEXT")
         if "claimed_by" not in cols:
             self.db.execute("ALTER TABLE embed_queue ADD COLUMN claimed_by TEXT")
+
+    def _ensure_deleted_at_column(self) -> None:
+        """Add the ADR 0026 `deleted_at` column to ``memories`` if absent.
+
+        Lives outside the SQL migration loop because ``ALTER TABLE ADD
+        COLUMN`` has no ``IF NOT EXISTS`` form and the migration scripts
+        must stay replay-safe (the legacy-upgrade path re-runs them
+        against an already-current schema). Same pattern as
+        :meth:`_ensure_embed_queue_claim_columns`.
+        """
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(memories)")}
+        if "deleted_at" not in cols:
+            self.db.execute("ALTER TABLE memories ADD COLUMN deleted_at TEXT")
 
     def _ensure_vec_table(self) -> None:
         # vec0 virtual tables can't be created in executescript() reliably across
@@ -723,11 +748,13 @@ class Index:
                 INSERT INTO memories (
                     id, type, source, title, body, path,
                     created, updated, importance, confidence,
-                    valid_from, valid_to, embedding_version, deprecated_by
+                    valid_from, valid_to, embedding_version, deprecated_by,
+                    deleted_at
                 ) VALUES (
                     :id, :type, :source, :title, :body, :path,
                     :created, :updated, :importance, :confidence,
-                    :valid_from, :valid_to, :embedding_version, :deprecated_by
+                    :valid_from, :valid_to, :embedding_version, :deprecated_by,
+                    :deleted_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     type = excluded.type,
@@ -742,7 +769,8 @@ class Index:
                     valid_from = excluded.valid_from,
                     valid_to = excluded.valid_to,
                     embedding_version = excluded.embedding_version,
-                    deprecated_by = excluded.deprecated_by
+                    deprecated_by = excluded.deprecated_by,
+                    deleted_at = excluded.deleted_at
                 """,
                 params,
             )
@@ -1213,6 +1241,42 @@ class Index:
             ).fetchone()
         return row["memory_id"] if row else None
 
+    def all_source_mappings(self) -> list[tuple[str, str, str, str | None]]:
+        """Return ``(source, ref, memory_id, type)`` for every record_map row.
+
+        Used by the source-deletion sweep (ADR 0026) to find authored
+        memories whose upstream file was deleted. LEFT JOIN to ``memories``
+        so the sweep can both filter by ``type`` and detect orphaned
+        record_map rows (``type is None`` → the memory row is gone, e.g.
+        hard-pruned by the vault-delete sweep — the caller drops the
+        dangling mapping). Locked like every other read on the shared
+        connection (see :meth:`get_path`).
+        """
+        with self._lock:
+            rows = self.db.execute(
+                """
+                SELECT rm.source AS source, rm.ref AS ref,
+                       rm.memory_id AS memory_id, m.type AS type
+                FROM record_map rm
+                LEFT JOIN memories m ON m.id = rm.memory_id
+                """
+            ).fetchall()
+        return [(r["source"], r["ref"], r["memory_id"], r["type"]) for r in rows]
+
+    def delete_record_mapping(self, source: str, ref: str) -> None:
+        """Remove a single ``(source, ref)`` row from ``record_map``.
+
+        The sweep (ADR 0026) calls this when a ref is confirmed missing on
+        disk, so the table doesn't accumulate dead refs and ``all refs
+        dead`` stays computable as ``no record_map rows remain`` for a
+        memory. Locked for the shared-connection reason above.
+        """
+        with self._lock, self.db:
+            self.db.execute(
+                "DELETE FROM record_map WHERE source = ? AND ref = ?",
+                (source, ref),
+            )
+
     def queue_stats(self) -> dict[str, int]:
         """Return `{pending, failed, total}` for `memstem doctor`."""
         with self._lock:
@@ -1339,6 +1403,7 @@ class Index:
             "valid_to": fm.valid_to.isoformat() if fm.valid_to else None,
             "embedding_version": fm.embedding_version,
             "deprecated_by": str(fm.deprecated_by) if fm.deprecated_by else None,
+            "deleted_at": fm.deleted_at.isoformat() if fm.deleted_at else None,
         }
 
 

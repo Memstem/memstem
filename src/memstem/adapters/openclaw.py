@@ -563,6 +563,13 @@ class OpenClawAdapter(Adapter):
     def _has_workspace_config(self) -> bool:
         return bool(self.workspaces or self.shared_files)
 
+    def source_roots(self) -> list[Path]:
+        """Each configured workspace dir is a root (ADR 0026); shared files
+        are guarded by their containing directory."""
+        roots = [Path(ws.path) for ws in self.workspaces]
+        roots += [Path(f).parent for f in self.shared_files]
+        return roots
+
     async def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         if self._has_workspace_config:
             async for record in self._reconcile_workspaces():
