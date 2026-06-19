@@ -39,15 +39,19 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.16.1 — actively developed, running in production.**
+**v0.18.0 — actively developed, running in production.**
 Live on the maintainer's infrastructure, ingesting from multi-agent
 OpenClaw, Claude Code, and Codex in real time. The 0.13 line added the
 recall-quality stack (cross-encoder reranking + MMR, multimodal
 embeddings, a validated fully self-hosted Qwen3 recall setup); 0.14
 through 0.16 were three reliability batches from a full-codebase
 review — durability, concurrency, failure visibility, embed-queue
-claim/lease, and dedup-judge correctness. See
-[CHANGELOG.md](./CHANGELOG.md) for the release-by-release history.
+claim/lease, and dedup-judge correctness. 0.17 added security hardening
+(request-edge clamps, reserved `_`-path rejection, optional HTTP
+bearer-token auth) and the first publication to PyPI; 0.18 adds
+source-deletion tombstones — deleting an authored source file in a
+connected agent's workspace removes its memory from search (ADR 0026).
+See [CHANGELOG.md](./CHANGELOG.md) for the release-by-release history.
 Shipping:
 
 - **Hybrid search** (FTS5 BM25 + sqlite-vec cosine, merged with RRF) over a
@@ -97,6 +101,19 @@ Shipping:
   enabled by default and no-ops silently on hosts without Codex. Codex
   sessions group by project tag alongside Claude Code's. See
   [ADR 0022](./docs/decisions/0022-codex-adapter.md).
+- **Source-deletion tombstones** — deleting an authored source file
+  (`memory`, `skill`, or `daily` log) in a connected agent's workspace
+  removes the corresponding memory from search. A reconcile-time
+  source-liveness sweep sets a `deleted_at` marker (filtered from search
+  like `valid_to`/`deprecated_by`, and recoverable via `include_deleted`),
+  cleared automatically if the source is restored. Session logs and
+  generated records (distillations, project rollups) are never affected,
+  and a vanished workspace mount is skipped rather than mass-tombstoned.
+  See [ADR 0026](./docs/decisions/0026-source-deletion-tombstone.md).
+- **Security hardening** — request-edge size/value clamps, rejection of
+  reserved `_`-prefixed vault paths, optional HTTP bearer-token auth for
+  non-loopback deployments, and Gemini API keys sent via request header
+  rather than query string.
 - **Post-cleanup operator workflow** — `memstem hygiene
   verify` is a single read-only command that summarizes vault state
   after a cleanup + backfill sweep: per-type counts, distillation
@@ -372,7 +389,7 @@ $ memstem doctor
 Memstem doctor (vault=/home/ubuntu/memstem-vault):
 
   ✓ Python 3.11
-  ✓ memstem 0.16.1
+  ✓ memstem 0.18.0
   ✓ Vault: /home/ubuntu/memstem-vault
   ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly
