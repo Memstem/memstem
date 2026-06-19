@@ -1026,16 +1026,23 @@ async def _reconcile_into_pipeline(
                 await asyncio.sleep(0)
         else:
             try:
-                pipeline.process(record)
+                # process() does synchronous markdown writes + index upserts —
+                # the expensive, loop-blocking work. Run it in a WORKER THREAD
+                # rather than inline on the event loop. Inline, it pinned the
+                # loop thread at 100% CPU and held Index._lock in back-to-back
+                # upserts, starving the HTTP/MCP /search handler for ~15-20s
+                # mid-reconcile (issue #142). The earlier mitigation — a
+                # per-record `await asyncio.sleep(0)` — was not enough: it cedes
+                # the loop for one tick, but the loop immediately resumes the
+                # next synchronous upsert, so the search worker thread rarely
+                # won the GIL or the lock. Offloading frees the loop entirely
+                # (and the await yields); Index._lock keeps the shared SQLite
+                # connection safe across the reconcile worker, the embed
+                # workers, and the search worker.
+                await asyncio.to_thread(pipeline.process, record)
                 count += 1
             except Exception as exc:
                 logger.warning("reconcile failed for %s/%s: %s", record.source, record.ref, exc)
-            # A processed record did synchronous disk + index writes — the
-            # expensive, loop-blocking work. Cede control after each one so
-            # the HTTP/MCP server and request handlers stay responsive while
-            # this background catch-up runs (records stream in without
-            # awaiting, so without this the loop never yields).
-            await asyncio.sleep(0)
     logger.info(
         "reconcile complete (%s): %d processed, %d unchanged-skipped", label, count, skipped
     )

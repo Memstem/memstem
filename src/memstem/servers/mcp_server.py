@@ -17,6 +17,7 @@ cost lands on the first ``memstem_search`` (or other tool) call instead.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import signal
@@ -394,21 +395,31 @@ def build_server(
     ) -> list[dict[str, Any]]:
         """Hybrid keyword + semantic search across memories and skills."""
         activity.touch()
-        results = res.search.search(
-            query=query,
-            limit=clamp_limit(limit),
-            types=types,
-            rrf_k=sc.rrf_k,
-            bm25_weight=sc.bm25_weight,
-            vector_weight=sc.vector_weight,
-            importance_weight=sc.importance_weight,
-            type_bias=sc.type_bias,
-            mmr_lambda=sc.mmr_lambda,
-            rerank_top_n=default_rerank_top_n,
-            log_client=log_client,
-            log_max_rows=hc.query_log_max_rows,
-        )
-        return [_serialize_result(r) for r in results]
+
+        # search.search() makes blocking embedder/reranker HTTP calls and
+        # synchronous SQLite reads. Run it in a worker thread (as the HTTP
+        # /search handler already does) so it never executes on the event-loop
+        # thread: a slow backend can't freeze the loop, and a background
+        # reconcile can't starve it (issue #142). Index._lock keeps the shared
+        # connection safe across threads.
+        def _run() -> list[dict[str, Any]]:
+            results = res.search.search(
+                query=query,
+                limit=clamp_limit(limit),
+                types=types,
+                rrf_k=sc.rrf_k,
+                bm25_weight=sc.bm25_weight,
+                vector_weight=sc.vector_weight,
+                importance_weight=sc.importance_weight,
+                type_bias=sc.type_bias,
+                mmr_lambda=sc.mmr_lambda,
+                rerank_top_n=default_rerank_top_n,
+                log_client=log_client,
+                log_max_rows=hc.query_log_max_rows,
+            )
+            return [_serialize_result(r) for r in results]
+
+        return await asyncio.to_thread(_run)
 
     @mcp.tool()
     async def memstem_get(id_or_path: str) -> dict[str, Any]:
