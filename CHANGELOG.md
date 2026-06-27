@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Transient summarizer failures no longer poison the distill-retry cap
+  (ADR 0027).** A connection-refused / timeout / 5xx from the summarizer backend
+  was caught and returned as the empty string — indistinguishable from
+  "unsummarizable content" — so the distill applier counted it toward the
+  3-strike `distill_fail` cap and **permanently excluded** the session, with no
+  self-recovery. A brief backend blip (a stopped `:9444` sidecar, a CF-tunnel
+  530) therefore silently stalled distillation for days (the June 2026 E1 /
+  techpro / cargol stalls). Now `Summarizer.generate` raises
+  `TransientSummarizerError` on a retryable failure (network / timeout / 5xx /
+  429 / 408) — propagated by `generate_cached` — and `compute_distillation_plan`
+  skips the session that cycle **without** recording a failure, so it retries
+  next cycle like the embed worker. A `distill_fail_at:` companion timestamp
+  also expires the cap after a 24h cool-down (`DEFAULT_DISTILL_FAIL_TTL`), so any
+  stray cap — including pre-upgrade ones — self-heals. New plan stat:
+  `skipped_transient`.
+
 ## [0.18.0] - 2026-06-19
 
 ### Fixed
