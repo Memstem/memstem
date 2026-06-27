@@ -20,8 +20,9 @@ from memstem.cli import app
 from memstem.core.frontmatter import MemoryType, validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
-from memstem.core.summarizer import NoOpSummarizer, StubSummarizer
+from memstem.core.summarizer import NoOpSummarizer, StubSummarizer, TransientSummarizerError
 from memstem.hygiene.session_distill import (
+    DEFAULT_DISTILL_FAIL_TTL,
     DEFAULT_DISTILLATION_IMPORTANCE,
     DEFAULT_MAX_DISTILL_ATTEMPTS,
     DEFAULT_MAX_INPUT_CHARS,
@@ -30,12 +31,15 @@ from memstem.hygiene.session_distill import (
     SessionCandidate,
     apply_distillations,
     build_session_prompt,
+    clear_distill_failure,
     compute_distillation_plan,
     find_distilled_session_ids,
     find_session_candidates,
+    get_distill_failure_records,
     get_distill_failures,
     is_meaningful_session,
     materialize_distillation,
+    record_distill_failure,
 )
 
 # ─── Fixtures ─────────────────────────────────────────────────────
@@ -584,6 +588,90 @@ class TestApplyDistillations:
         )
         apply_distillations(vault, index, plan2, lock=index.lock)
         assert "s1" not in get_distill_failures(index.db)
+
+    def test_transient_summarizer_failure_does_not_record_a_failure(
+        self, vault: Vault, index: Index
+    ) -> None:
+        # Regression guard for the 2026-06 distillation stalls: a transient
+        # backend failure must NOT count toward the cap. The session is skipped
+        # this cycle (no proposal, no failure recorded) and stays eligible.
+        _write_session(vault, session_id="s1", turns=12)
+
+        class _AlwaysTransient(StubSummarizer):
+            def generate(self, prompt: str) -> str:
+                raise TransientSummarizerError("backend unreachable")
+
+        plan = compute_distillation_plan(
+            vault, _AlwaysTransient(), db=index.db, recency_days=None, lock=index.lock
+        )
+        assert plan.proposals == []
+        assert plan.skipped_transient == 1
+        result = apply_distillations(vault, index, plan, lock=index.lock)
+        assert result.skipped_no_summary == 0
+        assert get_distill_failures(index.db) == {}  # cap untouched
+
+    def test_capped_session_is_retried_after_ttl(self, vault: Vault, index: Index) -> None:
+        # The exclusion self-heals: within the cool-down a capped session stays
+        # excluded; past it, it earns another attempt (no more permanent death).
+        _write_session(vault, session_id="s1", turns=12)
+        for _ in range(DEFAULT_MAX_DISTILL_ATTEMPTS):
+            plan = compute_distillation_plan(
+                vault, NoOpSummarizer(), db=index.db, recency_days=None, lock=index.lock
+            )
+            apply_distillations(vault, index, plan, lock=index.lock)
+        assert get_distill_failures(index.db).get("s1") == DEFAULT_MAX_DISTILL_ATTEMPTS
+        # Within the cool-down → excluded (no wasted summarizer call).
+        plan = compute_distillation_plan(
+            vault, NoOpSummarizer(), db=index.db, recency_days=None, lock=index.lock
+        )
+        assert plan.skipped_failed == 1
+        assert plan.proposals == []
+        # Past the cool-down → attempted again.
+        later = datetime.now(tz=UTC) + DEFAULT_DISTILL_FAIL_TTL + timedelta(minutes=1)
+        plan = compute_distillation_plan(
+            vault,
+            NoOpSummarizer(),
+            db=index.db,
+            recency_days=None,
+            lock=index.lock,
+            now=later,
+        )
+        assert plan.skipped_failed == 0
+        assert len(plan.proposals) == 1
+
+    def test_legacy_cap_without_timestamp_is_retried(self, vault: Vault, index: Index) -> None:
+        # A cap row written before the timestamp companion key existed has no
+        # distill_fail_at:* — treat it as cooled down so existing production caps
+        # self-heal on upgrade rather than staying permanently excluded.
+        _write_session(vault, session_id="s1", turns=12)
+        index.db.execute(
+            "INSERT INTO hygiene_state (key, value) VALUES (?, ?)",
+            ("distill_fail:s1", str(DEFAULT_MAX_DISTILL_ATTEMPTS)),
+        )
+        index.db.commit()
+        plan = compute_distillation_plan(
+            vault, NoOpSummarizer(), db=index.db, recency_days=None, lock=index.lock
+        )
+        assert plan.skipped_failed == 0
+        assert len(plan.proposals) == 1
+
+    def test_record_and_clear_manage_timestamp_companion_key(self, index: Index) -> None:
+        record_distill_failure(index.db, "s1")
+        records = get_distill_failure_records(index.db)
+        assert records["s1"][0] == 1
+        assert records["s1"][1] is not None
+        keys = {
+            r[0]
+            for r in index.db.execute(
+                "SELECT key FROM hygiene_state WHERE key LIKE 'distill_fail%'"
+            ).fetchall()
+        }
+        assert keys == {"distill_fail:s1", "distill_fail_at:s1"}
+        clear_distill_failure(index.db, "s1")
+        remaining = index.db.execute(
+            "SELECT key FROM hygiene_state WHERE key LIKE 'distill_fail%'"
+        ).fetchall()
+        assert remaining == []
 
     def test_force_overwrite_preserves_existing_memory_id(self, vault: Vault, index: Index) -> None:
         _write_session(vault, session_id="s1", turns=12)

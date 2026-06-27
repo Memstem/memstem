@@ -38,6 +38,44 @@ from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
+
+class TransientSummarizerError(Exception):
+    """A summarizer backend failure that is NOT a property of the candidate.
+
+    The model was unreachable, timed out, or returned a retryable status
+    (5xx / 429 / 408). Callers MUST treat this as "skip and retry next cycle",
+    never as an empty result: counting a momentary outage toward the
+    distill-retry cap permanently poisons otherwise-fine sessions (the 2026-06
+    E1/techpro distillation stalls, where a brief sidecar/tunnel blip silently
+    excluded sessions for days). A genuinely empty return — NoOp, or the model
+    produced no usable text — is a candidate property and still counts toward
+    the cap, exactly as before.
+    """
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """True if ``exc`` is a retryable backend failure (network / timeout / 5xx /
+    429 / 408) rather than a permanent property of the request.
+
+    A 4xx (other than 429/408) is treated as permanent — an oversized or
+    malformed request won't succeed on retry, so it correctly falls through to
+    the empty-result path and counts toward the cap.
+    """
+    # raise_for_status() (httpx/requests) attaches the offending response.
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status >= 500 or status in (408, 429)
+    # Transport-level failures: connection refused, DNS, connect/read timeout.
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.RequestError):
+            return True
+    except Exception:  # pragma: no cover - httpx is a runtime dep; defensive only
+        pass
+    return isinstance(exc, (ConnectionError, TimeoutError))
+
+
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 """Default Ollama HTTP endpoint. Matches the dedup_judge / reranker
 / hyde default for operational consistency."""
@@ -167,9 +205,11 @@ class Summarizer(ABC):
     def generate(self, prompt: str) -> str:
         """Return generated text for ``prompt``.
 
-        Implementations should return the empty string on failure;
-        callers detect the empty return and treat it as "skip this
-        candidate" (logged at INFO).
+        Implementations return the empty string when the model produced no
+        usable text (a candidate property — callers count it toward the
+        distill cap), and raise :class:`TransientSummarizerError` on a
+        retryable backend failure (unreachable / timeout / 5xx — must NOT
+        count toward the cap; the caller retries next cycle).
         """
 
     def generate_cached(
@@ -195,6 +235,10 @@ class Summarizer(ABC):
                 return cached
         try:
             output = self.generate(prompt)
+        except TransientSummarizerError:
+            # Propagate: a transient backend failure must not be cached or
+            # collapsed to an empty "skip" — the caller retries next cycle.
+            raise
         except Exception as exc:
             logger.warning("Summarizer(%s): generate failed: %s", self.name, exc)
             return ""
@@ -249,16 +293,24 @@ class StubSummarizer(Summarizer):
     def __init__(self) -> None:
         self._outputs: dict[str, str] = {}
         self._default = ""
+        self._transient: set[str] = set()
 
     def set_output(self, prompt: str, output: str) -> None:
         """Configure the output the stub will return for one prompt."""
         self._outputs[prompt] = output
+
+    def set_transient(self, prompt: str) -> None:
+        """Make the stub raise :class:`TransientSummarizerError` for ``prompt``
+        (simulates a momentary backend outage)."""
+        self._transient.add(prompt)
 
     def set_default(self, output: str) -> None:
         """Default output for any prompt not registered."""
         self._default = output
 
     def generate(self, prompt: str) -> str:
+        if prompt in self._transient:
+            raise TransientSummarizerError("stub transient failure")
         return self._outputs.get(prompt, self._default)
 
 
@@ -324,6 +376,9 @@ class OllamaSummarizer(Summarizer):
         try:
             response = self._call_model(prompt)
         except Exception as exc:
+            if _is_transient(exc):
+                logger.warning("OllamaSummarizer: transient model failure, will retry: %s", exc)
+                raise TransientSummarizerError(str(exc)) from exc
             logger.warning("OllamaSummarizer: model call failed: %s", exc)
             return ""
         return _strip_fences(response)
@@ -429,6 +484,9 @@ class OpenAISummarizer(Summarizer):
         try:
             response = self._call_model(prompt)
         except Exception as exc:
+            if _is_transient(exc):
+                logger.warning("OpenAISummarizer: transient model failure, will retry: %s", exc)
+                raise TransientSummarizerError(str(exc)) from exc
             logger.warning("OpenAISummarizer: model call failed: %s", exc)
             return ""
         return _strip_fences(response)

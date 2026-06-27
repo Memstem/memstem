@@ -52,7 +52,7 @@ from uuid import uuid4
 from memstem.core.frontmatter import Frontmatter, MemoryType, validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
-from memstem.core.summarizer import Summarizer
+from memstem.core.summarizer import Summarizer, TransientSummarizerError
 
 logger = logging.getLogger(__name__)
 
@@ -121,34 +121,88 @@ then aging silently out of the recency window. Failures are tracked in
 restarts and is visible, not silent."""
 
 _DISTILL_FAIL_PREFIX = "distill_fail:"
+_DISTILL_FAIL_AT_PREFIX = "distill_fail_at:"
+
+DEFAULT_DISTILL_FAIL_TTL = timedelta(hours=24)
+"""How long a session that has hit the retry cap stays excluded before it earns
+ONE more attempt.
+
+The cap stops a genuinely-unsummarizable session from burning a summarizer call
+every tick, but making the exclusion *permanent* meant a session poisoned by a
+momentary backend blip stayed dead forever (the 2026-06 E1/techpro stalls: a
+brief sidecar/tunnel outage silently excluded days of sessions). With a TTL the
+exclusion self-heals — after the cool-down the session is retried; success
+clears the record, another failure restarts the cool-down. The recency window
+(:data:`DEFAULT_RECENCY_DAYS`) bounds total wasted calls on a truly
+unsummarizable session. Legacy rows written before the timestamp companion key
+existed have no stamp and are treated as cooled-down (retried once)."""
 
 
 def _distill_fail_key(session_id: str) -> str:
     return f"{_DISTILL_FAIL_PREFIX}{session_id}"
 
 
-def get_distill_failures(db: sqlite3.Connection, *, lock: _Lock | None = None) -> dict[str, int]:
-    """Return ``{session_id: attempt_count}`` for sessions that have failed to
-    distill at least once."""
+def _distill_fail_at_key(session_id: str) -> str:
+    return f"{_DISTILL_FAIL_AT_PREFIX}{session_id}"
+
+
+def _parse_iso(value: object) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def get_distill_failure_records(
+    db: sqlite3.Connection, *, lock: _Lock | None = None
+) -> dict[str, tuple[int, datetime | None]]:
+    """Return ``{session_id: (attempt_count, last_failure_time | None)}``.
+
+    ``last_failure_time`` is ``None`` for legacy rows written before the
+    timestamp companion key existed — callers treat that as "cooled down" so a
+    pre-upgrade cap is retried once rather than staying permanent.
+    """
     with lock or nullcontext():
         rows = db.execute(
-            "SELECT key, value FROM hygiene_state WHERE key LIKE ?",
-            (f"{_DISTILL_FAIL_PREFIX}%",),
+            "SELECT key, value FROM hygiene_state WHERE key LIKE ? OR key LIKE ?",
+            (f"{_DISTILL_FAIL_PREFIX}%", f"{_DISTILL_FAIL_AT_PREFIX}%"),
         ).fetchall()
-    failures: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    times: dict[str, datetime | None] = {}
     for key, value in rows:
-        session_id = key[len(_DISTILL_FAIL_PREFIX) :]
-        try:
-            failures[session_id] = int(value)
-        except (TypeError, ValueError):
-            failures[session_id] = 0
-    return failures
+        if key.startswith(_DISTILL_FAIL_AT_PREFIX):
+            times[key[len(_DISTILL_FAIL_AT_PREFIX) :]] = _parse_iso(value)
+        elif key.startswith(_DISTILL_FAIL_PREFIX):
+            session_id = key[len(_DISTILL_FAIL_PREFIX) :]
+            try:
+                counts[session_id] = int(value)
+            except (TypeError, ValueError):
+                counts[session_id] = 0
+    return {sid: (count, times.get(sid)) for sid, count in counts.items()}
+
+
+def get_distill_failures(db: sqlite3.Connection, *, lock: _Lock | None = None) -> dict[str, int]:
+    """Return ``{session_id: attempt_count}`` for sessions that have failed to
+    distill at least once. Count-only view over
+    :func:`get_distill_failure_records`."""
+    return {sid: count for sid, (count, _ts) in get_distill_failure_records(db, lock=lock).items()}
 
 
 def record_distill_failure(
-    db: sqlite3.Connection, session_id: str, *, lock: _Lock | None = None
+    db: sqlite3.Connection,
+    session_id: str,
+    *,
+    now: datetime | None = None,
+    lock: _Lock | None = None,
 ) -> int:
-    """Increment and return the failed-attempt count for ``session_id``."""
+    """Increment and return the failed-attempt count for ``session_id``.
+
+    Also stamps a companion ``distill_fail_at:`` row with the failure time so
+    :func:`compute_distillation_plan` can expire the exclusion after a cool-down
+    (:data:`DEFAULT_DISTILL_FAIL_TTL`) instead of excluding the session forever.
+    """
+    stamp = (now or datetime.now(tz=UTC)).isoformat()
     with lock or nullcontext():
         row = db.execute(
             "SELECT value FROM hygiene_state WHERE key = ?",
@@ -158,12 +212,15 @@ def record_distill_failure(
             attempts = int(row[0]) + 1 if row else 1
         except (TypeError, ValueError):
             attempts = 1
-        db.execute(
+        db.executemany(
             """
             INSERT INTO hygiene_state (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (_distill_fail_key(session_id), str(attempts)),
+            [
+                (_distill_fail_key(session_id), str(attempts)),
+                (_distill_fail_at_key(session_id), stamp),
+            ],
         )
         db.commit()
     return attempts
@@ -175,8 +232,8 @@ def clear_distill_failure(
     """Drop any failure record for ``session_id`` (it distilled successfully)."""
     with lock or nullcontext():
         db.execute(
-            "DELETE FROM hygiene_state WHERE key = ?",
-            (_distill_fail_key(session_id),),
+            "DELETE FROM hygiene_state WHERE key IN (?, ?)",
+            (_distill_fail_key(session_id), _distill_fail_at_key(session_id)),
         )
         db.commit()
 
@@ -254,6 +311,7 @@ class DistillationPlan:
     skipped_already_distilled: int = 0
     skipped_too_short: int = 0
     skipped_failed: int = 0
+    skipped_transient: int = 0
 
 
 @dataclass
@@ -587,6 +645,7 @@ def compute_distillation_plan(
     now: datetime | None = None,
     max_candidates: int | None = None,
     max_attempts: int = DEFAULT_MAX_DISTILL_ATTEMPTS,
+    distill_fail_ttl: timedelta = DEFAULT_DISTILL_FAIL_TTL,
     lock: _Lock | None = None,
 ) -> DistillationPlan:
     """Build the full distillation plan against the configured summarizer.
@@ -613,11 +672,16 @@ def compute_distillation_plan(
     # real connection is supplied (the daemon); CLI one-shots pass db=None.
     excluded: set[str] = set()
     if isinstance(db, sqlite3.Connection) and not force:
-        excluded = {
-            session_id
-            for session_id, attempts in get_distill_failures(db, lock=lock).items()
-            if attempts >= max_attempts
-        }
+        cap_now = now or datetime.now(tz=UTC)
+        for session_id, (attempts, failed_at) in get_distill_failure_records(db, lock=lock).items():
+            if attempts < max_attempts:
+                continue
+            # Capped — but only stay excluded for the cool-down. After it the
+            # session earns one more attempt, so a cap caused by a transient
+            # blip (or a since-fixed backend) self-heals instead of being
+            # permanent. Legacy rows (no timestamp) are treated as cooled down.
+            if failed_at is not None and (cap_now - failed_at) < distill_fail_ttl:
+                excluded.add(session_id)
 
     candidates, stats = find_session_candidates(
         vault,
@@ -633,12 +697,29 @@ def compute_distillation_plan(
         candidates = candidates[:max_candidates]
 
     proposals: list[DistillationProposal] = []
+    skipped_transient = 0
     for candidate in candidates:
         prompt = build_session_prompt(candidate, prompt_template=prompt_template)
         # ``db`` is sqlite3.Connection in production but typed as
         # ``object`` here so callers can pass ``None`` without import
         # gymnastics.
-        summary = summarizer.generate_cached(prompt, db=db)  # type: ignore[arg-type]
+        try:
+            summary = summarizer.generate_cached(prompt, db=db)  # type: ignore[arg-type]
+        except TransientSummarizerError as exc:
+            # The backend was unreachable/overloaded — NOT this session's fault.
+            # Skip it WITHOUT emitting an (empty) proposal, so apply_distillations
+            # records no failure and the cap is untouched. It stays eligible and
+            # is retried next cycle, exactly like the embed worker's transient
+            # path. This is the fix for the 2026-06 distillation stalls, where a
+            # momentary blip was indistinguishable from "unsummarizable content".
+            logger.warning(
+                "hygiene[distill_sessions]: session %s skipped — transient "
+                "summarizer failure, will retry: %s",
+                candidate.session_id,
+                exc,
+            )
+            skipped_transient += 1
+            continue
         skipped_reason: str | None = None
         if not summary:
             skipped_reason = "summarizer returned empty (NoOp default or LLM unreachable)"
@@ -657,6 +738,7 @@ def compute_distillation_plan(
         skipped_already_distilled=stats["skipped_already_distilled"],
         skipped_too_short=stats["skipped_too_short"],
         skipped_failed=stats["skipped_failed"],
+        skipped_transient=skipped_transient,
     )
 
 
@@ -702,7 +784,9 @@ def apply_distillations(
         if not proposal.summary:
             result.skipped_no_summary += 1
             if track_failures:
-                attempts = record_distill_failure(index.db, candidate.session_id, lock=lock)
+                attempts = record_distill_failure(
+                    index.db, candidate.session_id, now=now, lock=lock
+                )
                 logger.warning(
                     "hygiene[distill_sessions]: session %s produced no summary (attempt %d/%d)%s",
                     candidate.session_id,
@@ -758,6 +842,7 @@ def format_plan_summary(plan: DistillationPlan) -> str:
         f"  skipped (already distilled): {plan.skipped_already_distilled}",
         f"  skipped (too short): {plan.skipped_too_short}",
         f"  skipped (retry cap reached): {plan.skipped_failed}",
+        f"  skipped (transient backend, will retry): {plan.skipped_transient}",
         f"  proposed: {summarized}",
         f"  skipped (summarizer empty): {skipped_empty}",
     ]
@@ -783,6 +868,7 @@ def format_proposals(plan: DistillationPlan, *, max_preview: int = 80) -> Iterab
 
 __all__ = [
     "DEFAULT_DISTILLATION_IMPORTANCE",
+    "DEFAULT_DISTILL_FAIL_TTL",
     "DEFAULT_MAX_DISTILL_ATTEMPTS",
     "DEFAULT_MIN_TURNS",
     "DEFAULT_MIN_WORDS",
@@ -801,6 +887,7 @@ __all__ = [
     "find_session_candidates",
     "format_plan_summary",
     "format_proposals",
+    "get_distill_failure_records",
     "get_distill_failures",
     "is_meaningful_session",
     "materialize_distillation",

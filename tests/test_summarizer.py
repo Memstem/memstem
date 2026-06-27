@@ -170,6 +170,26 @@ def test_generate_cached_swallows_subclass_exceptions(cache_db: sqlite3.Connecti
     assert rows == 0
 
 
+def test_generate_cached_propagates_transient_and_does_not_cache(
+    cache_db: sqlite3.Connection,
+) -> None:
+    """A TransientSummarizerError must propagate (so the caller retries) and
+    must NOT be cached or collapsed to an empty "skip" — this is the distinction
+    that keeps a momentary backend outage from poisoning the distill cap."""
+
+    class _Transient(smod.Summarizer):
+        name = "transient"
+
+        def generate(self, prompt: str) -> str:
+            raise smod.TransientSummarizerError("backend unreachable")
+
+    s = _Transient()
+    with pytest.raises(smod.TransientSummarizerError):
+        s.generate_cached("p", db=cache_db)
+    rows = cache_db.execute("SELECT COUNT(*) FROM summarizer_cache").fetchone()[0]
+    assert rows == 0
+
+
 def test_generate_cached_skips_writing_empty_outputs(cache_db: sqlite3.Connection) -> None:
     """A summarizer that returns "" should not pollute the cache.
 
@@ -296,8 +316,19 @@ def test_ollama_summarizer_strips_response_fences() -> None:
     assert s.generate("p") == "clean output"
 
 
-def test_ollama_summarizer_returns_empty_on_http_error() -> None:
+def test_ollama_summarizer_raises_transient_on_5xx() -> None:
+    # A 5xx is a retryable backend failure — must raise (NOT count toward the
+    # distill cap) so the caller retries next cycle.
     response = _MockResponse({}, status_code=503)
+    s = smod.OllamaSummarizer(client=_MockClient(response))
+    with pytest.raises(smod.TransientSummarizerError):
+        s.generate("p")
+
+
+def test_ollama_summarizer_returns_empty_on_4xx() -> None:
+    # A 4xx (other than 429/408) is a permanent property of the request, so it
+    # falls through to the empty path and counts toward the cap.
+    response = _MockResponse({}, status_code=400)
     s = smod.OllamaSummarizer(client=_MockClient(response))
     assert s.generate("p") == ""
 
@@ -384,8 +415,15 @@ def test_openai_summarizer_strips_response_fences() -> None:
     assert s.generate("p") == "clean output"
 
 
-def test_openai_summarizer_returns_empty_on_http_error() -> None:
+def test_openai_summarizer_raises_transient_on_5xx() -> None:
     response = _MockResponse({}, status_code=500)
+    s = smod.OpenAISummarizer(client=_MockClient(response))
+    with pytest.raises(smod.TransientSummarizerError):
+        s.generate("p")
+
+
+def test_openai_summarizer_returns_empty_on_4xx() -> None:
+    response = _MockResponse({}, status_code=400)
     s = smod.OpenAISummarizer(client=_MockClient(response))
     assert s.generate("p") == ""
 
