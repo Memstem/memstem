@@ -46,9 +46,8 @@ an embedding-lookup callable that knows how to fetch its embedding."""
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     """Return cosine similarity in ``[-1, 1]``; ``0.0`` for any degenerate input.
 
-    A small utility duplicated here from :mod:`memstem.hygiene.dedup_candidates`
-    so the module stays standalone and dependency-light. Both functions
-    are byte-identical in behavior; if a third user emerges, hoist them
+    A small self-contained utility kept here so the module stays
+    standalone and dependency-light. If a second user emerges, hoist it
     to a shared ``core.vector_math`` module.
     """
     if not a or not b or len(a) != len(b):

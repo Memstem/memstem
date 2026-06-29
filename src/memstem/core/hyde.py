@@ -16,8 +16,7 @@ just produce passage-shaped text in the right region of embedding
 space.
 
 This module ships scaffolding plus a production OllamaExpander. The
-:class:`HydeExpander` ABC mirrors the ``DedupJudge`` (ADR 0012) and
-``Reranker`` (ADR 0017) patterns:
+:class:`HydeExpander` ABC mirrors the ``Reranker`` (ADR 0017) pattern:
 
 - :class:`NoOpExpander` — silent fallback; returns the query
   unchanged. Wiring HyDE with NoOp is a no-op at the retrieval level.
@@ -50,8 +49,8 @@ _Lock = AbstractContextManager[Any]
 logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-"""Default Ollama HTTP endpoint. Matches the dedup_judge / reranker
-default for operational consistency."""
+"""Default Ollama HTTP endpoint. Matches the reranker default for
+operational consistency."""
 
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 """Default model. Same model the dedup judge and reranker use so a
@@ -353,8 +352,8 @@ class OllamaExpander(HydeExpander):
 
     def _http_client(self) -> object:
         if self._client is None:
-            # Lazy httpx import — same pattern as OllamaReranker /
-            # OllamaDedupJudge. httpx is a runtime dep already.
+            # Lazy httpx import — same pattern as OllamaReranker.
+            # httpx is a runtime dep already.
             import httpx
 
             self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)

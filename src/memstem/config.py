@@ -223,7 +223,6 @@ class SearchConfig(BaseModel):
 class HygieneConfig(BaseModel):
     """Hygiene worker configuration."""
 
-    dedup_threshold: float = 0.95
     decay_half_life_days: int = Field(default=90, ge=1)
     skill_extraction_enabled: bool = True
     query_log_enabled: bool = True
@@ -248,20 +247,16 @@ class HygieneConfig(BaseModel):
     loop_enabled: bool = True
     """Master switch for the in-daemon hygiene loop (ADR 0023). When
     ``True``, the daemon spawns a background task that runs
-    ``distill-sessions``, ``dedup-judge``, ``importance``, and
-    ``project-records`` on the configured intervals. The CLI hygiene
-    commands continue to work either way. Set to ``False`` on
-    multi-tenant containers where the operator hasn't authorized LLM
-    spend."""
+    ``distill-sessions``, ``importance``, and ``project-records`` on the
+    configured intervals. The CLI hygiene commands continue to work
+    either way. Set to ``False`` on multi-tenant containers where the
+    operator hasn't authorized LLM spend."""
 
     loop_poll_interval_seconds: int = Field(default=60, ge=1)
     """How often the loop wakes to check stage timers."""
 
     distill_interval_seconds: int = Field(default=6 * 3600, ge=0)
     """Cadence for the ``distill-sessions`` stage."""
-
-    dedup_interval_seconds: int = Field(default=24 * 3600, ge=0)
-    """Cadence for the ``dedup-candidates`` + ``dedup-judge`` stages."""
 
     importance_interval_seconds: int = Field(default=3600, ge=0)
     """Cadence for the ``importance`` stage."""
@@ -272,23 +267,6 @@ class HygieneConfig(BaseModel):
     distill_max_per_cycle: int = Field(default=50, ge=0)
     """Cap on distillations applied per cycle. Prevents a cold vault
     from running thousands of LLM calls on the first tick."""
-
-    dedup_max_per_cycle: int = Field(default=100, ge=0)
-    """Cap on candidate pairs judged per dedup cycle."""
-
-    dedup_max_outer_memories: int = Field(default=500, ge=0)
-    """Cap on the outer-loop scan in ``find_dedup_candidate_pairs``.
-    Candidate generation is O(N²) on the indexed memory count — a full
-    walk on a multi-thousand-record vault can take tens of minutes,
-    long enough to risk the stage lock going stale before the cycle
-    completes. The cap bounds that walk per tick. The generator scans
-    newest-``updated`` first, so a capped cycle examines the most
-    recently written/edited memories — where new duplicates actually
-    appear — rather than a fixed arbitrary slice. Memories older than
-    the cap horizon are only re-examined when something brings them
-    back into the newest-M window (an update touches them) or when a
-    neighbor query surfaces them as the *other* side of a pair (the
-    inner k-NN search is never capped)."""
 
     summarizer_provider: str = "openai"
     """Provider used by the loop for distillation + project-records.
@@ -312,30 +290,6 @@ class HygieneConfig(BaseModel):
     OpenAI-compatible servers usually ignore the key value but require
     *some* value, so callers can point this at a different env var
     (e.g. ``MEMSTEM_GEMMA_KEY`` set to a dummy string) to avoid
-    polluting the canonical ``OPENAI_API_KEY``."""
-
-    judge_provider: str = "noop"
-    """Provider used by the loop for ``dedup-judge``. Default is
-    ``"noop"`` — the loop logs candidate pairs as ``UNRELATED`` audit
-    rows for inventory but does not call an LLM until the operator
-    opts in by setting this to ``"openai"`` or ``"ollama"``."""
-
-    judge_model: str | None = None
-    """Optional model override for the dedup judge. ``None`` uses
-    provider-default (``gpt-5.4-mini`` for OpenAI, ``qwen2.5:7b`` for
-    Ollama). Pointing this at a smaller / faster model is fine —
-    dedup-judge is a 4-way classification task, not high-reasoning."""
-
-    judge_base_url: str | None = None
-    """Optional ``base_url`` override for the dedup judge. Useful for
-    pointing the OpenAI judge at a self-hosted vLLM / TGI / LM Studio
-    instance. ``None`` uses the provider default. Ignored when
-    ``judge_provider`` is ``noop``."""
-
-    judge_api_key_env: str = "OPENAI_API_KEY"
-    """Env var name to read the dedup-judge API key from. Same logic
-    as ``summarizer_api_key_env`` — point it at a different env var
-    when the value is a dummy (self-hosted servers) to avoid
     polluting the canonical ``OPENAI_API_KEY``."""
 
     stage_lock_max_age_seconds: int = Field(default=3600, ge=1)

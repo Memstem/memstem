@@ -21,7 +21,6 @@ from memstem.core.index import Index
 from memstem.core.storage import Vault
 from memstem.hygiene.loop import HygieneLoop
 from memstem.hygiene.state import (
-    STAGE_DEDUP_JUDGE,
     STAGE_DISTILL_SESSIONS,
     STAGE_IMPORTANCE,
     STAGE_PROJECT_RECORDS,
@@ -56,11 +55,9 @@ def _fast_cfg(**overrides: object) -> HygieneConfig:
         "loop_enabled": True,
         "loop_poll_interval_seconds": 1,
         "distill_interval_seconds": 1,
-        "dedup_interval_seconds": 1,
         "importance_interval_seconds": 1,
         "project_records_interval_seconds": 1,
         "summarizer_provider": "noop",
-        "judge_provider": "noop",
     }
     fields.update(overrides)
     # HygieneConfig has typed fields; pydantic's BaseModel accepts
@@ -146,10 +143,10 @@ async def test_failure_in_one_stage_does_not_affect_others(vault: Vault, index: 
     ok = MagicMock()
 
     await loop._maybe_run_stage(STAGE_IMPORTANCE, interval_seconds=1, fn=boom)
-    await loop._maybe_run_stage(STAGE_DEDUP_JUDGE, interval_seconds=1, fn=ok)
+    await loop._maybe_run_stage(STAGE_PROJECT_RECORDS, interval_seconds=1, fn=ok)
 
     ok.assert_called_once()
-    assert get_last_run(index.db, STAGE_DEDUP_JUDGE) is not None
+    assert get_last_run(index.db, STAGE_PROJECT_RECORDS) is not None
     assert get_last_run(index.db, STAGE_IMPORTANCE) is None
 
 
@@ -157,28 +154,25 @@ async def test_failure_in_one_stage_does_not_affect_others(vault: Vault, index: 
 
 
 @pytest.mark.asyncio
-async def test_tick_runs_all_four_stages(vault: Vault, index: Index) -> None:
+async def test_tick_runs_all_stages(vault: Vault, index: Index) -> None:
     cfg = _fast_cfg()
     loop = HygieneLoop(vault, index, cfg)
     with (
         patch.object(loop, "_run_importance") as p_imp,
         patch.object(loop, "_run_distill_sessions") as p_dist,
         patch.object(loop, "_run_project_records") as p_proj,
-        patch.object(loop, "_run_dedup_judge") as p_dedup,
     ):
         await loop._tick()
 
     p_imp.assert_called_once()
     p_dist.assert_called_once()
     p_proj.assert_called_once()
-    p_dedup.assert_called_once()
 
     # Each stage's last_run is set
     for stage in (
         STAGE_IMPORTANCE,
         STAGE_DISTILL_SESSIONS,
         STAGE_PROJECT_RECORDS,
-        STAGE_DEDUP_JUDGE,
     ):
         assert get_last_run(index.db, stage) is not None
 
@@ -193,14 +187,12 @@ async def test_tick_skips_recently_run_stages(vault: Vault, index: Index) -> Non
         patch.object(loop, "_run_importance") as p_imp,
         patch.object(loop, "_run_distill_sessions") as p_dist,
         patch.object(loop, "_run_project_records") as p_proj,
-        patch.object(loop, "_run_dedup_judge") as p_dedup,
     ):
         await loop._tick()
 
     p_imp.assert_not_called()
     p_dist.assert_called_once()
     p_proj.assert_called_once()
-    p_dedup.assert_called_once()
 
 
 # ─── Cancellation ─────────────────────────────────────────────────
@@ -215,7 +207,6 @@ async def test_run_is_cancellable(vault: Vault, index: Index) -> None:
         patch.object(loop, "_run_importance"),
         patch.object(loop, "_run_distill_sessions"),
         patch.object(loop, "_run_project_records"),
-        patch.object(loop, "_run_dedup_judge"),
     ):
         task = asyncio.create_task(loop.run())
         await asyncio.sleep(0.1)
@@ -224,7 +215,7 @@ async def test_run_is_cancellable(vault: Vault, index: Index) -> None:
             await task
 
 
-# ─── Summarizer / judge lazy build ─────────────────────────────────
+# ─── Summarizer lazy build ─────────────────────────────────────────
 
 
 def test_summarizer_noop_built_lazily(vault: Vault, index: Index) -> None:
@@ -243,20 +234,3 @@ def test_unknown_summarizer_provider_records_reason(vault: Vault, index: Index) 
     assert loop._get_summarizer() is None
     assert loop._summarizer_unavailable_reason is not None
     assert "unknown summarizer provider" in loop._summarizer_unavailable_reason
-
-
-def test_judge_noop_built_lazily(vault: Vault, index: Index) -> None:
-    cfg = _fast_cfg(judge_provider="noop")
-    loop = HygieneLoop(vault, index, cfg)
-    assert loop._judge is None
-    j = loop._get_judge()
-    assert j is not None
-    assert loop._get_judge() is j
-
-
-def test_unknown_judge_provider_records_reason(vault: Vault, index: Index) -> None:
-    cfg = _fast_cfg(judge_provider="not-a-real-provider")
-    loop = HygieneLoop(vault, index, cfg)
-    assert loop._get_judge() is None
-    assert loop._judge_unavailable_reason is not None
-    assert "unknown judge provider" in loop._judge_unavailable_reason

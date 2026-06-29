@@ -77,8 +77,8 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-"""Default Ollama HTTP endpoint. Matches the dedup_judge / reranker
-/ hyde default for operational consistency."""
+"""Default Ollama HTTP endpoint. Matches the reranker / hyde default
+for operational consistency."""
 
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 """Default Ollama model. Same model the rest of MemStem's local
@@ -442,8 +442,7 @@ class OpenAISummarizer(Summarizer):
         # name_prefix is dynamic so the distillation provenance
         # distinguishes real OpenAI from a self-hosted endpoint that
         # just *speaks* the OpenAI protocol (e.g. vLLM, TGI, LM Studio
-        # serving Gemma / Llama / etc.). See _openai_name_prefix
-        # in memstem.hygiene.dedup_judge for the matching helper.
+        # serving Gemma / Llama / etc.).
         from urllib.parse import urlparse
 
         host = (urlparse(self.base_url).hostname or "").lower()

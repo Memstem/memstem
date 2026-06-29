@@ -32,4 +32,4 @@ def test_config_defaults() -> None:
     assert config.embedding.provider == "ollama"
     assert config.embedding.model == "nomic-embed-text"
     assert config.search.rrf_k == 60
-    assert config.hygiene.dedup_threshold == 0.95
+    assert config.hygiene.decay_half_life_days == 90

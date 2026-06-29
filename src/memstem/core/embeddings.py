@@ -167,7 +167,7 @@ def _is_real_openai_host(base_url: str) -> bool:
     Used to pick a safe default per-request input cap: OpenAI Inc.
     handles large batches, but self-hosted OpenAI-compatible servers
     (vLLM, TGI, LM Studio, …) often cap far lower (our T4 vLLM box
-    rejects >32). Mirrors ``hygiene.dedup_judge._openai_name_prefix``.
+    rejects >32).
     """
     from urllib.parse import urlparse
 

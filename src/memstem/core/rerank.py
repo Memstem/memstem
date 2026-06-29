@@ -9,13 +9,13 @@ sees both sides of the boundary and produces a relevance score that
 depends on cross-attention.
 
 This module ships scaffolding plus a production OllamaReranker. The
-``Reranker`` ABC mirrors the ``DedupJudge`` pattern from ADR 0012:
+``Reranker`` ABC follows the same LLM-as-judge scaffolding pattern used
+elsewhere in the codebase:
 
 - :class:`NoOpReranker` — silent fallback; every score is ``1.0`` so
   stable sort preserves the input order. Wiring rerank with NoOp is a
   no-op at the ranking level.
-- :class:`StubReranker` — in-memory verdicts for tests; matches the
-  ``StubJudge`` shape from dedup_judge.
+- :class:`StubReranker` — in-memory verdicts for tests.
 - :class:`OllamaReranker` — production reranker. LLM-as-judge via
   ``/api/generate`` with a ``[0, 100]`` integer scoring prompt,
   normalized to ``[0, 1]``.
@@ -62,11 +62,11 @@ cold-cache p95 in the 3s range and steady-state p95 well under
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 """Default Ollama HTTP endpoint. Production deployments typically
-override via the constructor; the default matches the dedup_judge
+override via the constructor; the default matches the hyde / summarizer
 default for operational consistency."""
 
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
-"""Default model. Matches the dedup_judge default so the same
+"""Default model. Matches the summarizer default so the same
 already-pulled model serves both features. Swappable via the
 ``OllamaReranker(model=...)`` kwarg."""
 
@@ -343,8 +343,6 @@ class StubReranker(Reranker):
 
     Tests register canned ``(query, memory_id) -> score`` entries via
     :meth:`set_score`; the orchestration receives exactly those scores.
-    Mirrors :class:`memstem.hygiene.dedup_judge.StubJudge` so the
-    test-fixture muscle memory transfers.
     """
 
     name = "stub"
@@ -368,7 +366,7 @@ class StubReranker(Reranker):
 def _load_rerank_prompt() -> str:
     """Read the canonical OllamaReranker prompt template from package data.
 
-    Lives next to ``dedup_judge.txt`` under ``memstem/prompts/``.
+    Lives under ``memstem/prompts/``.
     """
     path = Path(__file__).parent.parent / "prompts" / "rerank.txt"
     return path.read_text(encoding="utf-8")
