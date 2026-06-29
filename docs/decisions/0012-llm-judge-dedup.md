@@ -1,7 +1,15 @@
 # ADR 0012: Two-stage dedup with LLM-as-judge, invalidate-don't-delete
 
 Date: 2026-04-27
-Status: Proposed
+Status: Superseded by [ADR 0028](0028-remove-llm-judge-dedup-service.md)
+
+> **Superseded (2026-06-29).** The LLM-judge dedup *service* described in
+> this ADR — the Layer-2 semantic candidate finder, the Layer-3 Gemma/LLM
+> judge, and the merge/audit pipeline — has been removed. It proved
+> unnecessary and introduced GPU contention and operational complexity.
+> Layer-1 (write-time exact normalized-body-hash dedup) is **retained** and
+> remains the project's dedup mechanism. See ADR 0028 for the rationale and
+> exactly what was kept. The body below is preserved as historical context.
 
 ## Context
 

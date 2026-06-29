@@ -18,9 +18,9 @@ import pytest
 from memstem.core.index import Index
 from memstem.hygiene.state import (
     ALL_STAGES,
-    STAGE_DEDUP_JUDGE,
     STAGE_DISTILL_SESSIONS,
     STAGE_IMPORTANCE,
+    STAGE_PROJECT_RECORDS,
     acquire_stage_lock,
     due_for_run,
     get_last_run,
@@ -59,7 +59,7 @@ class TestLastRun:
         ts = datetime(2026, 5, 19, tzinfo=UTC)
         set_last_run(index.db, STAGE_IMPORTANCE, ts)
         assert get_last_run(index.db, STAGE_DISTILL_SESSIONS) is None
-        assert get_last_run(index.db, STAGE_DEDUP_JUDGE) is None
+        assert get_last_run(index.db, STAGE_PROJECT_RECORDS) is None
 
     def test_corrupt_value_returns_none(self, index: Index) -> None:
         # Defend against legacy rows or hand-edited values.
@@ -115,7 +115,7 @@ class TestStageLock:
     def test_per_stage_locks_are_independent(self, index: Index) -> None:
         assert acquire_stage_lock(index.db, STAGE_IMPORTANCE) is True
         # Different stage can still acquire its own lock
-        assert acquire_stage_lock(index.db, STAGE_DEDUP_JUDGE) is True
+        assert acquire_stage_lock(index.db, STAGE_PROJECT_RECORDS) is True
 
 
 class TestCrossProcessLock:
@@ -233,7 +233,7 @@ class TestSnapshot:
         set_last_run(index.db, STAGE_IMPORTANCE, ts)
         snap = snapshot(index.db)
         assert snap["last_run"][STAGE_IMPORTANCE] == ts.isoformat()
-        assert snap["last_run"][STAGE_DEDUP_JUDGE] is None
+        assert snap["last_run"][STAGE_PROJECT_RECORDS] is None
 
     def test_snapshot_reports_running(self, index: Index) -> None:
         acquire_stage_lock(index.db, STAGE_IMPORTANCE)

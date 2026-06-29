@@ -14,8 +14,7 @@ Two key namespaces are introduced here:
   ``max_age_seconds`` is treated as crashed and reclaimed.
 
 Stage names are the canonical short identifiers: ``distill_sessions``,
-``dedup_judge``, ``importance``, ``project_records``. Add new stages
-here as ADRs land.
+``importance``, ``project_records``. Add new stages here as ADRs land.
 """
 
 from __future__ import annotations
@@ -42,13 +41,11 @@ class HygieneSnapshot(TypedDict):
 
 
 STAGE_DISTILL_SESSIONS = "distill_sessions"
-STAGE_DEDUP_JUDGE = "dedup_judge"
 STAGE_IMPORTANCE = "importance"
 STAGE_PROJECT_RECORDS = "project_records"
 
 ALL_STAGES = (
     STAGE_DISTILL_SESSIONS,
-    STAGE_DEDUP_JUDGE,
     STAGE_IMPORTANCE,
     STAGE_PROJECT_RECORDS,
 )
@@ -217,7 +214,6 @@ def snapshot(db: sqlite3.Connection, *, lock: _Lock | None = None) -> HygieneSna
 
 __all__ = [
     "ALL_STAGES",
-    "STAGE_DEDUP_JUDGE",
     "STAGE_DISTILL_SESSIONS",
     "STAGE_IMPORTANCE",
     "STAGE_PROJECT_RECORDS",

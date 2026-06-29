@@ -6,7 +6,6 @@ Runs the four hygiene stages on configurable intervals as a background
 - :data:`~memstem.hygiene.state.STAGE_IMPORTANCE`
 - :data:`~memstem.hygiene.state.STAGE_DISTILL_SESSIONS`
 - :data:`~memstem.hygiene.state.STAGE_PROJECT_RECORDS`
-- :data:`~memstem.hygiene.state.STAGE_DEDUP_JUDGE`
 
 Each stage:
 
@@ -32,7 +31,6 @@ from typing import TYPE_CHECKING
 
 from memstem.hygiene.state import (
     ALL_STAGES,
-    STAGE_DEDUP_JUDGE,
     STAGE_DISTILL_SESSIONS,
     STAGE_IMPORTANCE,
     STAGE_PROJECT_RECORDS,
@@ -47,7 +45,6 @@ if TYPE_CHECKING:
     from memstem.core.index import Index
     from memstem.core.storage import Vault
     from memstem.core.summarizer import Summarizer
-    from memstem.hygiene.dedup_judge import DedupJudge
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +52,9 @@ logger = logging.getLogger(__name__)
 class HygieneLoop:
     """The in-daemon hygiene runner.
 
-    Constructed once per daemon run, owns its own summarizer / judge
-    handles (lazily built — instantiating an OpenAI client on a vault
-    that won't actually need it for hours is wasteful).
+    Constructed once per daemon run, owns its own summarizer handle
+    (lazily built — instantiating an OpenAI client on a vault that
+    won't actually need it for hours is wasteful).
     """
 
     def __init__(
@@ -70,9 +67,7 @@ class HygieneLoop:
         self.index = index
         self.cfg = cfg
         self._summarizer: Summarizer | None = None
-        self._judge: DedupJudge | None = None
         self._summarizer_unavailable_reason: str | None = None
-        self._judge_unavailable_reason: str | None = None
 
     # -- Public entry --------------------------------------------------
 
@@ -86,15 +81,13 @@ class HygieneLoop:
             return
 
         logger.info(
-            "hygiene loop: starting (poll=%ds, distill=%ds, dedup=%ds, "
-            "importance=%ds, project_records=%ds, summarizer=%s, judge=%s)",
+            "hygiene loop: starting (poll=%ds, distill=%ds, "
+            "importance=%ds, project_records=%ds, summarizer=%s)",
             self.cfg.loop_poll_interval_seconds,
             self.cfg.distill_interval_seconds,
-            self.cfg.dedup_interval_seconds,
             self.cfg.importance_interval_seconds,
             self.cfg.project_records_interval_seconds,
             self.cfg.summarizer_provider,
-            self.cfg.judge_provider,
         )
 
         while True:
@@ -127,7 +120,6 @@ class HygieneLoop:
                 self.cfg.project_records_interval_seconds,
                 self._run_project_records,
             ),
-            (STAGE_DEDUP_JUDGE, self.cfg.dedup_interval_seconds, self._run_dedup_judge),
         ]
         for stage, interval, fn in stages:
             await self._maybe_run_stage(stage, interval, fn)
@@ -225,48 +217,6 @@ class HygieneLoop:
             logger.warning("hygiene loop: %s", self._summarizer_unavailable_reason)
         return self._summarizer
 
-    def _get_judge(self) -> DedupJudge | None:
-        if self._judge is not None or self._judge_unavailable_reason is not None:
-            return self._judge
-        from memstem.hygiene.dedup_judge import (
-            NoOpJudge,
-            OllamaDedupJudge,
-            OpenAIDedupJudge,
-        )
-
-        provider = self.cfg.judge_provider.lower()
-        try:
-            if provider == "noop":
-                self._judge = NoOpJudge()
-            elif provider == "openai":
-                # Build kwargs so unset overrides fall through to the
-                # OpenAIDedupJudge defaults (api.openai.com + gpt-5.4-mini).
-                openai_kwargs: dict[str, object] = {
-                    "api_key_env": self.cfg.judge_api_key_env,
-                }
-                if self.cfg.judge_model:
-                    openai_kwargs["model"] = self.cfg.judge_model
-                if self.cfg.judge_base_url:
-                    openai_kwargs["base_url"] = self.cfg.judge_base_url
-                self._judge = OpenAIDedupJudge(**openai_kwargs)  # type: ignore[arg-type]
-            elif provider == "ollama":
-                ollama_judge_kwargs: dict[str, object] = {}
-                if self.cfg.judge_model:
-                    ollama_judge_kwargs["model"] = self.cfg.judge_model
-                if self.cfg.judge_base_url:
-                    ollama_judge_kwargs["base_url"] = self.cfg.judge_base_url
-                self._judge = OllamaDedupJudge(**ollama_judge_kwargs)  # type: ignore[arg-type]
-            else:
-                self._judge_unavailable_reason = (
-                    f"unknown judge provider {self.cfg.judge_provider!r}; "
-                    "expected one of: noop, openai, ollama"
-                )
-                logger.warning("hygiene loop: %s", self._judge_unavailable_reason)
-        except Exception as exc:
-            self._judge_unavailable_reason = f"judge init failed ({type(exc).__name__}: {exc})"
-            logger.warning("hygiene loop: %s", self._judge_unavailable_reason)
-        return self._judge
-
     # -- Stage runners -------------------------------------------------
     #
     # These are called via asyncio.to_thread — synchronous, may block on
@@ -357,42 +307,6 @@ class HygieneLoop:
         )
         for err in result.apply_errors:
             logger.warning("hygiene[project_records]: apply error: %s", err)
-
-    def _run_dedup_judge(self) -> None:
-        from memstem.hygiene.dedup_candidates import find_dedup_candidate_pairs
-        from memstem.hygiene.dedup_judge import judge_pairs, write_audit_rows
-
-        judge = self._get_judge()
-        if judge is None:
-            logger.info("hygiene[dedup_judge]: skipped — judge unavailable")
-            return
-
-        # ``max_memories`` caps the O(N²) outer-loop walk so the cycle
-        # stays bounded on large vaults — without it, candidate
-        # generation on a few-thousand-record vault can run long enough
-        # that the stage lock TTL would expire mid-cycle (ADR 0023
-        # §Configuration).
-        pairs = find_dedup_candidate_pairs(
-            self.vault,
-            self.index,
-            min_cosine=self.cfg.dedup_threshold,
-            max_memories=self.cfg.dedup_max_outer_memories,
-        )
-        if not pairs:
-            logger.info("hygiene[dedup_judge]: no candidate pairs")
-            return
-
-        if len(pairs) > self.cfg.dedup_max_per_cycle:
-            logger.info(
-                "hygiene[dedup_judge]: capping %d pairs to %d this cycle",
-                len(pairs),
-                self.cfg.dedup_max_per_cycle,
-            )
-            pairs = pairs[: self.cfg.dedup_max_per_cycle]
-
-        results = judge_pairs(pairs, judge=judge)
-        n_written = write_audit_rows(self.index.db, results, lock=self.index.lock)
-        logger.info("hygiene[dedup_judge]: wrote %d audit row(s)", n_written)
 
 
 __all__ = ["ALL_STAGES", "HygieneLoop"]

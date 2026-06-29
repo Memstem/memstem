@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The LLM-judge dedup service (ADR 0012 Layers 2–3) is removed (ADR 0028).**
+  The semantic near-duplicate candidate finder, the Gemma/LLM-as-judge stage,
+  and the merge/audit pipeline were the heaviest intermittent GPU job in the
+  system and bought audit inventory that nothing acted on automatically. Gone:
+  the `hygiene/dedup_candidates.py` and `hygiene/dedup_judge.py` modules and the
+  `prompts/dedup_judge.txt` template; the `dedup_judge` in-daemon hygiene stage;
+  the `hygiene dedup-candidates` and `hygiene dedup-judge` CLI subcommands; and
+  the service-only config fields (`dedup_interval_seconds`, `dedup_max_per_cycle`,
+  `dedup_max_outer_memories`, `dedup_threshold`, and the `judge_*` block). **Kept:**
+  Layer-1 write-time exact normalized-body-hash dedup (`core/dedup.py` +
+  `core/pipeline.py`), the `hygiene cleanup-retro --dedup` retro body-hash pass,
+  and the `dedup_audit` table definition (now unused but left in place to avoid a
+  schema migration). Existing `config.yaml` files with the removed keys still load
+  unchanged (unknown keys are ignored).
+
 ## [0.18.0] - 2026-06-19
 
 ### Fixed

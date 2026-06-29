@@ -1,1 +1,1 @@
-"""Background hygiene: dedup, decay, importance, distillation."""
+"""Background hygiene: decay, importance, distillation."""
