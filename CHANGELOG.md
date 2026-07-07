@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Embed-client resilience (ADR 0030): interactive searches no longer hang when the
+  embedder has a transient blip.** A separate short `query_timeout` (default 5s) for
+  search-query embedding — distinct from the generous document `timeout` (default 120s,
+  now wired from `EmbeddingConfig` — previously the 120s was hardcoded) — so a search
+  degrades to BM25 in seconds instead of hanging up to 120s. Plus a shared **circuit
+  breaker** (`circuit_breaker_failures` / `circuit_breaker_cooldown_s`): after N
+  consecutive transient failures the embedder fails fast for a cooldown (search → BM25
+  instantly, workers back off) instead of hammering a struggling endpoint — the amplifier
+  behind the 2026-07 embed-storm incident. All defaults preserve prior behavior for
+  healthy endpoints. New `EmbeddingConfig` keys: `timeout`, `query_timeout`,
+  `circuit_breaker_failures`, `circuit_breaker_cooldown_s`.
+
 ### Fixed
 
 - **MMR no longer full-scans the vector table once per candidate — hybrid
