@@ -435,6 +435,29 @@ class TestSearchMmr:
         results = search.search("alpha", limit=2, mmr_lambda=0.5)
         assert len(results) >= 1
 
+    def test_first_chunk_embedding_returns_chunk_zero(self, vault: Vault, index: Index) -> None:
+        """The MMR helper fetches exactly chunk 0's vector via the vec0 PK.
+
+        The PK is ``f"{memory_id}:{chunk_index}"`` (``Index.upsert_vectors``);
+        the helper must stay in lockstep with that format — a metadata-column
+        filter on a vec0 table degrades to a full scan.
+        """
+        m = _make_memory(body="multi chunk memory", vault=vault)
+        index.upsert(m)
+        chunk0, chunk1 = _fake_embedding(1), _fake_embedding(2)
+        index.upsert_vectors(str(m.id), ["c0", "c1"], [chunk0, chunk1])
+
+        search = Search(vault=vault, index=index, embedder=None)
+        got = search._first_chunk_embedding(str(m.id))
+        assert got is not None
+        assert got == pytest.approx(chunk0)
+
+    def test_first_chunk_embedding_missing_memory_returns_none(
+        self, vault: Vault, index: Index
+    ) -> None:
+        search = Search(vault=vault, index=index, embedder=None)
+        assert search._first_chunk_embedding("no-such-id") is None
+
 
 class TestSearchRerank:
     """ADR 0017: cross-encoder rerank when ``rerank_top_n`` is provided."""

@@ -372,14 +372,21 @@ class Search:
         Returns ``None`` when the memory has no vectors (e.g. embedder
         failed at ingest or the worker hasn't drained yet) — MMR handles
         this case by appending such candidates after the diversified pool.
+
+        The lookup goes through the vec0 PRIMARY KEY (``chunk_id``, built
+        as ``f"{memory_id}:{chunk_index}"`` by ``Index.upsert_vectors``) — a
+        point query. Filtering on the ``memory_id``/``chunk_index``
+        metadata columns instead forces vec0 into a full table scan
+        (~0.4s per call on a 68k-chunk 4096-dim index; over N MMR
+        candidates it was the bulk of a measured ~10s daemon search).
         """
         with self.index._lock:
             row = self.index.db.execute(
                 """
                 SELECT embedding FROM memories_vec
-                WHERE memory_id = ? AND chunk_index = 0
+                WHERE chunk_id = ?
                 """,
-                (memory_id,),
+                (f"{memory_id}:0",),
             ).fetchone()
         if row is None:
             return None

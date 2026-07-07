@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **MMR no longer full-scans the vector table once per candidate — hybrid
+  search dropped from ~9.3s to ~2.5s on an 8.5k-memory / 68k-chunk 4096-dim
+  vault.** `Search._first_chunk_embedding` filtered on the `memory_id` /
+  `chunk_index` metadata columns of the `memories_vec` vec0 virtual table;
+  vec0 answers non-`MATCH` metadata predicates with a full table scan
+  (~0.4s per lookup at this scale), and MMR calls the helper for every
+  materialized candidate. It now does a point query on the vec0 PRIMARY KEY
+  (`chunk_id = f"{memory_id}:0"`, the format `Index.upsert_vectors` writes).
+  Same rows returned; ranking unchanged. This was the dominant term in the
+  "daemon-search takes 7-15s and MCP clients declare the server dead"
+  incident (2026-07-01).
+
 ### Removed
 
 - **The LLM-judge dedup service (ADR 0012 Layers 2–3) is removed (ADR 0028).**
