@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Daemon self-heals the cold-spawn key fallback (ADR 0031).** On startup, when the
+  embedder API key was resolved from the daemon's environment and
+  `~/.config/memstem/secrets.yaml` is missing the provider entry or holds a different
+  (stale) value, the daemon persists the env key into the secrets file
+  (`auth.sync_env_secret_to_file`). Cold-spawned processes — the per-session
+  `memstem mcp` server and the plain CLI — fall back to that file when they run without
+  the env var; a stale file key meant embedder 401s and silent BM25-only search for
+  weeks. Idempotent (no write when equal), guarded to keyed providers (never
+  ollama/local), one masked info log line on write, non-fatal on write failure.
+
+- **`memstem doctor embedder` — cold-path embedder auth self-test.** Resolves the API
+  key exactly the way a cold-spawned process would (env var first, then
+  `~/.config/memstem/secrets.yaml`) and performs one tiny embedding round-trip against
+  the configured endpoint, reporting OK/FAIL with the HTTP status, key source
+  (env/file, masked), dimensions, and latency. `--json` emits a structured report;
+  exits 1 on failure. This is the check that catches a stale `secrets.yaml` key while
+  the daemon (env-keyed) stays green. Bare `memstem doctor` is unchanged.
+
+- **Search results now say when they're degraded (ADR 0032).** When an embedder
+  failure (auth, connection, timeout, open breaker) forces the BM25 keyword-only
+  fallback, the degradation is surfaced instead of hidden in a log line: every hit
+  from MCP `memstem_search` and HTTP `POST /search` carries an additive
+  `embedder_degraded: bool` field, `memstem search` prints a stderr notice, and the
+  new `Search.search_with_status()` returns a `SearchOutcome` with
+  `degraded`/`degraded_reason` for internal callers. `Search.search()` keeps its
+  list-only shape, older clients ignore the extra field, and the existing
+  `vec query failed; falling back to BM25` warning is preserved.
+
 - **Embed-client resilience (ADR 0030): interactive searches no longer hang when the
   embedder has a transient blip.** A separate short `query_timeout` (default 5s) for
   search-query embedding — distinct from the generous document `timeout` (default 120s,

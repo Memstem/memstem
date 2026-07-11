@@ -332,7 +332,7 @@ class TestUpsertTool:
 
         _make_memory(body="clamp probe", vault=vault, index=index)
         seen: list[int] = []
-        original = Search.search
+        original = Search.search_with_status
 
         def spy(self: Search, **kwargs: Any) -> Any:
             seen.append(kwargs["limit"])
@@ -340,7 +340,7 @@ class TestUpsertTool:
 
         mcp = build_server(vault, index)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(Search, "search", spy)
+            mp.setattr(Search, "search_with_status", spy)
             await _call_tool(mcp, "memstem_search", {"query": "clamp", "limit": 10**9})
             await _call_tool(mcp, "memstem_search", {"query": "clamp", "limit": -5})
         assert seen == [MAX_SEARCH_LIMIT, 1]
@@ -857,3 +857,33 @@ class TestUpsertNormalizes:
         stored = await _call_tool(mcp, "memstem_get", {"id_or_path": result["id"]})
         assert stored["type"] == "memory"
         assert "site_scan" in stored["frontmatter"]["tags"]
+
+
+class TestSearchDegradationFlag:
+    """ADR 0032 — memstem_search hits carry ``embedder_degraded``."""
+
+    class _BoomEmbedder:
+        """Fails like a cold-spawned MCP server holding a stale key (401)."""
+
+        def embed(self, text: str) -> list[float]:
+            raise RuntimeError("401 Unauthorized")
+
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
+
+        def close(self) -> None: ...
+
+    async def test_flag_true_when_embedder_fails(self, vault: Vault, index: Index) -> None:
+        _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        mcp = build_server(vault, index, self._BoomEmbedder())  # type: ignore[arg-type]
+        results = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        assert len(results) == 1
+        assert results[0]["embedder_degraded"] is True
+
+    async def test_flag_false_without_embedder(self, vault: Vault, index: Index) -> None:
+        """No embedder configured = normal keyword-only mode, not degraded."""
+        _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        mcp = build_server(vault, index)
+        results = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        assert len(results) == 1
+        assert results[0]["embedder_degraded"] is False

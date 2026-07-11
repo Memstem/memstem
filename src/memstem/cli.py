@@ -593,7 +593,7 @@ def _search_via_direct_db(
         )
     try:
         with phase("direct-search") as details:
-            results = Search(vault_obj, index, embedder, reranker=reranker).search(
+            outcome = Search(vault_obj, index, embedder, reranker=reranker).search_with_status(
                 query,
                 limit=limit,
                 types=types,
@@ -607,10 +607,12 @@ def _search_via_direct_db(
                 log_client="cli" if cfg.hygiene.query_log_enabled else None,
                 log_max_rows=cfg.hygiene.query_log_max_rows,
             )
+            results = outcome.results
             details["results"] = len(results)
     finally:
         index.close()
 
+    _print_degradation_notice(outcome.degraded)
     if not results:
         typer.echo("(no results)")
         return
@@ -619,11 +621,25 @@ def _search_via_direct_db(
         typer.echo(f"[{r.score:.4f}] {r.memory.type.value:<8} {title}  ({r.memory.path})")
 
 
+def _print_degradation_notice(degraded: bool) -> None:
+    """One stderr line when a search fell back to keyword-only (ADR 0032).
+
+    Stderr on purpose: scripts piping the CLI's stdout keep parsing the
+    unchanged result lines, while humans see why recall looks thin."""
+    if degraded:
+        typer.echo(
+            "note: embedder unreachable — results are keyword-only (BM25 fallback). "
+            "Run `memstem doctor embedder` to diagnose.",
+            err=True,
+        )
+
+
 def _print_search_hits(hits: list[DaemonSearchHit]) -> None:
     """Render daemon SearchHit objects in the same shape the direct-DB
     path uses. Pulled out so the two code paths produce identical
     output — anything else is a regression that breaks scripts piping
     the CLI."""
+    _print_degradation_notice(any(h.embedder_degraded for h in hits))
     if not hits:
         typer.echo("(no results)")
         return
@@ -981,11 +997,28 @@ def _doctor_run(cfg: Config) -> int:
     return failures
 
 
-@app.command()
+doctor_app = typer.Typer(
+    name="doctor",
+    help="Verify the install: Python, vault, index, embedder, adapter targets.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(doctor_app)
+
+
+@doctor_app.callback()
 def doctor(
+    ctx: typer.Context,
     vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
 ) -> None:
-    """Verify the install: Python, vault, index, Ollama, adapter targets."""
+    """Verify the install: Python, vault, index, Ollama, adapter targets.
+
+    Bare ``memstem doctor`` runs the full install check (unchanged
+    behaviour). Subcommands run focused probes — see ``memstem doctor
+    embedder`` for the cold-path embedder auth self-test.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
     cfg = _load_config(_resolve_vault_path(vault))
     typer.echo(f"Memstem doctor (vault={cfg.vault_path}):\n")
     failures = _doctor_run(cfg)
@@ -995,6 +1028,133 @@ def doctor(
         raise typer.Exit(1)
     typer.echo("All checks passed.")
     _maybe_print_star_nudge(typer.echo)
+
+
+def _http_status_from_exception(exc: BaseException) -> int | None:
+    """Dig the HTTP status code out of an exception's cause chain.
+
+    The embedder backends raise :class:`EmbeddingError` ``from`` the
+    underlying :class:`httpx.HTTPStatusError`, so the status (401, 413,
+    500, ...) lives on ``__cause__``. Network-level failures (connection
+    refused, DNS, timeout) have no status — return ``None``.
+    """
+    import httpx
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, httpx.HTTPStatusError):
+            return cur.response.status_code
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def _embedder_selftest(cfg: Config) -> dict[str, Any]:
+    """Run the embedder auth self-test exactly the way a COLD spawn would.
+
+    Resolves the API key via :func:`memstem.auth.get_secret` (env var
+    first, then ``secrets.yaml``) inside the normal ``embed_for``
+    construction path, then performs one tiny query-embed round-trip
+    against the configured endpoint. Uses ``embed_query`` so the short
+    interactive ``query_timeout`` (ADR 0030) applies — the whole test is
+    a single small request.
+
+    Returns a structured report; never raises. This is the check that
+    catches the "daemon embeds fine (env key) but every cold-spawned MCP
+    server gets 401s from a stale secrets.yaml key" failure mode that
+    ADR 0031 self-heals.
+    """
+    import time
+
+    from memstem import auth
+
+    e = cfg.embedding
+    provider = e.provider.lower()
+    env_name = e.api_key_env or auth.PROVIDERS.get(provider)
+    key_source: str | None = None
+    masked_key: str | None = None
+    if env_name:
+        env_val = os.environ.get(env_name, "").strip()
+        if env_val:
+            key_source = f"env:{env_name}"
+            masked_key = auth.mask(env_val)
+        else:
+            file_val = auth.get_secret(provider, env_var=env_name)
+            if file_val:
+                key_source = f"file:{auth.secrets_path()}"
+                masked_key = auth.mask(file_val)
+
+    report: dict[str, Any] = {
+        "ok": False,
+        "provider": provider,
+        "model": e.model,
+        "base_url": e.base_url,
+        "key_source": key_source,
+        "key": masked_key,
+        "http_status": None,
+        "dimensions": None,
+        "elapsed_ms": None,
+        "error": None,
+    }
+    started = time.monotonic()
+    try:
+        with embed_for(e) as embedder:
+            report["base_url"] = getattr(embedder, "base_url", e.base_url)
+            vec = embedder.embed_query("memstem doctor: embedder self-test")
+        report["ok"] = True
+        # embed_query succeeded, which for every HTTP backend means a 2xx
+        # answer; report the canonical 200 so scripts get a stable field.
+        report["http_status"] = 200
+        report["dimensions"] = len(vec)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["http_status"] = _http_status_from_exception(exc)
+    report["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
+    return report
+
+
+@doctor_app.command("embedder")
+def doctor_embedder(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the report as a single JSON object."),
+    ] = False,
+) -> None:
+    """Cold-path embedder auth self-test (one tiny embedding round-trip).
+
+    Resolves the API key the way a cold-spawned process would — env var
+    first, then ``~/.config/memstem/secrets.yaml`` — and embeds a single
+    tiny input against the configured endpoint, reporting OK/FAIL with
+    the HTTP status. The daemon can embed fine with the key in its
+    environment while every per-session ``memstem mcp`` spawn falls back
+    to a stale file key, gets 401s, and silently degrades to keyword-only
+    search; this command exercises that exact spawn path. Exits 1 on
+    failure.
+    """
+    import json
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    report = _embedder_selftest(cfg)
+    if json_output:
+        typer.echo(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        typer.echo(f"embedder self-test: {'OK' if report['ok'] else 'FAIL'}")
+        typer.echo(f"  provider:    {report['provider']} ({report['model']})")
+        typer.echo(f"  base_url:    {report['base_url']}")
+        typer.echo(f"  key_source:  {report['key_source'] or '(no key resolved)'}")
+        if report["key"]:
+            typer.echo(f"  key:         {report['key']}")
+        if report["http_status"] is not None:
+            typer.echo(f"  http_status: {report['http_status']}")
+        if report["dimensions"] is not None:
+            typer.echo(f"  dimensions:  {report['dimensions']}")
+        typer.echo(f"  elapsed_ms:  {report['elapsed_ms']}")
+        if report["error"]:
+            typer.echo(f"  error:       {report['error']}")
+    if not report["ok"]:
+        raise typer.Exit(1)
 
 
 async def _drain_into_pipeline(
@@ -1884,12 +2044,53 @@ def connect_clients(
     typer.echo("\nDone." if not dry_run else "\nDry run complete; no files written.")
 
 
+def _sync_embedder_secret(cfg: Config) -> None:
+    """Mirror the daemon's env-resolved embedder key into secrets.yaml (ADR 0031).
+
+    The daemon is typically launched with the key in its environment, so it
+    embeds fine even when ``~/.config/memstem/secrets.yaml`` is stale. But
+    cold-spawned processes — the per-session ``memstem mcp`` stdio server,
+    the plain CLI — run *without* that env var and fall back to the file. If
+    the two diverge, those processes get 401s from the embedder and search
+    silently degrades to BM25-only. Persisting the resolved key at daemon
+    startup guarantees the fallback file can never go stale relative to what
+    the daemon actually uses.
+
+    Only providers in :data:`memstem.auth.PROVIDERS` are synced (ollama/local
+    needs no key). A write failure is logged, never fatal — the daemon must
+    still come up on a read-only ``~/.config``.
+    """
+    from memstem import auth
+
+    provider = cfg.embedding.provider.lower()
+    if provider not in auth.PROVIDERS:
+        return
+    env_name = cfg.embedding.api_key_env or auth.PROVIDERS[provider]
+    try:
+        if auth.sync_env_secret_to_file(provider, env_var=cfg.embedding.api_key_env):
+            key = os.environ.get(env_name, "").strip()
+            logger.info(
+                "daemon: persisted %s embedder key %s from $%s to %s so "
+                "cold-spawned processes (MCP server, CLI) resolve the same key",
+                provider,
+                auth.mask(key),
+                env_name,
+                auth.secrets_path(),
+            )
+    except OSError as exc:
+        logger.warning("daemon: could not persist embedder key to %s: %s", auth.secrets_path(), exc)
+
+
 @app.command()
 def daemon(
     vault: str | None = typer.Option(None, help="Vault path override"),
 ) -> None:
     """Run adapter reconcile + watch loop, ingesting into the vault and index."""
     cfg = _load_config(_resolve_vault_path(vault))
+    # ADR 0031: self-heal the cold-spawn key fallback before anything else —
+    # the embedder key this process resolved from its env becomes the
+    # secrets.yaml value every keyless spawn will fall back to.
+    _sync_embedder_secret(cfg)
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)

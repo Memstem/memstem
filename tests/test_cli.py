@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 import yaml
 from typer.testing import CliRunner
 
-from memstem.cli import _load_config, app
+from memstem.cli import _load_config, _sync_embedder_secret, app
+from memstem.config import Config, EmbeddingConfig
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
@@ -1301,3 +1303,332 @@ class TestLoadConfigFallback:
             cfg = _load_config(tmp_path)
         assert cfg.embedding.provider == "openai"
         assert "config.yaml" not in caplog.text
+
+
+class TestDaemonSecretSync:
+    """ADR 0031 — daemon startup persists the env-resolved embedder key into
+    ``secrets.yaml`` so cold-spawned MCP/CLI processes never fall back to a
+    stale key. Exercises the ``_sync_embedder_secret`` startup hook directly
+    (running the full daemon loop in a unit test is out of scope)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_secrets(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        secrets_file = tmp_path / "secrets.yaml"
+        monkeypatch.setenv("MEMSTEM_SECRETS_FILE", str(secrets_file))
+        for var in ("OPENAI_API_KEY", "GEMINI_API_KEY", "VOYAGE_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        self.secrets_file = secrets_file
+        return secrets_file
+
+    def _cfg(self, tmp_path: Path, **embedding: object) -> Config:
+        return Config(
+            vault_path=tmp_path / "vault",
+            embedding=EmbeddingConfig(**embedding),  # type: ignore[arg-type]
+        )
+
+    def test_persists_env_key_and_logs_masked(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-daemon-env-key-123456")
+        cfg = self._cfg(tmp_path, provider="openai", model="m", dimensions=8)
+        with caplog.at_level(logging.INFO, logger="memstem.cli"):
+            _sync_embedder_secret(cfg)
+        stored = yaml.safe_load(self.secrets_file.read_text())
+        assert stored == {"openai": "sk-daemon-env-key-123456"}
+        assert "persisted openai embedder key" in caplog.text
+        # The key itself must never land in the logs — only the mask.
+        assert "sk-daemon-env-key-123456" not in caplog.text
+        assert "sk-dae…3456" in caplog.text
+
+    def test_heals_stale_file_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-proj-stale-openai-key")  # the fleet-wide incident shape
+        monkeypatch.setenv("OPENAI_API_KEY", "vllm-sidecar-current-key")
+        _sync_embedder_secret(self._cfg(tmp_path, provider="openai", model="m", dimensions=8))
+        monkeypatch.delenv("OPENAI_API_KEY")
+        assert auth.get_secret("openai") == "vllm-sidecar-current-key"
+
+    def test_idempotent_no_rewrite_when_equal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-same")
+        before = self.secrets_file.read_bytes()
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-same")
+        with caplog.at_level(logging.INFO, logger="memstem.cli"):
+            _sync_embedder_secret(self._cfg(tmp_path, provider="openai", model="m", dimensions=8))
+        assert self.secrets_file.read_bytes() == before
+        assert "persisted" not in caplog.text
+
+    def test_honors_custom_api_key_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memstem import auth
+
+        monkeypatch.setenv("MEMSTEM_EMBED_KEY", "custom-var-key")
+        cfg = self._cfg(
+            tmp_path,
+            provider="openai",
+            model="m",
+            dimensions=8,
+            api_key_env="MEMSTEM_EMBED_KEY",
+        )
+        _sync_embedder_secret(cfg)
+        monkeypatch.delenv("MEMSTEM_EMBED_KEY")
+        assert auth.get_secret("openai") == "custom-var-key"
+
+    def test_skips_keyless_provider(self, tmp_path: Path) -> None:
+        _sync_embedder_secret(self._cfg(tmp_path, provider="ollama"))
+        assert not self.secrets_file.exists()
+
+    def test_write_failure_is_nonfatal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-key")
+        monkeypatch.setattr(
+            "memstem.auth.sync_env_secret_to_file",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("read-only filesystem")),
+        )
+        with caplog.at_level(logging.WARNING, logger="memstem.cli"):
+            _sync_embedder_secret(self._cfg(tmp_path, provider="openai", model="m", dimensions=8))
+        assert "could not persist embedder key" in caplog.text
+
+
+class TestDoctorEmbedder:
+    """``memstem doctor embedder`` — cold-path embedder auth self-test.
+
+    Mocks the HTTP layer only (an ``httpx.MockTransport`` swapped into the
+    real embedder built by ``embed_for``), so key resolution runs the real
+    cold-spawn path: env var first, then the secrets file.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_secrets(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        secrets_file = tmp_path / "secrets.yaml"
+        monkeypatch.setenv("MEMSTEM_SECRETS_FILE", str(secrets_file))
+        for var in ("OPENAI_API_KEY", "GEMINI_API_KEY", "VOYAGE_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        return secrets_file
+
+    def _openai_vault(self, initialized_vault: Path) -> Path:
+        cfg_path = initialized_vault / "_meta" / "config.yaml"
+        cfg_path.write_text(
+            "vault_path: " + str(initialized_vault) + "\n"
+            "embedding:\n"
+            "  provider: openai\n"
+            "  model: test-embed\n"
+            "  base_url: http://embedder.test/v1\n"
+            "  dimensions: 4\n",
+            encoding="utf-8",
+        )
+        return initialized_vault
+
+    def _mock_transport(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        handler: Callable[[httpx.Request], httpx.Response],
+    ) -> None:
+        """Swap the real embedder's HTTP client for a MockTransport one."""
+        from memstem.core.embeddings import embed_for as real_embed_for
+
+        def factory(ecfg: EmbeddingConfig) -> object:
+            emb = real_embed_for(ecfg)
+            emb._client = httpx.Client(  # type: ignore[attr-defined]
+                base_url=emb.base_url,  # type: ignore[attr-defined]
+                transport=httpx.MockTransport(handler),
+            )
+            return emb
+
+        monkeypatch.setattr("memstem.cli.embed_for", factory)
+
+    def test_ok_with_key_from_secrets_file(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-cold-path-file-key")
+        vault = self._openai_vault(initialized_vault)
+        self._mock_transport(
+            monkeypatch,
+            lambda r: httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3, 0.4]}]}
+            ),
+        )
+        result = runner.invoke(app, ["doctor", "embedder", "--vault", str(vault)])
+        assert result.exit_code == 0, result.output
+        assert "embedder self-test: OK" in result.output
+        assert "key_source:  file:" in result.output
+        assert "http_status: 200" in result.output
+        assert "dimensions:  4" in result.output
+        # The raw key never appears in output — only the mask.
+        assert "sk-cold-path-file-key" not in result.output
+
+    def test_fail_401_reports_status_and_exits_nonzero(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from memstem import auth
+
+        # The incident shape: secrets.yaml holds a stale key the endpoint rejects.
+        auth.set_secret("openai", "sk-proj-stale-key")
+        vault = self._openai_vault(initialized_vault)
+        self._mock_transport(
+            monkeypatch,
+            lambda r: httpx.Response(401, json={"error": {"message": "Invalid API key"}}),
+        )
+        result = runner.invoke(app, ["doctor", "embedder", "--vault", str(vault)])
+        assert result.exit_code == 1
+        assert "embedder self-test: FAIL" in result.output
+        assert "http_status: 401" in result.output
+
+    def test_env_key_wins_and_is_reported_as_source(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-key-9876543210")
+        vault = self._openai_vault(initialized_vault)
+        self._mock_transport(
+            monkeypatch,
+            lambda r: httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [0.0, 0.0, 0.0, 0.0]}]}
+            ),
+        )
+        result = runner.invoke(app, ["doctor", "embedder", "--vault", str(vault)])
+        assert result.exit_code == 0, result.output
+        assert "key_source:  env:OPENAI_API_KEY" in result.output
+
+    def test_json_output_is_structured(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-json-test-key-123")
+        vault = self._openai_vault(initialized_vault)
+        self._mock_transport(
+            monkeypatch,
+            lambda r: httpx.Response(401, text="unauthorized"),
+        )
+        result = runner.invoke(app, ["doctor", "embedder", "--json", "--vault", str(vault)])
+        assert result.exit_code == 1
+        report = json.loads(result.output)
+        assert report["ok"] is False
+        assert report["http_status"] == 401
+        assert report["provider"] == "openai"
+        assert report["key_source"].startswith("file:")
+        assert "unauthorized" in report["error"]
+        assert report["elapsed_ms"] is not None
+
+    def test_connection_error_has_no_status(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-any")
+        vault = self._openai_vault(initialized_vault)
+
+        def refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        self._mock_transport(monkeypatch, refuse)
+        result = runner.invoke(app, ["doctor", "embedder", "--json", "--vault", str(vault)])
+        assert result.exit_code == 1
+        report = json.loads(result.output)
+        assert report["ok"] is False
+        assert report["http_status"] is None
+        assert "connection refused" in report["error"]
+
+    def test_missing_key_fails_before_any_http(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+    ) -> None:
+        vault = self._openai_vault(initialized_vault)  # no env, no file
+        result = runner.invoke(app, ["doctor", "embedder", "--json", "--vault", str(vault)])
+        assert result.exit_code == 1
+        report = json.loads(result.output)
+        assert report["ok"] is False
+        assert report["key_source"] is None
+        assert "needs an API key" in report["error"]
+
+    def test_bare_doctor_still_runs_full_check(
+        self,
+        initialized_vault: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Converting ``doctor`` to a subcommand group must not change the
+        bare invocation."""
+
+        class _StubEmbedder:
+            dimensions = 768
+
+            def embed(self, _: str) -> list[float]:
+                return [0.0] * 768
+
+            def close(self) -> None: ...
+
+        monkeypatch.setattr("memstem.cli.embed_for", lambda _cfg: _StubEmbedder())
+        result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output
+
+
+class TestSearchDegradationNotice:
+    """ADR 0032 — the CLI prints a stderr notice when results fell back to
+    keyword-only, keeping stdout parseable for scripts."""
+
+    def test_notice_goes_to_stderr_when_degraded(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from memstem.cli import _print_degradation_notice
+
+        _print_degradation_notice(True)
+        captured = capsys.readouterr()
+        assert "keyword-only" in captured.err
+        assert "memstem doctor embedder" in captured.err
+        assert captured.out == ""
+
+    def test_silent_when_not_degraded(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from memstem.cli import _print_degradation_notice
+
+        _print_degradation_notice(False)
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_daemon_hits_trigger_notice(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from memstem.cli import _print_search_hits
+        from memstem.client import SearchHit as DaemonHit
+
+        hit = DaemonHit(
+            id="11111111-1111-4111-8111-111111111111",
+            title="t",
+            type="memory",
+            snippet="s",
+            score=0.5,
+            path="memories/x.md",
+            bm25_rank=1,
+            vec_rank=None,
+            frontmatter={},
+            embedder_degraded=True,
+        )
+        _print_search_hits([hit])
+        captured = capsys.readouterr()
+        assert "keyword-only" in captured.err
+        assert "[0.5000]" in captured.out
