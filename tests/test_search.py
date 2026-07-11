@@ -18,6 +18,7 @@ from memstem.core.search import (
     DEFAULT_RRF_K,
     Result,
     Search,
+    SearchOutcome,
     rrf_combine,
 )
 from memstem.core.storage import Memory, Vault
@@ -1151,3 +1152,80 @@ class TestSearchConfigTypeBias:
         loaded = SearchConfig.model_validate(dumped)
         assert loaded.type_bias["distillation"] == pytest.approx(1.5)
         assert loaded.type_bias["session"] == pytest.approx(0.5)
+
+
+class TestSearchDegradationFlag:
+    """ADR 0032 — an embedder failure that forces the BM25 fallback must be
+    visible in the outcome, not just a log line."""
+
+    class _BoomEmbedder:
+        """Embedder that always fails, like a 401 from a stale key."""
+
+        def embed(self, text: str) -> list[float]:
+            raise RuntimeError("OpenAI request failed: 401 Unauthorized")
+
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
+
+    class _OkEmbedder:
+        query_instruction = None
+
+        def __init__(self, vec: list[float]) -> None:
+            self._vec = vec
+
+        def embed(self, text: str) -> list[float]:
+            return self._vec
+
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
+
+    def test_embedder_failure_sets_degraded(
+        self, vault: Vault, index: Index, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        m = _make_memory(body="cloudflare tunnel notes", vault=vault)
+        index.upsert(m)
+
+        search = Search(vault=vault, index=index, embedder=self._BoomEmbedder())  # type: ignore[arg-type]
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="memstem.core.search"):
+            outcome = search.search_with_status("cloudflare")
+
+        assert isinstance(outcome, SearchOutcome)
+        assert outcome.degraded is True
+        assert outcome.degraded_reason is not None
+        assert "401" in outcome.degraded_reason
+        assert "RuntimeError" in outcome.degraded_reason
+        # BM25 results still come back — degraded, not dead.
+        assert [str(r.memory.id) for r in outcome.results] == [str(m.id)]
+        # The pre-existing log warning is preserved.
+        assert "vec query failed; falling back to BM25" in caplog.text
+
+    def test_no_embedder_is_not_degraded(self, vault: Vault, index: Index) -> None:
+        """BM25-only is the *normal* mode for embedder-less vaults."""
+        m = _make_memory(body="cloudflare tunnel notes", vault=vault)
+        index.upsert(m)
+        outcome = Search(vault=vault, index=index, embedder=None).search_with_status("cloudflare")
+        assert outcome.degraded is False
+        assert outcome.degraded_reason is None
+        assert len(outcome.results) == 1
+
+    def test_healthy_embedder_is_not_degraded(self, vault: Vault, index: Index) -> None:
+        m = _make_memory(body="cloudflare tunnel notes", vault=vault)
+        index.upsert(m)
+        query_vec = _fake_embedding(1)
+        index.upsert_vectors(str(m.id), ["c"], [query_vec])
+        search = Search(vault=vault, index=index, embedder=self._OkEmbedder(query_vec))  # type: ignore[arg-type]
+        outcome = search.search_with_status("cloudflare")
+        assert outcome.degraded is False
+        assert outcome.degraded_reason is None
+        assert outcome.results
+
+    def test_search_keeps_list_shape(self, vault: Vault, index: Index) -> None:
+        """The historical ``search()`` API still returns a plain list."""
+        m = _make_memory(body="cloudflare tunnel notes", vault=vault)
+        index.upsert(m)
+        search = Search(vault=vault, index=index, embedder=self._BoomEmbedder())  # type: ignore[arg-type]
+        results = search.search("cloudflare")
+        assert isinstance(results, list)
+        assert all(isinstance(r, Result) for r in results)

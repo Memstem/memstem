@@ -593,7 +593,7 @@ def _search_via_direct_db(
         )
     try:
         with phase("direct-search") as details:
-            results = Search(vault_obj, index, embedder, reranker=reranker).search(
+            outcome = Search(vault_obj, index, embedder, reranker=reranker).search_with_status(
                 query,
                 limit=limit,
                 types=types,
@@ -607,10 +607,12 @@ def _search_via_direct_db(
                 log_client="cli" if cfg.hygiene.query_log_enabled else None,
                 log_max_rows=cfg.hygiene.query_log_max_rows,
             )
+            results = outcome.results
             details["results"] = len(results)
     finally:
         index.close()
 
+    _print_degradation_notice(outcome.degraded)
     if not results:
         typer.echo("(no results)")
         return
@@ -619,11 +621,25 @@ def _search_via_direct_db(
         typer.echo(f"[{r.score:.4f}] {r.memory.type.value:<8} {title}  ({r.memory.path})")
 
 
+def _print_degradation_notice(degraded: bool) -> None:
+    """One stderr line when a search fell back to keyword-only (ADR 0032).
+
+    Stderr on purpose: scripts piping the CLI's stdout keep parsing the
+    unchanged result lines, while humans see why recall looks thin."""
+    if degraded:
+        typer.echo(
+            "note: embedder unreachable — results are keyword-only (BM25 fallback). "
+            "Run `memstem doctor embedder` to diagnose.",
+            err=True,
+        )
+
+
 def _print_search_hits(hits: list[DaemonSearchHit]) -> None:
     """Render daemon SearchHit objects in the same shape the direct-DB
     path uses. Pulled out so the two code paths produce identical
     output — anything else is a regression that breaks scripts piping
     the CLI."""
+    _print_degradation_notice(any(h.embedder_degraded for h in hits))
     if not hits:
         typer.echo("(no results)")
         return

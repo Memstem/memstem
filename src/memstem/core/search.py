@@ -84,6 +84,30 @@ class Result:
     vec_rank: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class SearchOutcome:
+    """Search results plus retrieval-quality metadata (ADR 0032).
+
+    ``degraded`` is ``True`` when an embedder was *configured* but the vec
+    query failed (auth failure, connection error, timeout, open circuit
+    breaker), forcing keyword-only (BM25) retrieval for this call. Callers
+    that surface results to agents or humans should propagate the flag so
+    "results are keyword-only because the embedder is unreachable" is
+    visible instead of silent.
+
+    A vault with no embedder configured is **not** degraded — BM25-only is
+    its normal operating mode, and flagging it would be permanent noise.
+
+    ``degraded_reason`` carries ``"ExcType: message"`` from the failed vec
+    query for diagnostics (also logged as the existing ``vec query failed;
+    falling back to BM25`` warning).
+    """
+
+    results: list[Result]
+    degraded: bool = False
+    degraded_reason: str | None = None
+
+
 def _sanitize_fts_query(query: str) -> str:
     """Strip FTS5-special characters so natural-language queries don't blow up.
 
@@ -228,7 +252,10 @@ class Search:
 
         BM25 always runs. Vector search runs only when an embedder is configured;
         on embedder failure we log and fall back to BM25-only so the daemon
-        never goes mute.
+        never goes mute. Callers that need to *see* that fallback (ADR 0032)
+        should use :meth:`search_with_status`, which returns the same results
+        wrapped in a :class:`SearchOutcome` with the ``degraded`` flag; this
+        method keeps the historical list-only shape.
 
         ``rrf_k``, ``bm25_weight``, and ``vector_weight`` control the fusion —
         the CLI and MCP server thread the configured ``SearchConfig`` values
@@ -301,10 +328,58 @@ class Search:
         query — HyDE replaces semantic-space proximity, not lexical
         match. With no embedder configured, HyDE is silently skipped.
         """
+        return self.search_with_status(
+            query,
+            limit=limit,
+            types=types,
+            rrf_k=rrf_k,
+            bm25_weight=bm25_weight,
+            vector_weight=vector_weight,
+            importance_weight=importance_weight,
+            type_bias=type_bias,
+            include_expired=include_expired,
+            include_deprecated=include_deprecated,
+            include_deleted=include_deleted,
+            mmr_lambda=mmr_lambda,
+            rerank_top_n=rerank_top_n,
+            use_hyde=use_hyde,
+            log_client=log_client,
+            log_max_rows=log_max_rows,
+        ).results
+
+    def search_with_status(
+        self,
+        query: str,
+        limit: int = 10,
+        types: list[str] | None = None,
+        rrf_k: int = DEFAULT_RRF_K,
+        bm25_weight: float = 1.0,
+        vector_weight: float = 1.0,
+        importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
+        type_bias: dict[str, float] | None = None,
+        include_expired: bool = False,
+        include_deprecated: bool = False,
+        include_deleted: bool = False,
+        mmr_lambda: float | None = None,
+        rerank_top_n: int | None = None,
+        use_hyde: bool = False,
+        log_client: str | None = None,
+        log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
+    ) -> SearchOutcome:
+        """Like :meth:`search`, but returns a :class:`SearchOutcome` (ADR 0032).
+
+        Identical parameters, retrieval, and ranking. The outcome wraps the
+        result list together with the ``degraded`` flag so callers can
+        surface "the embedder failed and this call fell back to keyword-only
+        BM25" instead of hiding it in a log line. See :meth:`search` for the
+        full parameter documentation.
+        """
         bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
 
         vec: list[VecHit] = []
         query_embedding: list[float] | None = None
+        degraded = False
+        degraded_reason: str | None = None
         if self.embedder is not None:
             embed_input = self._maybe_expand_for_hyde(query, use_hyde=use_hyde)
             try:
@@ -320,6 +395,8 @@ class Search:
             except Exception as exc:
                 logger.warning("vec query failed; falling back to BM25: %s", exc)
                 query_embedding = None
+                degraded = True
+                degraded_reason = f"{type(exc).__name__}: {exc}"
 
         fused = rrf_combine(
             bm25,
@@ -363,7 +440,11 @@ class Search:
             self._log_results(
                 query=query, results=results, client=log_client, max_rows=log_max_rows
             )
-        return results
+        return SearchOutcome(
+            results=results,
+            degraded=degraded,
+            degraded_reason=degraded_reason,
+        )
 
     def _first_chunk_embedding(self, memory_id: str) -> list[float] | None:
         """Return the first chunk's embedding for ``memory_id``.
@@ -615,5 +696,6 @@ __all__ = [
     "FusedHit",
     "Result",
     "Search",
+    "SearchOutcome",
     "rrf_combine",
 ]

@@ -89,6 +89,10 @@ class SearchHit:
     bm25_rank: int | None
     vec_rank: int | None
     frontmatter: dict[str, Any]
+    embedder_degraded: bool = False
+    """ADR 0032: ``True`` when the daemon's embedder failed for this call
+    and the results are keyword-only (BM25 fallback). Defaults to False so
+    payloads from older daemons parse unchanged."""
 
 
 class DaemonError(Exception):
@@ -219,6 +223,7 @@ def _hit_from_dict(item: dict[str, Any]) -> SearchHit:
         bm25_rank=item.get("bm25_rank"),
         vec_rank=item.get("vec_rank"),
         frontmatter=dict(item.get("frontmatter") or {}),
+        embedder_degraded=bool(item.get("embedder_degraded", False)),
     )
 
 

@@ -1589,3 +1589,46 @@ class TestDoctorEmbedder:
         result = runner.invoke(app, ["doctor", "--vault", str(initialized_vault)])
         assert result.exit_code == 0, result.output
         assert "All checks passed" in result.output
+
+
+class TestSearchDegradationNotice:
+    """ADR 0032 — the CLI prints a stderr notice when results fell back to
+    keyword-only, keeping stdout parseable for scripts."""
+
+    def test_notice_goes_to_stderr_when_degraded(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from memstem.cli import _print_degradation_notice
+
+        _print_degradation_notice(True)
+        captured = capsys.readouterr()
+        assert "keyword-only" in captured.err
+        assert "memstem doctor embedder" in captured.err
+        assert captured.out == ""
+
+    def test_silent_when_not_degraded(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from memstem.cli import _print_degradation_notice
+
+        _print_degradation_notice(False)
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_daemon_hits_trigger_notice(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from memstem.cli import _print_search_hits
+        from memstem.client import SearchHit as DaemonHit
+
+        hit = DaemonHit(
+            id="11111111-1111-4111-8111-111111111111",
+            title="t",
+            type="memory",
+            snippet="s",
+            score=0.5,
+            path="memories/x.md",
+            bm25_rank=1,
+            vec_rank=None,
+            frontmatter={},
+            embedder_degraded=True,
+        )
+        _print_search_hits([hit])
+        captured = capsys.readouterr()
+        assert "keyword-only" in captured.err
+        assert "[0.5000]" in captured.out

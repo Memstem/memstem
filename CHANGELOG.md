@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exits 1 on failure. This is the check that catches a stale `secrets.yaml` key while
   the daemon (env-keyed) stays green. Bare `memstem doctor` is unchanged.
 
+- **Search results now say when they're degraded (ADR 0032).** When an embedder
+  failure (auth, connection, timeout, open breaker) forces the BM25 keyword-only
+  fallback, the degradation is surfaced instead of hidden in a log line: every hit
+  from MCP `memstem_search` and HTTP `POST /search` carries an additive
+  `embedder_degraded: bool` field, `memstem search` prints a stderr notice, and the
+  new `Search.search_with_status()` returns a `SearchOutcome` with
+  `degraded`/`degraded_reason` for internal callers. `Search.search()` keeps its
+  list-only shape, older clients ignore the extra field, and the existing
+  `vec query failed; falling back to BM25` warning is preserved.
+
 - **Embed-client resilience (ADR 0030): interactive searches no longer hang when the
   embedder has a transient blip.** A separate short `query_timeout` (default 5s) for
   search-query embedding — distinct from the generous document `timeout` (default 120s,
