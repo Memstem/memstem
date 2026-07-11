@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   weeks. Idempotent (no write when equal), guarded to keyed providers (never
   ollama/local), one masked info log line on write, non-fatal on write failure.
 
+- **`memstem doctor embedder` — cold-path embedder auth self-test.** Resolves the API
+  key exactly the way a cold-spawned process would (env var first, then
+  `~/.config/memstem/secrets.yaml`) and performs one tiny embedding round-trip against
+  the configured endpoint, reporting OK/FAIL with the HTTP status, key source
+  (env/file, masked), dimensions, and latency. `--json` emits a structured report;
+  exits 1 on failure. This is the check that catches a stale `secrets.yaml` key while
+  the daemon (env-keyed) stays green. Bare `memstem doctor` is unchanged.
+
 - **Embed-client resilience (ADR 0030): interactive searches no longer hang when the
   embedder has a transient blip.** A separate short `query_timeout` (default 5s) for
   search-query embedding — distinct from the generous document `timeout` (default 120s,

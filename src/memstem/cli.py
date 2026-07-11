@@ -981,11 +981,28 @@ def _doctor_run(cfg: Config) -> int:
     return failures
 
 
-@app.command()
+doctor_app = typer.Typer(
+    name="doctor",
+    help="Verify the install: Python, vault, index, embedder, adapter targets.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(doctor_app)
+
+
+@doctor_app.callback()
 def doctor(
+    ctx: typer.Context,
     vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
 ) -> None:
-    """Verify the install: Python, vault, index, Ollama, adapter targets."""
+    """Verify the install: Python, vault, index, Ollama, adapter targets.
+
+    Bare ``memstem doctor`` runs the full install check (unchanged
+    behaviour). Subcommands run focused probes — see ``memstem doctor
+    embedder`` for the cold-path embedder auth self-test.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
     cfg = _load_config(_resolve_vault_path(vault))
     typer.echo(f"Memstem doctor (vault={cfg.vault_path}):\n")
     failures = _doctor_run(cfg)
@@ -995,6 +1012,133 @@ def doctor(
         raise typer.Exit(1)
     typer.echo("All checks passed.")
     _maybe_print_star_nudge(typer.echo)
+
+
+def _http_status_from_exception(exc: BaseException) -> int | None:
+    """Dig the HTTP status code out of an exception's cause chain.
+
+    The embedder backends raise :class:`EmbeddingError` ``from`` the
+    underlying :class:`httpx.HTTPStatusError`, so the status (401, 413,
+    500, ...) lives on ``__cause__``. Network-level failures (connection
+    refused, DNS, timeout) have no status — return ``None``.
+    """
+    import httpx
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, httpx.HTTPStatusError):
+            return cur.response.status_code
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def _embedder_selftest(cfg: Config) -> dict[str, Any]:
+    """Run the embedder auth self-test exactly the way a COLD spawn would.
+
+    Resolves the API key via :func:`memstem.auth.get_secret` (env var
+    first, then ``secrets.yaml``) inside the normal ``embed_for``
+    construction path, then performs one tiny query-embed round-trip
+    against the configured endpoint. Uses ``embed_query`` so the short
+    interactive ``query_timeout`` (ADR 0030) applies — the whole test is
+    a single small request.
+
+    Returns a structured report; never raises. This is the check that
+    catches the "daemon embeds fine (env key) but every cold-spawned MCP
+    server gets 401s from a stale secrets.yaml key" failure mode that
+    ADR 0031 self-heals.
+    """
+    import time
+
+    from memstem import auth
+
+    e = cfg.embedding
+    provider = e.provider.lower()
+    env_name = e.api_key_env or auth.PROVIDERS.get(provider)
+    key_source: str | None = None
+    masked_key: str | None = None
+    if env_name:
+        env_val = os.environ.get(env_name, "").strip()
+        if env_val:
+            key_source = f"env:{env_name}"
+            masked_key = auth.mask(env_val)
+        else:
+            file_val = auth.get_secret(provider, env_var=env_name)
+            if file_val:
+                key_source = f"file:{auth.secrets_path()}"
+                masked_key = auth.mask(file_val)
+
+    report: dict[str, Any] = {
+        "ok": False,
+        "provider": provider,
+        "model": e.model,
+        "base_url": e.base_url,
+        "key_source": key_source,
+        "key": masked_key,
+        "http_status": None,
+        "dimensions": None,
+        "elapsed_ms": None,
+        "error": None,
+    }
+    started = time.monotonic()
+    try:
+        with embed_for(e) as embedder:
+            report["base_url"] = getattr(embedder, "base_url", e.base_url)
+            vec = embedder.embed_query("memstem doctor: embedder self-test")
+        report["ok"] = True
+        # embed_query succeeded, which for every HTTP backend means a 2xx
+        # answer; report the canonical 200 so scripts get a stable field.
+        report["http_status"] = 200
+        report["dimensions"] = len(vec)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["http_status"] = _http_status_from_exception(exc)
+    report["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
+    return report
+
+
+@doctor_app.command("embedder")
+def doctor_embedder(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the report as a single JSON object."),
+    ] = False,
+) -> None:
+    """Cold-path embedder auth self-test (one tiny embedding round-trip).
+
+    Resolves the API key the way a cold-spawned process would — env var
+    first, then ``~/.config/memstem/secrets.yaml`` — and embeds a single
+    tiny input against the configured endpoint, reporting OK/FAIL with
+    the HTTP status. The daemon can embed fine with the key in its
+    environment while every per-session ``memstem mcp`` spawn falls back
+    to a stale file key, gets 401s, and silently degrades to keyword-only
+    search; this command exercises that exact spawn path. Exits 1 on
+    failure.
+    """
+    import json
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    report = _embedder_selftest(cfg)
+    if json_output:
+        typer.echo(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        typer.echo(f"embedder self-test: {'OK' if report['ok'] else 'FAIL'}")
+        typer.echo(f"  provider:    {report['provider']} ({report['model']})")
+        typer.echo(f"  base_url:    {report['base_url']}")
+        typer.echo(f"  key_source:  {report['key_source'] or '(no key resolved)'}")
+        if report["key"]:
+            typer.echo(f"  key:         {report['key']}")
+        if report["http_status"] is not None:
+            typer.echo(f"  http_status: {report['http_status']}")
+        if report["dimensions"] is not None:
+            typer.echo(f"  dimensions:  {report['dimensions']}")
+        typer.echo(f"  elapsed_ms:  {report['elapsed_ms']}")
+        if report["error"]:
+            typer.echo(f"  error:       {report['error']}")
+    if not report["ok"]:
+        raise typer.Exit(1)
 
 
 async def _drain_into_pipeline(
