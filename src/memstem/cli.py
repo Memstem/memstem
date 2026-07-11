@@ -1884,12 +1884,53 @@ def connect_clients(
     typer.echo("\nDone." if not dry_run else "\nDry run complete; no files written.")
 
 
+def _sync_embedder_secret(cfg: Config) -> None:
+    """Mirror the daemon's env-resolved embedder key into secrets.yaml (ADR 0031).
+
+    The daemon is typically launched with the key in its environment, so it
+    embeds fine even when ``~/.config/memstem/secrets.yaml`` is stale. But
+    cold-spawned processes — the per-session ``memstem mcp`` stdio server,
+    the plain CLI — run *without* that env var and fall back to the file. If
+    the two diverge, those processes get 401s from the embedder and search
+    silently degrades to BM25-only. Persisting the resolved key at daemon
+    startup guarantees the fallback file can never go stale relative to what
+    the daemon actually uses.
+
+    Only providers in :data:`memstem.auth.PROVIDERS` are synced (ollama/local
+    needs no key). A write failure is logged, never fatal — the daemon must
+    still come up on a read-only ``~/.config``.
+    """
+    from memstem import auth
+
+    provider = cfg.embedding.provider.lower()
+    if provider not in auth.PROVIDERS:
+        return
+    env_name = cfg.embedding.api_key_env or auth.PROVIDERS[provider]
+    try:
+        if auth.sync_env_secret_to_file(provider, env_var=cfg.embedding.api_key_env):
+            key = os.environ.get(env_name, "").strip()
+            logger.info(
+                "daemon: persisted %s embedder key %s from $%s to %s so "
+                "cold-spawned processes (MCP server, CLI) resolve the same key",
+                provider,
+                auth.mask(key),
+                env_name,
+                auth.secrets_path(),
+            )
+    except OSError as exc:
+        logger.warning("daemon: could not persist embedder key to %s: %s", auth.secrets_path(), exc)
+
+
 @app.command()
 def daemon(
     vault: str | None = typer.Option(None, help="Vault path override"),
 ) -> None:
     """Run adapter reconcile + watch loop, ingesting into the vault and index."""
     cfg = _load_config(_resolve_vault_path(vault))
+    # ADR 0031: self-heal the cold-spawn key fallback before anything else —
+    # the embedder key this process resolved from its env becomes the
+    # secrets.yaml value every keyless spawn will fall back to.
+    _sync_embedder_secret(cfg)
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
     embedder = _maybe_embedder(cfg)

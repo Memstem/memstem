@@ -12,7 +12,8 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from memstem.cli import _load_config, app
+from memstem.cli import _load_config, _sync_embedder_secret, app
+from memstem.config import Config, EmbeddingConfig
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
 from memstem.core.storage import Memory, Vault
@@ -1301,3 +1302,97 @@ class TestLoadConfigFallback:
             cfg = _load_config(tmp_path)
         assert cfg.embedding.provider == "openai"
         assert "config.yaml" not in caplog.text
+
+
+class TestDaemonSecretSync:
+    """ADR 0031 — daemon startup persists the env-resolved embedder key into
+    ``secrets.yaml`` so cold-spawned MCP/CLI processes never fall back to a
+    stale key. Exercises the ``_sync_embedder_secret`` startup hook directly
+    (running the full daemon loop in a unit test is out of scope)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_secrets(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        secrets_file = tmp_path / "secrets.yaml"
+        monkeypatch.setenv("MEMSTEM_SECRETS_FILE", str(secrets_file))
+        for var in ("OPENAI_API_KEY", "GEMINI_API_KEY", "VOYAGE_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        self.secrets_file = secrets_file
+        return secrets_file
+
+    def _cfg(self, tmp_path: Path, **embedding: object) -> Config:
+        return Config(
+            vault_path=tmp_path / "vault",
+            embedding=EmbeddingConfig(**embedding),  # type: ignore[arg-type]
+        )
+
+    def test_persists_env_key_and_logs_masked(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-daemon-env-key-123456")
+        cfg = self._cfg(tmp_path, provider="openai", model="m", dimensions=8)
+        with caplog.at_level(logging.INFO, logger="memstem.cli"):
+            _sync_embedder_secret(cfg)
+        stored = yaml.safe_load(self.secrets_file.read_text())
+        assert stored == {"openai": "sk-daemon-env-key-123456"}
+        assert "persisted openai embedder key" in caplog.text
+        # The key itself must never land in the logs — only the mask.
+        assert "sk-daemon-env-key-123456" not in caplog.text
+        assert "sk-dae…3456" in caplog.text
+
+    def test_heals_stale_file_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-proj-stale-openai-key")  # the fleet-wide incident shape
+        monkeypatch.setenv("OPENAI_API_KEY", "vllm-sidecar-current-key")
+        _sync_embedder_secret(self._cfg(tmp_path, provider="openai", model="m", dimensions=8))
+        monkeypatch.delenv("OPENAI_API_KEY")
+        assert auth.get_secret("openai") == "vllm-sidecar-current-key"
+
+    def test_idempotent_no_rewrite_when_equal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from memstem import auth
+
+        auth.set_secret("openai", "sk-same")
+        before = self.secrets_file.read_bytes()
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-same")
+        with caplog.at_level(logging.INFO, logger="memstem.cli"):
+            _sync_embedder_secret(self._cfg(tmp_path, provider="openai", model="m", dimensions=8))
+        assert self.secrets_file.read_bytes() == before
+        assert "persisted" not in caplog.text
+
+    def test_honors_custom_api_key_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from memstem import auth
+
+        monkeypatch.setenv("MEMSTEM_EMBED_KEY", "custom-var-key")
+        cfg = self._cfg(
+            tmp_path,
+            provider="openai",
+            model="m",
+            dimensions=8,
+            api_key_env="MEMSTEM_EMBED_KEY",
+        )
+        _sync_embedder_secret(cfg)
+        monkeypatch.delenv("MEMSTEM_EMBED_KEY")
+        assert auth.get_secret("openai") == "custom-var-key"
+
+    def test_skips_keyless_provider(self, tmp_path: Path) -> None:
+        _sync_embedder_secret(self._cfg(tmp_path, provider="ollama"))
+        assert not self.secrets_file.exists()
+
+    def test_write_failure_is_nonfatal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-key")
+        monkeypatch.setattr(
+            "memstem.auth.sync_env_secret_to_file",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("read-only filesystem")),
+        )
+        with caplog.at_level(logging.WARNING, logger="memstem.cli"):
+            _sync_embedder_secret(self._cfg(tmp_path, provider="openai", model="m", dimensions=8))
+        assert "could not persist embedder key" in caplog.text

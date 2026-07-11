@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Daemon self-heals the cold-spawn key fallback (ADR 0031).** On startup, when the
+  embedder API key was resolved from the daemon's environment and
+  `~/.config/memstem/secrets.yaml` is missing the provider entry or holds a different
+  (stale) value, the daemon persists the env key into the secrets file
+  (`auth.sync_env_secret_to_file`). Cold-spawned processes — the per-session
+  `memstem mcp` server and the plain CLI — fall back to that file when they run without
+  the env var; a stale file key meant embedder 401s and silent BM25-only search for
+  weeks. Idempotent (no write when equal), guarded to keyed providers (never
+  ollama/local), one masked info log line on write, non-fatal on write failure.
+
 - **Embed-client resilience (ADR 0030): interactive searches no longer hang when the
   embedder has a transient blip.** A separate short `query_timeout` (default 5s) for
   search-query embedding — distinct from the generous document `timeout` (default 120s,
