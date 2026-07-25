@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Daily logs no longer overwrite each other (ADR 0033).** The vault path for a `daily`
+  record was `daily/<agent>/<created-date>.md`, where `created` falls back to the source
+  file's mtime in UTC. Two consequences, both observed in production: an agent in a
+  western timezone appending to `2026-02-01.md` in the evening stamped `2026-02-02` and
+  displaced the next day's log, cascading through the run; and every dated file in a
+  workspace — `memory/2026-04-15.md`, `memory/dreaming/rem/2026-04-15.md`,
+  `memory/voice-reviews/2026-04-15.md` — competed for one slot, last writer winning. In
+  the vault this was found on, 250 dated source files had collapsed into 159 slots and
+  39 daily journals were unreachable through search. The date now comes from the source
+  *filename* (`daily_date`) and dated sub-directories get their own namespace
+  (`daily_scope`), so the main journal keeps `daily/<agent>/<date>.md` while
+  `memory/dreaming/rem/` lands under `daily/<agent>/dreaming/rem/`. Both are validated at
+  the pipeline boundary against path traversal. Existing vaults need a one-shot
+  relocation — `scripts/migrate_daily_paths.py` (dry run by default) moves each daily
+  memory to its correct path, preserving ids, links and embeddings; the next reconcile
+  refills the freed slots.
+
 ## [0.19.0] - 2026-07-11
 
 ### Added

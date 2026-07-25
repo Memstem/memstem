@@ -106,6 +106,19 @@ class TestFileToRecord:
         assert record is not None
         assert record.metadata["type"] == "daily"
 
+    def test_daily_record_carries_filename_date(self, tmp_path: Path) -> None:
+        """ADR 0033 — the slot date must not depend on mtime."""
+        path = _write(tmp_path / "memory/2026-04-25.md", "# 2026-04-25\n\nlog")
+        record = _file_to_record(path, "openclaw")
+        assert record is not None
+        assert record.metadata["daily_date"] == "2026-04-25"
+
+    def test_non_daily_record_has_no_daily_date(self, tmp_path: Path) -> None:
+        path = _write(tmp_path / "memory/people.md", "# People")
+        record = _file_to_record(path, "openclaw")
+        assert record is not None
+        assert "daily_date" not in record.metadata
+
     def test_unreadable_file_returns_none(self, tmp_path: Path) -> None:
         # Path doesn't exist
         record = _file_to_record(tmp_path / "missing.md", "openclaw")
@@ -170,6 +183,33 @@ class TestWatch:
             await watcher.aclose()
         assert record.title == "Watched"
         assert record.source == "openclaw"
+
+
+class TestDailyScope:
+    """ADR 0033 — dated files outside the memory root get their own namespace."""
+
+    async def test_reconcile_scopes_dated_subdirectory_files(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "memory/2026-04-15.md", "# 2026-04-15\n\nthe real journal")
+        _write(ws_root / "memory/dreaming/rem/2026-04-15.md", "# 2026-04-15\n\nrem artifact")
+        _write(ws_root / "memory/voice-reviews/2026-04-15.md", "# 2026-04-15\n\ncall review")
+        ws = OpenClawWorkspace(path=ws_root, tag="ari")
+
+        records = await _drain(OpenClawAdapter(workspaces=[ws]).reconcile([]))
+        scopes = {r.ref: r.metadata.get("daily_scope") for r in records}
+
+        assert scopes[str(ws_root / "memory/2026-04-15.md")] is None
+        assert scopes[str(ws_root / "memory/dreaming/rem/2026-04-15.md")] == "dreaming/rem"
+        assert scopes[str(ws_root / "memory/voice-reviews/2026-04-15.md")] == "voice-reviews"
+
+    async def test_non_daily_files_get_no_scope(self, tmp_path: Path) -> None:
+        ws_root = tmp_path / "ari"
+        _write(ws_root / "memory/dreaming/rem/notes.md", "# Notes")
+        ws = OpenClawWorkspace(path=ws_root, tag="ari")
+
+        records = await _drain(OpenClawAdapter(workspaces=[ws]).reconcile([]))
+        assert len(records) == 1
+        assert "daily_scope" not in records[0].metadata
 
 
 class TestClassifyWorkspacePath:
