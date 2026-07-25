@@ -191,6 +191,105 @@ class TestPathForMemory:
         assert skill.path == Path("skills/deploy.md")
         assert daily.path == Path("daily/2026-04-26.md")
 
+    def test_daily_date_comes_from_filename_not_mtime(self, vault: Vault, index: Index) -> None:
+        """ADR 0033: an evening edit west of Greenwich must not shift the slot.
+
+        `created` degrades to the source file's mtime in UTC, so appending to
+        2026-02-01.md at 19:00 ET stamps 2026-02-02 — which used to overwrite
+        the next day's log.
+        """
+        pipe = Pipeline(vault, index)
+        daily = _processed(
+            pipe,
+            _record(
+                body="Ari's journal entry written on the evening of Feb 1 ET.",
+                ref="/home/ubuntu/ari/memory/2026-02-01.md",
+                title="2026-02-01",
+                type_="daily",
+                tags=["agent:ari"],
+                extra_metadata={
+                    "created": "2026-02-02T00:14:00+00:00",
+                    "daily_date": "2026-02-01",
+                },
+            ),
+        )
+        assert daily.path == Path("daily/ari/2026-02-01.md")
+
+    def test_daily_scope_namespaces_dated_subdirectories(self, vault: Vault, index: Index) -> None:
+        """ADR 0033: dated files in different sub-dirs get their own slots."""
+        pipe = Pipeline(vault, index)
+        journal = _processed(
+            pipe,
+            _record(
+                body="The actual journal entry for 2026-04-15.",
+                ref="/home/ubuntu/ari/memory/2026-04-15.md",
+                title="2026-04-15",
+                type_="daily",
+                tags=["agent:ari"],
+                extra_metadata={"daily_date": "2026-04-15"},
+            ),
+        )
+        dreaming = _processed(
+            pipe,
+            _record(
+                body="A REM-phase dreaming artifact generated for 2026-04-15.",
+                ref="/home/ubuntu/ari/memory/dreaming/rem/2026-04-15.md",
+                title="2026-04-15",
+                type_="daily",
+                tags=["agent:ari"],
+                extra_metadata={
+                    "daily_date": "2026-04-15",
+                    "daily_scope": "dreaming/rem",
+                },
+            ),
+        )
+        assert journal.path == Path("daily/ari/2026-04-15.md")
+        assert dreaming.path == Path("daily/ari/dreaming/rem/2026-04-15.md")
+        assert journal.path != dreaming.path
+
+    @pytest.mark.parametrize(
+        "bad_scope",
+        ["../../etc", "..", "_meta", "a/../../b", "C:\\windows"],
+    )
+    def test_malformed_daily_scope_is_rejected(
+        self, vault: Vault, index: Index, bad_scope: str
+    ) -> None:
+        """A bad adapter must not be able to write outside `daily/`."""
+        pipe = Pipeline(vault, index)
+        daily = _processed(
+            pipe,
+            _record(
+                body=f"Daily body probing scope {bad_scope!r} for traversal.",
+                ref="/home/ubuntu/ari/memory/2026-04-15.md",
+                title="2026-04-15",
+                type_="daily",
+                tags=["agent:ari"],
+                extra_metadata={
+                    "daily_date": "2026-04-15",
+                    "daily_scope": bad_scope,
+                },
+            ),
+        )
+        assert daily.path == Path("daily/ari/2026-04-15.md")
+
+    def test_malformed_daily_date_falls_back_to_created(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        daily = _processed(
+            pipe,
+            _record(
+                body="Daily body with an unusable filename-derived date.",
+                ref="/home/ubuntu/ari/memory/nope.md",
+                title="nope",
+                type_="daily",
+                tags=["agent:ari"],
+                extra_metadata={
+                    "created": "2026-04-26T00:00:00+00:00",
+                    "daily_date": "../../../etc/passwd",
+                },
+            ),
+        )
+        assert daily.path == Path("daily/ari/2026-04-26.md")
+
 
 class TestProcess:
     def test_creates_memory_in_vault(self, vault: Vault, index: Index) -> None:

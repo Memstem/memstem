@@ -14,6 +14,7 @@ update the same Memory instead of creating duplicates.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -86,6 +87,45 @@ def _agent_tag(record: MemoryRecord) -> str | None:
     return None
 
 
+_DAILY_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _daily_date(fm: Frontmatter, record: MemoryRecord) -> str:
+    """Date component of a daily log's vault path (ADR 0033).
+
+    The source *filename* is authoritative — `fm.created` falls back to the
+    file's mtime in UTC, so an agent in a western timezone appending to
+    `2026-02-01.md` in the evening stamps `2026-02-02` and silently
+    overwrites the next day's log. Adapters that classify a record as daily
+    supply the filename date; anything else keeps the legacy derivation.
+    """
+    supplied = record.metadata.get("daily_date")
+    if isinstance(supplied, str) and _DAILY_DATE_RE.match(supplied):
+        return supplied
+    return fm.created.date().isoformat()
+
+
+def _daily_scope(record: MemoryRecord) -> str | None:
+    """Sub-namespace for a daily log, or None for the agent's main journal.
+
+    `YYYY-MM-DD.md` is not unique inside a workspace — dated files also live
+    under `memory/dreaming/rem/`, `memory/voice-reviews/`, and friends. The
+    adapter reports the source's directory relative to the memory dir it was
+    found under; we validate it here so a malformed adapter can't escape
+    `daily/`.
+    """
+    scope = record.metadata.get("daily_scope")
+    if not isinstance(scope, str) or not scope.strip():
+        return None
+    segments = [seg for seg in scope.split("/") if seg]
+    if not segments:
+        return None
+    for seg in segments:
+        if seg in (".", "..") or seg.startswith("_") or "\\" in seg or ":" in seg:
+            return None
+    return "/".join(segments)
+
+
 def _path_for_memory(fm: Frontmatter, record: MemoryRecord) -> Path:
     agent = _agent_tag(record)
     if fm.type is MemoryType.SKILL:
@@ -98,10 +138,14 @@ def _path_for_memory(fm: Frontmatter, record: MemoryRecord) -> Path:
         session_id = record.metadata.get("session_id") or str(fm.id)
         return Path(f"sessions/{session_id}.md")
     if fm.type is MemoryType.DAILY:
-        date = fm.created.date().isoformat()
+        parts = ["daily"]
         if agent:
-            return Path(f"daily/{agent}/{date}.md")
-        return Path(f"daily/{date}.md")
+            parts.append(agent)
+        scope = _daily_scope(record)
+        if scope:
+            parts.append(scope)
+        parts.append(f"{_daily_date(fm, record)}.md")
+        return Path("/".join(parts))
     if agent:
         return Path(f"memories/{record.source}/{agent}/{fm.id}.md")
     return Path(f"memories/{record.source}/{fm.id}.md")

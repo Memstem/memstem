@@ -102,10 +102,10 @@ A new `CodexAdapterConfig` block in `src/memstem/config.py` exposes:
 
 ```python
 class CodexAdapterConfig(BaseModel):
-    codex_home: Path | None = None              # defaults to ~/.codex
-    sessions_root: Path | None = None           # defaults to <codex_home>/sessions
-    skills_root: Path | None = None             # defaults to <codex_home>/skills
-    memories_root: Path | None = None           # defaults to <codex_home>/memories
+    codex_home: Path | None = None  # defaults to ~/.codex
+    sessions_root: Path | None = None  # defaults to <codex_home>/sessions
+    skills_root: Path | None = None  # defaults to <codex_home>/skills
+    memories_root: Path | None = None  # defaults to <codex_home>/memories
     ingest_sessions: bool = True
     ingest_skills: bool = True
     ingest_memories: bool = True

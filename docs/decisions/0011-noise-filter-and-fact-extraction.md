@@ -191,14 +191,9 @@ def extract(record: MemoryRecord) -> list[MemoryRecord]:
     if decision.action == "DROP":
         return []
     if decision.action == "TAG_TRANSIENT":
-        record.frontmatter.valid_to = (
-            record.created + timedelta(days=decision.ttl_days)
-        )
+        record.frontmatter.valid_to = record.created + timedelta(days=decision.ttl_days)
 
-    needs_extraction = (
-        record.type == "session"
-        or len(record.body) >= EXTRACTION_LENGTH_THRESHOLD
-    )
+    needs_extraction = record.type == "session" or len(record.body) >= EXTRACTION_LENGTH_THRESHOLD
     if not needs_extraction:
         return [record]
 
