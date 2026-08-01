@@ -366,7 +366,7 @@ class TestRequestClamps:
 
         _write_memory(vault, index, body="clamp probe")
         seen: dict[str, Any] = {}
-        original = Search.search
+        original = Search.search_with_status
 
         def spy(self: Search, **kwargs: Any) -> Any:
             seen.update(kwargs)
@@ -374,7 +374,7 @@ class TestRequestClamps:
 
         app = build_app(vault, index)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(Search, "search", spy)
+            mp.setattr(Search, "search_with_status", spy)
             client = TestClient(app)
             r = client.post("/search", json={"query": "clamp", "limit": 10**9})
         assert r.status_code == 200
@@ -388,7 +388,7 @@ class TestRequestClamps:
 
         _write_memory(vault, index, body="clamp probe")
         seen: dict[str, Any] = {}
-        original = Search.search
+        original = Search.search_with_status
 
         def spy(self: Search, **kwargs: Any) -> Any:
             seen.update(kwargs)
@@ -396,7 +396,7 @@ class TestRequestClamps:
 
         app = build_app(vault, index)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(Search, "search", spy)
+            mp.setattr(Search, "search_with_status", spy)
             client = TestClient(app)
             r = client.post("/search", json={"query": "clamp", "rerank_top_n": 10**6})
         assert r.status_code == 200
@@ -412,7 +412,7 @@ class TestRequestClamps:
 
         _write_memory(vault, index, body="clamp probe")
         seen: dict[str, Any] = {}
-        original = Search.search
+        original = Search.search_with_status
 
         def spy(self: Search, **kwargs: Any) -> Any:
             seen.update(kwargs)
@@ -420,9 +420,48 @@ class TestRequestClamps:
 
         app = build_app(vault, index)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(Search, "search", spy)
+            mp.setattr(Search, "search_with_status", spy)
             client = TestClient(app)
             r = client.post("/search", json={"query": "clamp"})
         assert r.status_code == 200
         # Reranker disabled in default SearchConfig → effective default is None.
         assert seen["rerank_top_n"] is None
+
+
+class TestSearchDegradationFlag:
+    """ADR 0032 — /search hits carry ``embedder_degraded``."""
+
+    class _BoomEmbedder:
+        """Fails like an embedder rejecting a stale key (401)."""
+
+        def embed(self, text: str) -> list[float]:
+            raise RuntimeError("401 Unauthorized")
+
+        def embed_query(self, text: str) -> list[float]:
+            return self.embed(text)
+
+        def close(self) -> None: ...
+
+    def test_flag_true_when_embedder_fails(self, vault: Vault, index: Index) -> None:
+        _write_memory(vault, index, title="hit", body="cloudflare tunnel setup")
+        app = build_app(
+            vault,
+            index,
+            embedder=self._BoomEmbedder(),  # type: ignore[arg-type]
+            search_config=SearchConfig(),
+        )
+        r = TestClient(app).post("/search", json={"query": "cloudflare"})
+        assert r.status_code == 200
+        results = r.json()
+        assert len(results) == 1
+        assert results[0]["embedder_degraded"] is True
+
+    def test_flag_false_without_embedder(
+        self, vault: Vault, index: Index, client: TestClient
+    ) -> None:
+        _write_memory(vault, index, title="hit", body="cloudflare tunnel setup")
+        r = client.post("/search", json={"query": "cloudflare"})
+        assert r.status_code == 200
+        results = r.json()
+        assert len(results) == 1
+        assert results[0]["embedder_degraded"] is False

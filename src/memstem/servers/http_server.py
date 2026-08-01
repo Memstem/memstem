@@ -86,6 +86,12 @@ class SearchHit(BaseModel):
     bm25_rank: int | None
     vec_rank: int | None
     frontmatter: dict[str, Any] = Field(default_factory=dict)
+    embedder_degraded: bool = False
+    """ADR 0032: ``True`` when the embedder failed for this call and the
+    results are keyword-only (BM25 fallback) — expect reduced semantic
+    recall. Additive with a default so older clients are unaffected;
+    per-hit (rather than a response envelope) to keep the list-of-hits
+    payload shape backward compatible."""
 
 
 class MemoryDetail(BaseModel):
@@ -106,7 +112,7 @@ def _snippet(body: str, length: int = SNIPPET_CHARS) -> str:
     return text[:length].rstrip() + "…"
 
 
-def _serialize_result(result: Result) -> SearchHit:
+def _serialize_result(result: Result, *, embedder_degraded: bool = False) -> SearchHit:
     memory = result.memory
     return SearchHit(
         id=str(memory.id),
@@ -118,6 +124,7 @@ def _serialize_result(result: Result) -> SearchHit:
         bm25_rank=result.bm25_rank,
         vec_rank=result.vec_rank,
         frontmatter=memory.frontmatter.model_dump(mode="json", exclude_none=True),
+        embedder_degraded=embedder_degraded,
     )
 
 
@@ -280,15 +287,20 @@ def build_app(
 
     @app.post("/search", response_model=list[SearchHit])
     async def do_search(req: SearchRequest) -> list[SearchHit]:
-        """Hybrid keyword + semantic search across memories and skills."""
+        """Hybrid keyword + semantic search across memories and skills.
 
-        # search.search() makes blocking embedder/reranker HTTP calls (up to
+        Each hit carries ``embedder_degraded`` (ADR 0032): ``true`` means the
+        embedder was unreachable for this call and the results are
+        keyword-only (BM25 fallback).
+        """
+
+        # The search runs blocking embedder/reranker HTTP calls (up to
         # the embedder's ~120s timeout) and synchronous SQLite reads. Run it in
         # a worker thread so a slow or hung backend can't freeze the daemon's
         # event loop (ingestion, hygiene, /health all share it). Index.lock
         # keeps the shared connection safe across threads.
         def _run() -> list[SearchHit]:
-            results = search.search(
+            outcome = search.search_with_status(
                 query=req.query,
                 limit=clamp_limit(req.limit),
                 types=req.types,
@@ -314,7 +326,9 @@ def build_app(
                 log_client=log_client,
                 log_max_rows=hc.query_log_max_rows,
             )
-            return [_serialize_result(r) for r in results]
+            return [
+                _serialize_result(r, embedder_degraded=outcome.degraded) for r in outcome.results
+            ]
 
         return await asyncio.to_thread(_run)
 

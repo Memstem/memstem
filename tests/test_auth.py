@@ -187,3 +187,74 @@ class TestLoadResilience:
         _isolated_secrets_file.parent.mkdir(parents=True, exist_ok=True)
         _isolated_secrets_file.write_text("openai: ''\nvoyage: real-key\n")
         assert auth._load() == {"voyage": "real-key"}
+
+
+class TestSyncEnvSecretToFile:
+    """ADR 0031 — daemon startup mirrors the env-resolved key into the file."""
+
+    def test_writes_when_file_missing(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-daemon-env-key")
+        assert auth.sync_env_secret_to_file("openai") is True
+        assert _isolated_secrets_file.is_file()
+        # Simulate the cold-spawn path: no env var, file fallback only.
+        monkeypatch.delenv("OPENAI_API_KEY")
+        assert auth.get_secret("openai") == "sk-daemon-env-key"
+
+    def test_overwrites_stale_file_value(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        auth.set_secret("openai", "sk-proj-stale-pre-migration")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fresh-daemon-key")
+        assert auth.sync_env_secret_to_file("openai") is True
+        monkeypatch.delenv("OPENAI_API_KEY")
+        assert auth.get_secret("openai") == "sk-fresh-daemon-key"
+
+    def test_noop_when_file_already_equal(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        auth.set_secret("openai", "sk-same")
+        before = _isolated_secrets_file.read_bytes()
+        before_mtime = _isolated_secrets_file.stat().st_mtime_ns
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-same")
+        assert auth.sync_env_secret_to_file("openai") is False
+        assert _isolated_secrets_file.read_bytes() == before
+        assert _isolated_secrets_file.stat().st_mtime_ns == before_mtime
+
+    def test_noop_when_env_unset(self, _isolated_secrets_file: Path) -> None:
+        assert auth.sync_env_secret_to_file("openai") is False
+        assert not _isolated_secrets_file.exists()
+
+    def test_noop_when_env_blank(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "   ")
+        assert auth.sync_env_secret_to_file("openai") is False
+        assert not _isolated_secrets_file.exists()
+
+    def test_never_syncs_unknown_or_keyless_provider(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ollama is local-only and deliberately absent from PROVIDERS.
+        monkeypatch.setenv("OLLAMA_API_KEY", "should-not-be-stored")
+        assert auth.sync_env_secret_to_file("ollama", env_var="OLLAMA_API_KEY") is False
+        assert not _isolated_secrets_file.exists()
+
+    def test_custom_env_var_honored(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Self-hosted OpenAI-compatible endpoints often use a dedicated var.
+        monkeypatch.setenv("MEMSTEM_EMBED_KEY", "vllm-sidecar-key")
+        assert auth.sync_env_secret_to_file("openai", env_var="MEMSTEM_EMBED_KEY") is True
+        monkeypatch.delenv("MEMSTEM_EMBED_KEY")
+        # Stored under the provider name, so the cold path's
+        # get_secret("openai", env_var=...) file fallback finds it.
+        assert auth.get_secret("openai", env_var="MEMSTEM_EMBED_KEY") == "vllm-sidecar-key"
+
+    def test_strips_whitespace_before_compare_and_store(
+        self, _isolated_secrets_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        auth.set_secret("openai", "sk-padded")
+        monkeypatch.setenv("OPENAI_API_KEY", "  sk-padded  ")
+        assert auth.sync_env_secret_to_file("openai") is False

@@ -86,6 +86,33 @@ def set_secret(provider: str, key: str) -> None:
     _save(secrets)
 
 
+def sync_env_secret_to_file(provider: str, env_var: str | None = None) -> bool:
+    """Mirror an env-resolved key into the secrets file (ADR 0031 self-heal).
+
+    When ``provider``'s key is currently set in the environment (checking
+    ``env_var`` if given, otherwise ``PROVIDERS[provider]``) and the secrets
+    file either lacks the provider entry or holds a *different* value, persist
+    the env value via :func:`set_secret` so cold-spawned processes (the
+    per-session ``memstem mcp`` server, the CLI) that run without the env var
+    resolve the same key the daemon uses.
+
+    Returns ``True`` iff the file was written. Idempotent: no write when the
+    stored value already equals the env value. Providers outside
+    :data:`PROVIDERS` (e.g. ``ollama``, which needs no key) are never synced.
+    """
+    provider = provider.lower()
+    if provider not in PROVIDERS:
+        return False
+    env_name = env_var if env_var else PROVIDERS[provider]
+    val = os.environ.get(env_name, "").strip()
+    if not val:
+        return False
+    if _load().get(provider) == val:
+        return False
+    set_secret(provider, val)
+    return True
+
+
 def remove_secret(provider: str) -> bool:
     """Drop ``provider``'s entry. Returns True if something was removed."""
     provider = provider.lower()
@@ -121,4 +148,5 @@ __all__ = [
     "remove_secret",
     "secrets_path",
     "set_secret",
+    "sync_env_secret_to_file",
 ]

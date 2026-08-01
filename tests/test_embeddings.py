@@ -14,6 +14,7 @@ from memstem.config import EmbeddingConfig
 from memstem.core.embeddings import (
     DEFAULT_DIMENSIONS,
     DEFAULT_MODEL,
+    Embedder,
     EmbeddingError,
     GeminiEmbedder,
     OllamaEmbedder,
@@ -817,3 +818,109 @@ class TestQueryInstruction:
             assert emb.query_instruction == "retrieve relevant memories"
         finally:
             emb.close()
+
+
+class _SpyEmbedder(Embedder):
+    """Records per-request timeouts + call count; toggles transient failure.
+
+    Implements the ADR-0030 provider hook ``_embed_batch(texts, timeout)``; the
+    base class supplies ``embed`` / ``embed_batch`` / ``embed_query`` + the
+    circuit breaker on top."""
+
+    dimensions = 4
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+        self.timeouts: list[float] = []
+
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
+        self.calls += 1
+        self.timeouts.append(timeout)
+        if self.fail:
+            raise TransientEmbeddingError("spy transient failure")
+        return [[0.0] * self.dimensions for _ in texts]
+
+
+class TestEmbedResilience:
+    """ADR 0030: short interactive query timeout + shared circuit breaker."""
+
+    def _spy(self, *, fail: bool = False, **kw: Any) -> _SpyEmbedder:
+        emb = _SpyEmbedder(fail=fail)
+        emb.configure_resilience(
+            timeout=kw.get("timeout", 120.0),
+            query_timeout=kw.get("query_timeout", 5.0),
+            cb_failures=kw.get("cb_failures", 4),
+            cb_cooldown=kw.get("cb_cooldown", 30.0),
+        )
+        return emb
+
+    def test_query_uses_query_timeout_docs_use_default(self) -> None:
+        emb = self._spy(timeout=99.0, query_timeout=3.0)
+        emb.embed_query("hi")
+        emb.embed_batch(["doc"])
+        emb.embed("solo")
+        assert emb.timeouts == [3.0, 99.0, 99.0]  # query short; documents generous
+
+    def test_circuit_opens_after_threshold_then_fails_fast(self) -> None:
+        emb = self._spy(fail=True, cb_failures=3, cb_cooldown=60.0)
+        for _ in range(3):
+            with pytest.raises(TransientEmbeddingError):
+                emb.embed_batch(["x"])
+        assert emb.calls == 3
+        # Circuit is now open: the next call fails fast without touching the endpoint.
+        with pytest.raises(TransientEmbeddingError, match="circuit open"):
+            emb.embed_query("x")
+        assert emb.calls == 3  # _embed_batch was NOT invoked
+
+    def test_circuit_closes_after_cooldown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emb = self._spy(fail=True, cb_failures=1, cb_cooldown=30.0)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr("memstem.core.embeddings.time.monotonic", lambda: clock["t"])
+        with pytest.raises(TransientEmbeddingError):
+            emb.embed_batch(["x"])  # opens the circuit
+        with pytest.raises(TransientEmbeddingError, match="circuit open"):
+            emb.embed_batch(["x"])  # fast-fail while open
+        assert emb.calls == 1
+        clock["t"] += 31.0  # cooldown elapsed
+        emb.fail = False
+        emb.embed_batch(["x"])  # trial request allowed through, succeeds
+        assert emb.calls == 2
+
+    def test_success_resets_failure_streak(self) -> None:
+        emb = self._spy(fail=True, cb_failures=2)
+        with pytest.raises(TransientEmbeddingError):
+            emb.embed_batch(["x"])  # streak = 1
+        emb.fail = False
+        emb.embed_batch(["x"])  # success resets streak to 0
+        emb.fail = True
+        with pytest.raises(TransientEmbeddingError):
+            emb.embed_batch(["x"])  # streak = 1 again (circuit still closed)
+        with pytest.raises(TransientEmbeddingError):
+            emb.embed_batch(["x"])  # streak = 2 -> opens
+        calls = emb.calls
+        with pytest.raises(TransientEmbeddingError, match="circuit open"):
+            emb.embed_batch(["x"])  # fast-fail
+        assert emb.calls == calls  # did not reach the endpoint
+
+    def test_breaker_disabled_when_threshold_zero(self) -> None:
+        emb = self._spy(fail=True, cb_failures=0)
+        for _ in range(5):
+            with pytest.raises(TransientEmbeddingError):
+                emb.embed_batch(["x"])
+        assert emb.calls == 5  # every call reaches the endpoint; never fast-fails
+
+    def test_permanent_error_does_not_trip_breaker(self) -> None:
+        emb = self._spy(cb_failures=2)
+
+        def boom(texts: list[str], timeout: float) -> list[list[float]]:
+            emb.calls += 1
+            raise EmbeddingError("permanent 4xx")
+
+        emb._embed_batch = boom  # type: ignore[method-assign]
+        for _ in range(4):
+            with pytest.raises(EmbeddingError):
+                emb.embed_batch(["x"])
+        # Permanent errors mean the endpoint answered — the breaker never opens,
+        # so all four reached the endpoint (no fast-fail).
+        assert emb.calls == 4

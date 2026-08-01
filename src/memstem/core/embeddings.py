@@ -25,6 +25,8 @@ match a query that touches only one of its sections.
 
 from __future__ import annotations
 
+import threading
+import time
 from abc import ABC, abstractmethod
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self
@@ -198,24 +200,92 @@ class Embedder(ABC):
     (correct for non-instruction models). Set via ``embedding.query_instruction``.
     See ADR 0025."""
 
+    # --- Resilience (ADR 0030): per-request timeouts + a shared circuit breaker.
+    # Class-level defaults keep directly-constructed embedders (tests) working;
+    # `embed_for` calls `configure_resilience` to wire the values from config. ---
+    _default_timeout: float = DEFAULT_TIMEOUT
+    _query_timeout: float = DEFAULT_TIMEOUT
+    _cb_threshold: int = 0  # 0 disables the breaker
+    _cb_cooldown: float = 0.0
+
+    def configure_resilience(
+        self, *, timeout: float, query_timeout: float, cb_failures: int, cb_cooldown: float
+    ) -> None:
+        """Wire per-request timeouts and the embed circuit breaker (ADR 0030)."""
+        self._default_timeout = timeout
+        self._query_timeout = query_timeout
+        self._cb_threshold = cb_failures
+        self._cb_cooldown = cb_cooldown
+
+    def _cb(self) -> dict[str, Any]:
+        """Lazily-created circuit state (no ``__init__`` required in subclasses)."""
+        st = self.__dict__.get("_cb_state")
+        if st is None:
+            st = self.__dict__["_cb_state"] = {
+                "fails": 0,
+                "open_until": 0.0,
+                "lock": threading.Lock(),
+            }
+        return st
+
+    def _guarded(self, texts: list[str], timeout: float) -> list[list[float]]:
+        """Run the provider call behind the circuit breaker. When the breaker is
+        open, fail fast with a :class:`TransientEmbeddingError` (search → BM25
+        instantly; workers back off) instead of hammering a struggling endpoint."""
+        if self._cb_threshold > 0:
+            st = self._cb()
+            with st["lock"]:
+                if st["open_until"] and time.monotonic() < st["open_until"]:
+                    raise TransientEmbeddingError(
+                        f"embed circuit open ({self._cb_cooldown:.0f}s cooldown after "
+                        f"{self._cb_threshold} consecutive transient failures)"
+                    )
+        try:
+            result = self._embed_batch(texts, timeout)
+        except TransientEmbeddingError:
+            if self._cb_threshold > 0:
+                st = self._cb()
+                with st["lock"]:
+                    st["fails"] += 1
+                    if st["fails"] >= self._cb_threshold:
+                        st["open_until"] = time.monotonic() + self._cb_cooldown
+            raise
+        # Success (or a permanent EmbeddingError, which propagates uncaught and
+        # does not trip the breaker — the endpoint answered, it just rejected the
+        # input) resets the transient streak.
+        if self._cb_threshold > 0:
+            st = self._cb()
+            with st["lock"]:
+                st["fails"] = 0
+                st["open_until"] = 0.0
+        return result
+
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
 
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed documents (background/worker path): generous ``timeout`` +
+        the shared circuit breaker."""
+        return self._guarded(texts, self._default_timeout)
+
     def embed_query(self, text: str) -> list[float]:
-        """Embed a search query. Applies :attr:`query_instruction` as an
-        instruction prefix when set; documents are embedded raw via
-        :meth:`embed_batch`, preserving the query/document asymmetry that
-        instruction-tuned retrievers were trained on. See ADR 0025."""
+        """Embed a search query (INTERACTIVE path). Uses the short
+        ``query_timeout`` so a search degrades to BM25 in seconds when the
+        embedder is briefly unreachable, plus the shared circuit breaker.
+        Applies the ADR-0025 instruction prefix for instruction-tuned
+        retrievers; documents stay raw."""
         if self.query_instruction:
             text = f"Instruct: {self.query_instruction}\nQuery: {text}"
-        return self.embed(text)
+        return self._guarded([text], self._query_timeout)[0]
 
     @abstractmethod
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts. Implementations should send them in
-        a single API call when the provider supports it; fall back to
-        sequential calls otherwise. Must raise :class:`EmbeddingError`
-        on any failure so the queue worker can retry."""
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
+        """Embed a batch of texts in a single provider call (or sequential
+        sub-batches). ``timeout`` is the per-request httpx timeout — short for
+        queries, generous for documents (ADR 0030). Raise
+        :class:`TransientEmbeddingError` on 5xx/network/timeout so the worker
+        retries and the breaker can trip; :class:`EmbeddingError` on permanent
+        failures (4xx/bad input)."""
 
     def embed_image(self, image_data_url: str) -> list[float]:
         """Embed a single image (a ``data:`` URL) into the shared text+image
@@ -257,13 +327,14 @@ class OllamaEmbedder(Embedder):
         self.dimensions = dimensions
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         if not texts:
             return []
         try:
             response = self._client.post(
                 "/api/embed",
                 json={"model": self.model, "input": texts},
+                timeout=timeout,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -341,20 +412,21 @@ class OpenAIEmbedder(Embedder):
             },
         )
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         if not texts:
             return []
         results: list[list[float]] = []
         for start in range(0, len(texts), self.max_batch):
             sub = texts[start : start + self.max_batch]
-            results.extend(self._embed_one_batch(sub))
+            results.extend(self._embed_one_batch(sub, timeout))
         return results
 
-    def _embed_one_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_one_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         try:
             response = self._client.post(
                 "/embeddings",
                 json={"model": self.model, "input": texts, "encoding_format": "float"},
+                timeout=timeout,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -498,7 +570,7 @@ class GeminiEmbedder(Embedder):
     def _supports_matryoshka(self) -> bool:
         return self.model in self._MATRYOSHKA_MODELS
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         if not texts:
             return []
         # Gemini's `batchEmbedContents` caps at 100 items per call.
@@ -508,10 +580,10 @@ class GeminiEmbedder(Embedder):
         results: list[list[float]] = []
         for start in range(0, len(texts), self.MAX_BATCH_SIZE):
             sub = texts[start : start + self.MAX_BATCH_SIZE]
-            results.extend(self._embed_one_batch(sub))
+            results.extend(self._embed_one_batch(sub, timeout))
         return results
 
-    def _embed_one_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_one_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         # Gemini's model field uses the ``models/<name>`` form.
         full_model = self.model if self.model.startswith("models/") else f"models/{self.model}"
         request_template: dict[str, Any] = {
@@ -533,6 +605,7 @@ class GeminiEmbedder(Embedder):
                 f"/{full_model}:batchEmbedContents",
                 headers={"x-goog-api-key": self._api_key},
                 json=body,
+                timeout=timeout,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -603,20 +676,21 @@ class VoyageEmbedder(Embedder):
     # docs); chunk-heavy records can exceed that, so we batch.
     MAX_BATCH_SIZE = 128
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         if not texts:
             return []
         results: list[list[float]] = []
         for start in range(0, len(texts), self.MAX_BATCH_SIZE):
             sub = texts[start : start + self.MAX_BATCH_SIZE]
-            results.extend(self._embed_one_batch(sub))
+            results.extend(self._embed_one_batch(sub, timeout))
         return results
 
-    def _embed_one_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_one_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         try:
             response = self._client.post(
                 "/embeddings",
                 json={"model": self.model, "input": texts, "input_type": "document"},
+                timeout=timeout,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -691,6 +765,13 @@ def embed_for(config: EmbeddingConfig) -> Embedder:
         )
     # Query-only instruction prefix for instruction-tuned retrievers (ADR 0025).
     emb.query_instruction = config.query_instruction
+    # Per-request timeouts + embed circuit breaker (ADR 0030).
+    emb.configure_resilience(
+        timeout=config.timeout,
+        query_timeout=config.query_timeout,
+        cb_failures=config.circuit_breaker_failures,
+        cb_cooldown=config.circuit_breaker_cooldown_s,
+    )
     return emb
 
 

@@ -91,18 +91,25 @@ def _file_to_record(path: Path, source_name: str) -> MemoryRecord | None:
     created = meta.get("created") or mtime_iso
     updated = meta.get("updated") or mtime_iso
 
+    metadata: dict[str, Any] = {
+        "type": record_type,
+        "created": str(created),
+        "updated": str(updated),
+        "raw_frontmatter": meta,
+    }
+    # ADR 0033: the filename date owns the daily slot, not mtime. `created`
+    # above degrades to the file's mtime in UTC, which rolls into the next
+    # day for any evening edit west of Greenwich.
+    if record_type == "daily":
+        metadata["daily_date"] = path.stem
+
     return MemoryRecord(
         source=source_name,
         ref=str(path),
         title=title.strip() if isinstance(title, str) else None,
         body=body,
         tags=tags,
-        metadata={
-            "type": record_type,
-            "created": str(created),
-            "updated": str(updated),
-            "raw_frontmatter": meta,
-        },
+        metadata=metadata,
     )
 
 
@@ -462,6 +469,42 @@ def _classify_trajectory_path(path: Path, ws: OpenClawWorkspace) -> bool:
     return False
 
 
+def _daily_scope_for(path: Path, ws: OpenClawWorkspace) -> str | None:
+    """Sub-directory of a dated file, relative to the memory dir holding it.
+
+    `YYYY-MM-DD.md` is not unique within a workspace — Ari alone keeps dated
+    files in `memory/`, `memory/dreaming/{rem,light,deep}/` and
+    `memory/voice-reviews/`. Without this the pipeline collapses them all
+    into one `daily/<agent>/<date>.md` slot (ADR 0033). Returns None for a
+    file sitting directly in a memory dir, so the main journal keeps its
+    established path.
+    """
+    base = ws.path.resolve()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    for rel_dir in ws.layout.memory_dirs:
+        try:
+            memory_root = (base / rel_dir).resolve()
+            relative = resolved.parent.relative_to(memory_root)
+        except (ValueError, OSError):
+            continue
+        scope = relative.as_posix()
+        return None if scope == "." else scope
+    return None
+
+
+def _apply_daily_scope(record: MemoryRecord, path: Path, ws: OpenClawWorkspace) -> MemoryRecord:
+    """Stamp `daily_scope` on a daily record so its vault path is namespaced."""
+    if record.metadata.get("type") != "daily":
+        return record
+    scope = _daily_scope_for(path, ws)
+    if not scope:
+        return record
+    return record.model_copy(update={"metadata": {**record.metadata, "daily_scope": scope}})
+
+
 def _apply_workspace_tags(record: MemoryRecord, ws_tag: str, extra_tags: list[str]) -> MemoryRecord:
     new_tags = [*record.tags, f"agent:{ws_tag}", *extra_tags]
     return record.model_copy(update={"tags": new_tags})
@@ -587,6 +630,7 @@ class OpenClawAdapter(Adapter):
                 ws_record = _file_to_record(path, self.name)
                 if ws_record is None:
                     continue
+                ws_record = _apply_daily_scope(ws_record, path, ws)
                 yield _apply_workspace_tags(ws_record, ws.tag, extra_tags)
             for traj_path in _iter_workspace_trajectories(ws):
                 traj_record = _trajectory_to_record(traj_path, self.name)
@@ -649,6 +693,7 @@ class OpenClawAdapter(Adapter):
             if interesting:
                 record = _file_to_record(changed, self.name)
                 if record is not None:
+                    record = _apply_daily_scope(record, changed, ws)
                     yield _apply_workspace_tags(record, ws.tag, extra_tags)
                 return
             if _classify_trajectory_path(changed, ws):
