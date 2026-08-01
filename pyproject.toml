@@ -19,10 +19,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    # MCP server. Pinned below 2: mcp 2.0.0 (2026-07-28) removed the
-    # `mcp.server.fastmcp` import path the server is written against.
-    # Migrating to the 2.x API is tracked separately.
-    "mcp>=1.0.0,<2",
+    # MCP server (SDK v2: MCPServer, formerly FastMCP)
+    "mcp>=2.0.0,<3",
     # SQLite vector extension
     "sqlite-vec>=0.1.0",
     # File watching (cross-platform inotify/fsevents)

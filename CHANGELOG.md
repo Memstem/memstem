@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated to MCP Python SDK v2 (`mcp>=2,<3`).** The 0.19.1 `mcp<2` pin was a
+  stopgap; SDK 1.x is now security-fixes-only upstream. The server moves from
+  `FastMCP` to its v2 rename `MCPServer` — the tool decorator API is unchanged, so
+  the five tools, lazy resource init, and the idle-timeout self-exit all carry over
+  as-is. v2 also serves both protocol eras over stdio with automatic negotiation
+  (existing 2025-era clients keep working, nothing to configure) and keeps stray
+  stdout prints off the wire — the failure class behind past stdio corruption.
+  In-process tests now consume v2's `CallToolResult` shape.
+
 ### Fixed
 
 - **`__version__` is now read from package metadata instead of a hardcoded

@@ -1,6 +1,7 @@
 """MCP server exposing Memstem search, get, list_skills, get_skill, upsert.
 
-Built on `FastMCP` from the official `mcp` Python SDK. Tools match the
+Built on `MCPServer` from the official `mcp` Python SDK (v2; the class
+FastMCP was renamed in SDK 2.0, decorator API unchanged). Tools match the
 contract in `docs/mcp-api.md`. The server is a pure factory — the daemon
 (or test harness) constructs `Vault`, `Index`, and an optional embedder
 and passes them to `build_server()`, either as already-initialized
@@ -27,7 +28,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from memstem.config import HygieneConfig, SearchConfig
 from memstem.core.dedup import normalized_body_hash, record_body_hash
@@ -81,7 +82,7 @@ def _start_idle_watcher(
     The watcher polls ``activity.idle_seconds()`` every
     ``check_interval_seconds`` seconds. When idle is at least
     ``idle_timeout_seconds`` it calls ``exit_fn``, which by default
-    sends SIGTERM to the current process so FastMCP's signal handler
+    sends SIGTERM to the current process so MCPServer's signal handler
     can shut down cleanly. ``exit_fn`` is parameterised so tests can
     swap in a sentinel without actually killing pytest.
     """
@@ -329,8 +330,8 @@ def build_server(
     search_config: SearchConfig | None = None,
     hygiene_config: HygieneConfig | None = None,
     idle_timeout_seconds: int = 0,
-) -> FastMCP:
-    """Construct a FastMCP server bound to the given resources.
+) -> MCPServer:
+    """Construct an MCPServer bound to the given resources.
 
     Two construction paths:
 
@@ -382,7 +383,7 @@ def build_server(
         )
         res = _Resources.eager(vault, index, embedder, reranker)
 
-    mcp = FastMCP(name)
+    mcp = MCPServer(name)
     default_rerank_top_n = effective_rerank_top_n(
         sc.rerank_top_n, reranker_enabled=sc.reranker.enabled
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -77,9 +78,22 @@ def index(tmp_path: Path) -> Iterator[Index]:
 
 
 async def _call_tool(mcp: Any, name: str, args: dict[str, Any]) -> Any:
-    """Invoke a tool and return the structured result (the dict-or-list payload)."""
-    _blocks, struct = await mcp.call_tool(name, args)
-    # FastMCP wraps list returns in {"result": [...]}; dict returns are passthrough.
+    """Invoke a tool and return the structured result (the dict-or-list payload).
+
+    SDK v2's ``call_tool`` returns a ``CallToolResult`` instead of v1's
+    ``(blocks, structured)`` tuple. Prefer ``structured_content`` when the
+    server produced it; otherwise parse the JSON text block. Tool errors
+    surface as ``is_error`` results rather than raised ToolErrors, so
+    re-raise to keep the tests' ``pytest.raises`` contracts.
+    """
+    result = await mcp.call_tool(name, args)
+    if result.is_error:
+        text = result.content[0].text if result.content else "tool error"
+        raise RuntimeError(text)
+    struct = result.structured_content
+    if struct is None:
+        struct = json.loads(result.content[0].text)
+    # List returns arrive wrapped in {"result": [...]}; dicts are passthrough.
     if isinstance(struct, dict) and set(struct.keys()) == {"result"}:
         return struct["result"]
     return struct
@@ -384,7 +398,7 @@ class TestUpsertTool:
 
 
 class TestServerSetup:
-    def test_build_server_returns_fastmcp(self, vault: Vault, index: Index) -> None:
+    def test_build_server_returns_mcpserver(self, vault: Vault, index: Index) -> None:
         mcp = build_server(vault, index)
         assert mcp.name == "memstem"
 
