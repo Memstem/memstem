@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-08-01
+
+Fix release. Most importantly: **0.19.0 installs are broken for new users** — the
+unpinned `mcp` dependency now resolves to the incompatible 2.0.0 release. Upgrade
+straight to 0.19.1.
+
 ### Fixed
 
 - **Pinned `mcp<2`.** The MCP Python SDK's 2.0.0 release (2026-07-28) removed the
@@ -40,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relocation — `scripts/migrate_daily_paths.py` (dry run by default) moves each daily
   memory to its correct path, preserving ids, links and embeddings; the next reconcile
   refills the freed slots.
+
+- **`migrate_daily_paths.py` hardened against tombstoned path slots.** Running the
+  ADR 0033 migration on a production vault surfaced three failure modes:
+  `memories.path` is UNIQUE regardless of `deleted_at`, so tombstoned rows could block
+  both renames and the slots freed by parking superseded duplicates; and a mid-loop
+  failure left files moved with the index update uncommitted. The script now seeds its
+  taken-path map from every row, moves parked duplicates' index paths with their files,
+  commits per move, and converges when re-run after a partial run.
 
 ## [0.19.0] - 2026-07-11
 

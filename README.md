@@ -39,7 +39,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./
 
 ## Status
 
-**v0.18.0 — actively developed, running in production.**
+**v0.19.1 — actively developed, running in production.**
 Live on the maintainer's infrastructure, ingesting from multi-agent
 OpenClaw, Claude Code, and Codex in real time. The 0.13 line added the
 recall-quality stack (cross-encoder reranking + MMR, multimodal
@@ -51,6 +51,12 @@ claim/lease, and dedup-judge correctness. 0.17 added security hardening
 bearer-token auth) and the first publication to PyPI; 0.18 adds
 source-deletion tombstones — deleting an authored source file in a
 connected agent's workspace removes its memory from search (ADR 0026).
+0.19 is an embedder-resilience line — query timeouts + circuit breaker
+(ADR 0030), cold-path key self-heal (ADR 0031), surfaced search
+degradation (ADR 0032), correct daily-log vault paths (ADR 0033) — and
+removes the LLM-judge dedup service (ADR 0028); 0.19.1 pins `mcp<2`
+(0.19.0 installs broken with the MCP SDK's 2.0 release — upgrade
+straight to 0.19.1).
 See [CHANGELOG.md](./CHANGELOG.md) for the release-by-release history.
 Shipping:
 
@@ -389,7 +395,7 @@ $ memstem doctor
 Memstem doctor (vault=/home/ubuntu/memstem-vault):
 
   ✓ Python 3.11
-  ✓ memstem 0.18.0
+  ✓ memstem 0.19.1
   ✓ Vault: /home/ubuntu/memstem-vault
   ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly
