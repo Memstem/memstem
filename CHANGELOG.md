@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-01
+
+The MCP SDK v2 release. Verified end-to-end before tagging: official v2 client →
+`memstem mcp` stdio subprocess → production vault, all five tools exercised
+including a live upsert + round-trip search.
+
 ### Changed
 
 - **Migrated to MCP Python SDK v2 (`mcp>=2,<3`).** The 0.19.1 `mcp<2` pin was a
