@@ -82,7 +82,7 @@ class _StubEmbedder(Embedder):
         self.transient_once = False
         self.transient_always = False
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
         self.calls.append(list(texts))
         if self.transient_always:
             raise TransientEmbeddingError("intentional transient always")
@@ -461,12 +461,12 @@ class TestGuardedDequeue:
                 self._idx = idx
                 self.reenqueue_next = True
 
-            def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
                 if self.reenqueue_next:
                     self.reenqueue_next = False
                     time.sleep(0.001)  # later enqueued_at than the claim token
                     self._idx.enqueue_embed(mid)
-                return super().embed_batch(texts)
+                return super()._embed_batch(texts, timeout)
 
         embedder = _ReenqueuingEmbedder(index)
         worker = EmbedWorker(
@@ -615,12 +615,12 @@ class TestEmbedStateOnSuccess:
                 self._idx = idx
                 self._mid = mid
 
-            def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            def _embed_batch(self, texts: list[str], timeout: float) -> list[list[float]]:
                 # Race: delete the parent memory mid-flight, mirroring
                 # what ``Index.upsert``'s path-displacement path does
                 # when a different memory_id claims the same path.
                 self._idx.delete(self._mid)
-                return super().embed_batch(texts)
+                return super()._embed_batch(texts, timeout)
 
         pipe = Pipeline(vault, index)
         memory = _processed(pipe, _record(body="will-disappear"))

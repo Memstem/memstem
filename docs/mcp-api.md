@@ -24,10 +24,17 @@ Hybrid keyword + semantic search across all memories and skills.
     "snippet": "<truncated body>",
     "score": 0.85,
     "path": "<vault-relative path>",
-    "frontmatter": { }
+    "frontmatter": { },
+    "embedder_degraded": false
   }
 ]
 ```
+
+`embedder_degraded` (ADR 0032) is `true` when the embedder was unreachable
+for this call (auth failure, connection error, timeout) and the results are
+keyword-only — the BM25 fallback with reduced semantic recall. Agents seeing
+`true` should treat thin results with suspicion and may suggest running
+`memstem doctor embedder`.
 
 ## `memstem_get`
 

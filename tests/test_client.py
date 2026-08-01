@@ -513,3 +513,26 @@ def _seed(
     )
     Vault(vault_path).write(memory)
     index.upsert(memory)
+
+
+class TestSearchDegradationFlag:
+    """ADR 0032 — the client parses ``embedder_degraded`` from daemon hits."""
+
+    def test_parses_flag_when_present(self) -> None:
+        payload = TestSearch._hit_payload(embedder_degraded=True)
+        client = _client_with_responder(lambda r: httpx.Response(200, json=[payload]))
+        try:
+            hits = client.search("cloudflare")
+        finally:
+            client.close()
+        assert hits[0].embedder_degraded is True
+
+    def test_defaults_false_for_older_daemons(self) -> None:
+        """A pre-0032 daemon omits the field; the client must not break."""
+        payload = TestSearch._hit_payload()  # no embedder_degraded key
+        client = _client_with_responder(lambda r: httpx.Response(200, json=[payload]))
+        try:
+            hits = client.search("cloudflare")
+        finally:
+            client.close()
+        assert hits[0].embedder_degraded is False

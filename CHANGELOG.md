@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Daily logs no longer overwrite each other (ADR 0033).** The vault path for a `daily`
+  record was `daily/<agent>/<created-date>.md`, where `created` falls back to the source
+  file's mtime in UTC. Two consequences, both observed in production: an agent in a
+  western timezone appending to `2026-02-01.md` in the evening stamped `2026-02-02` and
+  displaced the next day's log, cascading through the run; and every dated file in a
+  workspace — `memory/2026-04-15.md`, `memory/dreaming/rem/2026-04-15.md`,
+  `memory/voice-reviews/2026-04-15.md` — competed for one slot, last writer winning. In
+  the vault this was found on, 250 dated source files had collapsed into 159 slots and
+  39 daily journals were unreachable through search. The date now comes from the source
+  *filename* (`daily_date`) and dated sub-directories get their own namespace
+  (`daily_scope`), so the main journal keeps `daily/<agent>/<date>.md` while
+  `memory/dreaming/rem/` lands under `daily/<agent>/dreaming/rem/`. Both are validated at
+  the pipeline boundary against path traversal. Existing vaults need a one-shot
+  relocation — `scripts/migrate_daily_paths.py` (dry run by default) moves each daily
+  memory to its correct path, preserving ids, links and embeddings; the next reconcile
+  refills the freed slots.
+
+## [0.19.0] - 2026-07-11
+
+### Added
+
+- **Daemon self-heals the cold-spawn key fallback (ADR 0031).** On startup, when the
+  embedder API key was resolved from the daemon's environment and
+  `~/.config/memstem/secrets.yaml` is missing the provider entry or holds a different
+  (stale) value, the daemon persists the env key into the secrets file
+  (`auth.sync_env_secret_to_file`). Cold-spawned processes — the per-session
+  `memstem mcp` server and the plain CLI — fall back to that file when they run without
+  the env var; a stale file key meant embedder 401s and silent BM25-only search for
+  weeks. Idempotent (no write when equal), guarded to keyed providers (never
+  ollama/local), one masked info log line on write, non-fatal on write failure.
+
+- **`memstem doctor embedder` — cold-path embedder auth self-test.** Resolves the API
+  key exactly the way a cold-spawned process would (env var first, then
+  `~/.config/memstem/secrets.yaml`) and performs one tiny embedding round-trip against
+  the configured endpoint, reporting OK/FAIL with the HTTP status, key source
+  (env/file, masked), dimensions, and latency. `--json` emits a structured report;
+  exits 1 on failure. This is the check that catches a stale `secrets.yaml` key while
+  the daemon (env-keyed) stays green. Bare `memstem doctor` is unchanged.
+
+- **Search results now say when they're degraded (ADR 0032).** When an embedder
+  failure (auth, connection, timeout, open breaker) forces the BM25 keyword-only
+  fallback, the degradation is surfaced instead of hidden in a log line: every hit
+  from MCP `memstem_search` and HTTP `POST /search` carries an additive
+  `embedder_degraded: bool` field, `memstem search` prints a stderr notice, and the
+  new `Search.search_with_status()` returns a `SearchOutcome` with
+  `degraded`/`degraded_reason` for internal callers. `Search.search()` keeps its
+  list-only shape, older clients ignore the extra field, and the existing
+  `vec query failed; falling back to BM25` warning is preserved.
+
+- **Embed-client resilience (ADR 0030): interactive searches no longer hang when the
+  embedder has a transient blip.** A separate short `query_timeout` (default 5s) for
+  search-query embedding — distinct from the generous document `timeout` (default 120s,
+  now wired from `EmbeddingConfig` — previously the 120s was hardcoded) — so a search
+  degrades to BM25 in seconds instead of hanging up to 120s. Plus a shared **circuit
+  breaker** (`circuit_breaker_failures` / `circuit_breaker_cooldown_s`): after N
+  consecutive transient failures the embedder fails fast for a cooldown (search → BM25
+  instantly, workers back off) instead of hammering a struggling endpoint — the amplifier
+  behind the 2026-07 embed-storm incident. All defaults preserve prior behavior for
+  healthy endpoints. New `EmbeddingConfig` keys: `timeout`, `query_timeout`,
+  `circuit_breaker_failures`, `circuit_breaker_cooldown_s`.
+
+### Fixed
+
+- **MMR no longer full-scans the vector table once per candidate — hybrid
+  search dropped from ~9.3s to ~2.5s on an 8.5k-memory / 68k-chunk 4096-dim
+  vault.** `Search._first_chunk_embedding` filtered on the `memory_id` /
+  `chunk_index` metadata columns of the `memories_vec` vec0 virtual table;
+  vec0 answers non-`MATCH` metadata predicates with a full table scan
+  (~0.4s per lookup at this scale), and MMR calls the helper for every
+  materialized candidate. It now does a point query on the vec0 PRIMARY KEY
+  (`chunk_id = f"{memory_id}:0"`, the format `Index.upsert_vectors` writes).
+  Same rows returned; ranking unchanged. This was the dominant term in the
+  "daemon-search takes 7-15s and MCP clients declare the server dead"
+  incident (2026-07-01).
+
 ### Removed
 
 - **The LLM-judge dedup service (ADR 0012 Layers 2–3) is removed (ADR 0028).**

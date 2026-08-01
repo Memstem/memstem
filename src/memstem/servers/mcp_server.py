@@ -288,18 +288,22 @@ def _serialize_memory(memory: Memory) -> dict[str, Any]:
     }
 
 
-def _serialize_result(result: Result) -> dict[str, Any]:
-    memory = result.memory
+def _serialize_result(result: Result, *, embedder_degraded: bool = False) -> dict[str, Any]:
     return {
-        "id": str(memory.id),
-        "title": memory.frontmatter.title,
-        "type": memory.type.value,
-        "snippet": _snippet(memory.body),
+        "id": str(result.memory.id),
+        "title": result.memory.frontmatter.title,
+        "type": result.memory.type.value,
+        "snippet": _snippet(result.memory.body),
         "score": result.score,
-        "path": str(memory.path),
-        "frontmatter": memory.frontmatter.model_dump(mode="json", exclude_none=True),
+        "path": str(result.memory.path),
+        "frontmatter": result.memory.frontmatter.model_dump(mode="json", exclude_none=True),
         "bm25_rank": result.bm25_rank,
         "vec_rank": result.vec_rank,
+        # ADR 0032: True when the embedder failed for this call and the
+        # results are keyword-only (BM25 fallback). Per-hit (rather than a
+        # top-level envelope) to keep the list-of-hits payload shape
+        # backward compatible.
+        "embedder_degraded": embedder_degraded,
     }
 
 
@@ -393,17 +397,22 @@ def build_server(
         limit: int = 10,
         types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Hybrid keyword + semantic search across memories and skills."""
+        """Hybrid keyword + semantic search across memories and skills.
+
+        Each hit carries ``embedder_degraded`` (ADR 0032): ``true`` means
+        the embedder was unreachable for this call and the results are
+        keyword-only (BM25 fallback) — expect reduced semantic recall.
+        """
         activity.touch()
 
-        # search.search() makes blocking embedder/reranker HTTP calls and
-        # synchronous SQLite reads. Run it in a worker thread (as the HTTP
-        # /search handler already does) so it never executes on the event-loop
+        # search runs blocking embedder/reranker HTTP calls and synchronous
+        # SQLite reads. Run it in a worker thread (as the HTTP /search
+        # handler already does) so it never executes on the event-loop
         # thread: a slow backend can't freeze the loop, and a background
         # reconcile can't starve it (issue #142). Index._lock keeps the shared
         # connection safe across threads.
         def _run() -> list[dict[str, Any]]:
-            results = res.search.search(
+            outcome = res.search.search_with_status(
                 query=query,
                 limit=clamp_limit(limit),
                 types=types,
@@ -417,7 +426,9 @@ def build_server(
                 log_client=log_client,
                 log_max_rows=hc.query_log_max_rows,
             )
-            return [_serialize_result(r) for r in results]
+            return [
+                _serialize_result(r, embedder_degraded=outcome.degraded) for r in outcome.results
+            ]
 
         return await asyncio.to_thread(_run)
 

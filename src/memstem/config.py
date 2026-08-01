@@ -76,6 +76,26 @@ class EmbeddingConfig(BaseModel):
     Each record's chunks are batched in a single API call when the
     backend supports it."""
 
+    timeout: float = Field(default=120.0, gt=0)
+    """Per-request timeout (seconds) for BACKGROUND document embedding.
+    Generous by default because bulk ingest can queue many requests and a
+    slow-but-working backend should not fail records. See ADR 0030."""
+
+    query_timeout: float = Field(default=5.0, gt=0)
+    """Per-request timeout (seconds) for INTERACTIVE search-query embedding.
+    Short on purpose: when the embedder is briefly unreachable a search must
+    degrade to BM25 in seconds, not hang for ``timeout`` seconds. See ADR 0030."""
+
+    circuit_breaker_failures: int = Field(default=4, ge=0)
+    """Consecutive transient embed failures before the circuit opens. ``0``
+    disables the breaker. While open, embed calls fail fast (search falls back
+    to BM25 instantly and workers back off) instead of hammering a struggling
+    endpoint — the amplifier behind the 2026-07 embed-storm incident. See ADR 0030."""
+
+    circuit_breaker_cooldown_s: float = Field(default=30.0, ge=0)
+    """Seconds the embed circuit stays open after tripping, before it lets a
+    single trial request through to test recovery. See ADR 0030."""
+
     max_request_inputs: int | None = Field(default=None, ge=1)
     """Max inputs per embedding request (openai provider only). ``None``
     auto-picks by endpoint: 100 for OpenAI Inc., 32 for self-hosted
