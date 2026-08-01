@@ -53,8 +53,8 @@ DEFAULT_OLLAMA_URL = "http://localhost:11434"
 operational consistency."""
 
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
-"""Default model. Same model the dedup judge and reranker use so a
-single already-pulled model serves all three features."""
+"""Default model. Same model the reranker uses so a single
+already-pulled model serves both features."""
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 """Default OpenAI-compatible base URL. Override the constructor to

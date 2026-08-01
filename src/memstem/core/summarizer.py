@@ -5,8 +5,7 @@ writer (ADR 0021) both need the same primitive: hand a prompt to an
 LLM, get back a paragraph or two of structured prose. This module
 ships that primitive once so both writers can share it.
 
-Mirrors the rerank / HyDE / dedup-judge pattern from ADRs
-0012/0017/0018:
+Mirrors the rerank / HyDE pattern from ADRs 0017/0018:
 
 - :class:`NoOpSummarizer` — silent fallback; returns ``""`` so the
   caller can detect "no LLM configured" and skip the candidate.
@@ -83,7 +82,7 @@ for operational consistency."""
 DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 """Default Ollama model. Same model the rest of MemStem's local
 LLM features use so a single already-pulled model serves all of
-rerank, HyDE, dedup-judge, and summarization."""
+rerank, HyDE, and summarization."""
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 """Default OpenAI-compatible base URL. Override the constructor to

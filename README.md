@@ -82,7 +82,7 @@ Shipping:
   exists in the vault. See
   [docs/distillation-verification.md](./docs/distillation-verification.md).
 - **In-daemon hygiene loop** — `memstem daemon` runs
-  the four hygiene stages (distill-sessions, dedup-judge, importance,
+  the three hygiene stages (distill-sessions, importance,
   project-records) as background tasks alongside the watchers and embed
   workers, each on its own configurable interval with per-stage locking
   and failure isolation. `GET /health` exposes per-stage `last_run`
@@ -90,8 +90,8 @@ Shipping:
   multi-tenant hosts where the customer hasn't authorized LLM spend.
   See [ADR 0023](./docs/decisions/0023-in-daemon-hygiene-loop.md).
 - **OpenAI-compatible LLM backends for hygiene** — the
-  dedup judge and summarizer speak the OpenAI chat-completions protocol,
-  so dedup judging, distillation, and project-records can run against a
+  summarizer speaks the OpenAI chat-completions protocol,
+  so distillation and project-records can run against a
   self-hosted vLLM / TGI / LM Studio / LiteLLM endpoint via a `base_url`
   override — no per-customer cloud billing. The audit log and provenance
   honestly label which service produced each verdict (`openai:gpt-…` for

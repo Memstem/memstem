@@ -1,11 +1,13 @@
 # Recall-quality models — recommendations and upgrade ladder
 
-> Last updated: 2026-05-01. Tracks shipped recall-quality features
+> Last updated: 2026-08-01. Tracks shipped recall-quality features
 > ([RECALL-PLAN.md](../RECALL-PLAN.md)) and the model choices that
-> drive them.
+> drive them. The LLM-judge dedup service was removed in 0.19
+> ([ADR 0028](decisions/0028-remove-llm-judge-dedup-service.md));
+> its section below is retained for history.
 
 Memstem's recall-quality features (cross-encoder rerank, HyDE query
-expansion, dedup judge, session/project summarization) need a
+expansion, session/project summarization) need a
 chat-capable LLM in addition to the embedder. The chat model is
 **pluggable**: pick a provider that fits your box. This guide names
 the recommended model for each feature and the next step up if
@@ -17,11 +19,10 @@ results aren't good enough.
 |---|---|---|
 | **Cross-encoder rerank** (W5, ADR 0017) | `gpt-4o-mini` | `qwen2.5:7b` |
 | **HyDE query expansion** (W6, ADR 0018) | `gpt-4o-mini` | `qwen2.5:7b` |
-| **Dedup judge** (ADR 0012) | `gpt-4o-mini` | `qwen2.5:7b` |
 | **Session distillation** (W8, ADR 0020) | **`gpt-5.4-mini`** | `qwen2.5:7b` |
 | **Project records** (W9, ADR 0021) | **`gpt-5.4-mini`** | `qwen2.5:7b` |
 
-For rerank/HyDE/dedup, `gpt-4o-mini` is cheap, fast, and strong
+For rerank/HyDE, `gpt-4o-mini` is cheap, fast, and strong
 enough — the model output isn't itself indexed, so the quality bar
 is "reliable scoring / structured output," not "human-readable
 prose."
@@ -50,11 +51,8 @@ a model that can:
   relevance on a 0-100 scale.
 - **HyDE query expansion** — read a query and write a hypothetical
   one-paragraph answer.
-- **Dedup judge** — read two candidate-duplicate records and decide
-  if they're DUPLICATE / CONTRADICTS / RELATED_BUT_DISTINCT /
-  UNRELATED.
 
-Any of these three can be turned off by leaving the feature flag
+Any of these can be turned off by leaving the feature flag
 unset; the embedder + RRF + importance + MMR pipeline keeps working.
 You only need a chat model for the features you turn on.
 
@@ -203,34 +201,17 @@ model.
 **For Ollama users:** same ladder as rerank — `qwen2.5:7b` →
 `qwen2.5:14b` → `qwen2.5:32b`.
 
-### Dedup judge (Layer 3, ADR 0012)
+### Dedup judge (Layer 3, ADR 0012) — REMOVED in 0.19
 
-**What it does:** for each pair of body-similar memory candidates,
-classifies into DUPLICATE / CONTRADICTS / RELATED_BUT_DISTINCT /
-UNRELATED. The output drives the future "apply verdicts" step that
-sets `deprecated_by` and `valid_to`.
-
-**Recommended:** `gpt-4o-mini` (OpenAI) / `qwen2.5:7b` (Ollama).
-
-**Why:** dedup is a four-way classification on short bodies; the
-quality bar is "doesn't false-positive on near-paraphrases that
-actually disagree on a numeric value." `gpt-4o-mini` is reliable
-here.
-
-**If results aren't good enough:**
-
-The eval target for dedup is precision — false DUPLICATE verdicts
-destroy information. If the verdicts include false positives:
-
-| Step | Model | When to pick it |
-|---|---|---|
-| 1 | `gpt-4o-mini` (default) | Start here. False-positive rate < 2%? Done. |
-| 2 | `gpt-4.1-mini` | Better at "same name, different referent" disambiguation. |
-| 3 | `gpt-4o` | Frontier-class judgment. Worth it if the audit log shows recurring false positives on long-tail cases. |
-
-Note: today the dedup judge is **Ollama-only** (no `OpenAIDedupJudge`
-yet). The OpenAI variant is a follow-up PR — same shape as
-`OpenAIReranker` and `OpenAIExpander`.
+The LLM-judge dedup service (semantic candidate generation + per-pair
+LLM verdicts) was removed by
+[ADR 0028](decisions/0028-remove-llm-judge-dedup-service.md): the
+O(N²) candidate walk plus per-pair LLM calls was the heaviest
+intermittent job in the system, and its verdicts were inventory
+nothing acted on. Layer-1 write-time exact-hash dedup — which already
+prevents the high-volume duplicate failure mode — remains, along with
+the `hygiene cleanup-retro` body-hash pass. No model is needed for
+dedup anymore.
 
 ### Session distillation (W8, ADR 0020)
 
@@ -250,7 +231,7 @@ summarization benchmarks at ~5× the per-call cost of `gpt-4o-mini`,
 which still works out to **single-digit dollars per month** at a
 typical 5–10-substantive-sessions-per-day pace. The quality lift
 is worth it for the canonical search artifact; the LLM-as-judge
-features (rerank/HyDE/dedup) don't need it because their outputs
+features (rerank/HyDE) don't need it because their outputs
 are scores or query rewrites, not indexed content.
 
 **If results aren't good enough:**
@@ -299,7 +280,6 @@ all cache misses (worst case):
 |---|---|---|
 | Cross-encoder rerank (`gpt-4o-mini`) | $3-5/month | 20 candidates × 200 prompt tokens × 200 queries/day. Cache absorbs most of this in steady state. |
 | HyDE (`gpt-4o-mini`) | $1/month | 1 call × 300 tokens × 200 queries/day. Cache hit rate is high — same query → same hypothesis. |
-| Dedup judge (`gpt-4o-mini`) | $0.50/month | Hygiene-worker pace, not query pace. ~50 candidate pairs/week. |
 | Session distillation (`gpt-5.4-mini`) | $1-5/month | One LLM call per substantive session (~15K tokens in, 500 tokens out). Cache hits when source unchanged. |
 | Project records (`gpt-5.4-mini`) | $0.10-0.50/month | Regenerated only when project source set changes. Typically a few calls per week. |
 
@@ -314,9 +294,10 @@ when sizing.
 ## Related ADRs
 
 - [ADR 0008 — Tiered memory and importance scoring](decisions/0008-tiered-memory.md)
-- [ADR 0012 — LLM-as-judge dedup](decisions/0012-llm-judge-dedup.md)
+- [ADR 0012 — LLM-as-judge dedup](decisions/0012-llm-judge-dedup.md) (superseded by ADR 0028)
 - [ADR 0015 — Recall-quality eval harness](decisions/0015-eval-harness.md)
 - [ADR 0017 — Cross-encoder rerank](decisions/0017-cross-encoder-rerank.md)
 - [ADR 0018 — HyDE query expansion](decisions/0018-hyde-query-expansion.md)
 - [ADR 0020 — Session distillation writer](decisions/0020-session-distillation-writer.md)
 - [ADR 0021 — Project records](decisions/0021-project-records.md)
+- [ADR 0028 — Remove the LLM-judge dedup service](decisions/0028-remove-llm-judge-dedup-service.md)
