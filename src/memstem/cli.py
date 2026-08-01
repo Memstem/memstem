@@ -107,7 +107,7 @@ app.add_typer(auth_app)
 
 hygiene_app = typer.Typer(
     name="hygiene",
-    help="Run vault hygiene tasks (importance bumps, dedup audits, etc.).",
+    help="Run vault hygiene tasks (importance bumps, distillation, retro cleanup, etc.).",
     no_args_is_help=True,
 )
 app.add_typer(hygiene_app)
@@ -128,7 +128,7 @@ def _stage_lock(
     loop doesn't immediately re-run the stage. Always releases the lock
     on exit, whether the body raised or not.
 
-    Used only for CLI commands that *write* (apply / dedup-judge). Dry
+    Used only for CLI commands that *write* (apply). Dry
     runs read only and don't need the lock.
     """
     from memstem.hygiene.state import (
@@ -1759,7 +1759,7 @@ async def _run_daemon(
         )
 
     # ADR 0023: in-daemon hygiene loop. Runs distill-sessions,
-    # dedup-judge, importance, and project-records on intervals
+    # importance, and project-records on intervals
     # configured under ``hygiene:`` in config.yaml. Disabled per
     # config or short-circuited inside HygieneLoop.run() when
     # ``hygiene.loop_enabled`` is false.

@@ -8,6 +8,16 @@ this doc tells you *how to run it safely*.
 
 ## 0.7.0 production smoke test
 
+> ⚠️ **Partially obsolete as of 0.19** — the LLM-judge dedup service
+> was removed by
+> [ADR 0028](decisions/0028-remove-llm-judge-dedup-service.md). The
+> `hygiene dedup-candidates` and `hygiene dedup-judge` subcommands no
+> longer exist, so **steps 5–6 below (and cutover items 3–4) no longer
+> apply**, and the corresponding steps in `scripts/smoke_0_7_0.sh`
+> will fail on a current install. The rest of the procedure (doctor,
+> HTTP probe, importance dry-run, distill report) is still valid.
+> Layer-1 exact-hash dedup remains and needs no smoke step.
+
 Run before promoting 0.7.0 to a live vault, and after every upgrade
 that touches the hygiene worker. The full procedure is wired up in
 `scripts/smoke_0_7_0.sh`; this section explains what each step

@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP server and failing type checks. Existing installs with `mcp` 1.x are
   unaffected. Migration to the 2.x API is tracked separately.
 
+- **Docs caught up with the dedup-judge removal (ADR 0028).** The README still
+  advertised four hygiene stages and OpenAI-compatible dedup judging,
+  `docs/recall-models.md` still recommended models for the removed LLM-judge
+  dedup service, and `docs/operations.md` still walked operators through
+  `hygiene dedup-candidates` / `dedup-judge` smoke steps that no longer exist.
+  All three now reflect the three-stage hygiene loop and Layer-1-only dedup;
+  stale code comments in `cli.py`, `hyde.py`, and `summarizer.py` were
+  corrected along the way. No behavior change.
+
 - **Daily logs no longer overwrite each other (ADR 0033).** The vault path for a `daily`
   record was `daily/<agent>/<created-date>.md`, where `created` falls back to the source
   file's mtime in UTC. Two consequences, both observed in production: an agent in a
