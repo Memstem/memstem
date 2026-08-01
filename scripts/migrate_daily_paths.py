@@ -119,7 +119,11 @@ def main() -> int:
         "SELECT id, path FROM memories WHERE type = 'daily' AND deleted_at IS NULL"
     ).fetchall()
 
-    taken = {path: mid for mid, path in rows}
+    # `memories.path` is UNIQUE and the constraint does not care about
+    # `deleted_at`, so a tombstoned row still holds its slot. Seed `taken`
+    # from every row in the table, not just the live daily ones, or a
+    # rename resolves cleanly here and then fails on the UPDATE.
+    taken = dict(db.execute("SELECT path, id FROM memories"))
     moves: list[tuple[str, str, str]] = []
     unchanged = 0
     skipped: list[tuple[str, str]] = []
@@ -206,28 +210,49 @@ def main() -> int:
     quarantine = vault / "_meta" / "superseded-daily"
     for memory_id, rel_path in evictions:
         stale = vault / rel_path
+        parked_rel = f"_meta/superseded-daily/{rel_path}"
         if stale.is_file():
             parked = quarantine / rel_path
             parked.parent.mkdir(parents=True, exist_ok=True)
             stale.rename(parked)
+        # The row's path moves with the file: `memories.path` is UNIQUE
+        # regardless of `deleted_at`, so tombstoning alone would leave the
+        # slot locked against the record that is about to claim it.
         db.execute(
-            "UPDATE memories SET deleted_at = datetime('now') WHERE id = ?",
-            (memory_id,),
+            "UPDATE memories SET deleted_at = datetime('now'), path = ? WHERE id = ?",
+            (parked_rel, memory_id),
         )
     if evictions:
         print(f"parked {len(evictions)} superseded duplicates under {quarantine}")
 
+    db.commit()
+
+    # Commit per move so an unexpected failure leaves a consistent prefix
+    # rather than a vault whose files moved and whose index says otherwise.
+    # The script recomputes desired state from source refs, so re-running
+    # after a partial run converges.
     moved = 0
     for memory_id, old, new in moves:
         src, dst = vault / old, vault / new
+        renamed = False
         if not src.is_file():
+            # Already relocated by an earlier partial run: index-only update.
             print(f"  ! source file missing, index-only update: {old}")
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
             src.rename(dst)
-        db.execute("UPDATE memories SET path = ? WHERE id = ?", (new, memory_id))
+            renamed = True
+        try:
+            db.execute("UPDATE memories SET path = ? WHERE id = ?", (new, memory_id))
+            db.commit()
+        except sqlite3.IntegrityError as exc:
+            db.rollback()
+            if renamed:
+                dst.rename(src)
+            print(f"\nstopped at {old} -> {new}: {exc}", file=sys.stderr)
+            print(f"relocated {moved} before stopping; re-run to continue", file=sys.stderr)
+            return 1
         moved += 1
-    db.commit()
     print(f"\nrelocated {moved} daily memories")
     print("restart the daemon — reconcile will refill the freed slots")
     return 0
