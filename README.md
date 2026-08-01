@@ -157,10 +157,9 @@ Shipping:
   one-line `install.sh`, and a 15-second e2e smoke test
   (`scripts/e2e-smoke.sh`).
 
-Cross-platform CI runs Linux (gating) plus macOS and Windows
-(experimental, `continue-on-error: true` — sqlite-vec needs
-`enable_load_extension`, which `actions/setup-python`'s macOS build
-doesn't ship; native Windows is WSL2-only by design for v0.x).
+CI runs on Linux — the supported platform. macOS installs work with
+a Homebrew or pyenv Python (see [docs/install.md](./docs/install.md))
+but aren't CI-gated; native Windows is not supported (use WSL2).
 1,400+ tests passing. See [ROADMAP.md](./ROADMAP.md) for what's
 next.
 
