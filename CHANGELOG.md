@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`__version__` is now read from package metadata instead of a hardcoded
+  string.** The literal in `memstem/__init__.py` was still `"0.18.0"` through two
+  releases — so `/health`, `GET /version`, and `memstem doctor` reported 0.18.0
+  on 0.19.x installs. Single-sourcing from `importlib.metadata` removes the
+  second version that release PRs had to remember to bump. Note for editable
+  installs: the reported version refreshes on reinstall (`pip install -e .`),
+  not on `git pull` alone.
+
 ## [0.19.1] - 2026-08-01
 
 Fix release. Most importantly: **0.19.0 installs are broken for new users** — the
