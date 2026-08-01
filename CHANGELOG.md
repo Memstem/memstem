@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pinned `mcp<2`.** The MCP Python SDK's 2.0.0 release (2026-07-28) removed the
+  `mcp.server.fastmcp` import path the MCP server is written against, so a fresh
+  `pip install memstem` (which resolved `mcp>=1.0.0` to 2.0.0) produced a broken
+  MCP server and failing type checks. Existing installs with `mcp` 1.x are
+  unaffected. Migration to the 2.x API is tracked separately.
+
 - **Daily logs no longer overwrite each other (ADR 0033).** The vault path for a `daily`
   record was `daily/<agent>/<created-date>.md`, where `created` falls back to the source
   file's mtime in UTC. Two consequences, both observed in production: an agent in a
