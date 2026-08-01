@@ -77,10 +77,10 @@ Both build SQLite with extension support enabled. Once you're on a Homebrew or
 pyenv Python, every other step (Quickstart, manual install, `memstem doctor`)
 works the same as on Linux.
 
-Note: macOS CI is currently `continue-on-error: true` — the GitHub Actions
-`setup-python` build hits the same system-Python issue. We track full macOS CI
-green as a follow-up; the user-facing install path on a real Mac is reliable
-today via Homebrew or pyenv.
+Note: macOS is not covered by CI — Linux is the supported platform, and the
+GitHub Actions `setup-python` macOS build hits the same system-Python issue.
+The install path described above (Homebrew or pyenv Python) is known to work
+on a real Mac, but it isn't gated by tests on every change.
 
 ## What `connect-clients` edits
 
