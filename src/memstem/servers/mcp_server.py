@@ -468,12 +468,19 @@ def build_server(
     @mcp.tool()
     async def memstem_list_skills(
         scope: str | None = None,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
-        """List available skills, optionally filtered by scope."""
+        """List available skills, optionally filtered by scope.
+
+        Skills tombstoned by the ADR 0026 source-liveness sweep
+        (``deleted_at`` set) are excluded unless ``include_deleted`` is
+        true, matching search's default-visibility contract.
+        """
         activity.touch()
-        rows = res.index.db.execute(
-            "SELECT id, path FROM memories WHERE type = ?", ("skill",)
-        ).fetchall()
+        query = "SELECT id, path FROM memories WHERE type = ?"
+        if not include_deleted:
+            query += " AND deleted_at IS NULL"
+        rows = res.index.db.execute(query, ("skill",)).fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
             try:
@@ -494,13 +501,21 @@ def build_server(
         return out
 
     @mcp.tool()
-    async def memstem_get_skill(name: str) -> dict[str, Any]:
-        """Retrieve a skill by exact title match."""
+    async def memstem_get_skill(
+        name: str,
+        include_deleted: bool = False,
+    ) -> dict[str, Any]:
+        """Retrieve a skill by exact title match.
+
+        Tombstoned skills (ADR 0026 ``deleted_at``) are treated as absent
+        unless ``include_deleted`` is true; their content stays reachable
+        via ``memstem_get`` by id/path, mirroring search semantics.
+        """
         activity.touch()
-        rows = res.index.db.execute(
-            "SELECT path FROM memories WHERE type = ? AND title = ?",
-            ("skill", name),
-        ).fetchall()
+        query = "SELECT path FROM memories WHERE type = ? AND title = ?"
+        if not include_deleted:
+            query += " AND deleted_at IS NULL"
+        rows = res.index.db.execute(query, ("skill", name)).fetchall()
         if not rows:
             raise ValueError(f"no skill named {name!r}")
         return _serialize_memory(res.vault.read(rows[0]["path"]))

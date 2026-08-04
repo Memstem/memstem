@@ -32,6 +32,7 @@ def _make_memory(
     tags: list[str] | None = None,
     scope: str | None = None,
     verification: str | None = None,
+    deleted_at: str | None = None,
     vault: Vault | None = None,
     index: Index | None = None,
 ) -> Memory:
@@ -48,6 +49,8 @@ def _make_memory(
         metadata["scope"] = scope
     if verification is not None:
         metadata["verification"] = verification
+    if deleted_at is not None:
+        metadata["deleted_at"] = deleted_at
     fm = validate(metadata)
     if type_ == "skill":
         path = Path(f"skills/{fm.id}.md")
@@ -217,6 +220,46 @@ class TestListSkillsTool:
         assert len(ari_only) == 1
         assert ari_only[0]["title"] == "ari-skill"
 
+    async def test_excludes_tombstoned_by_default(self, vault: Vault, index: Index) -> None:
+        """ADR 0026: a skill whose source was deleted must not be listed."""
+        _make_memory(
+            type_="skill",
+            title="live-skill",
+            body="x",
+            scope="universal",
+            verification="ok",
+            vault=vault,
+            index=index,
+        )
+        _make_memory(
+            type_="skill",
+            title="tombstoned-skill",
+            body="x",
+            scope="universal",
+            verification="ok",
+            deleted_at="2026-08-01T00:00:00+00:00",
+            vault=vault,
+            index=index,
+        )
+        mcp = build_server(vault, index)
+        results = await _call_tool(mcp, "memstem_list_skills", {})
+        assert [r["title"] for r in results] == ["live-skill"]
+
+    async def test_include_deleted_lists_tombstoned(self, vault: Vault, index: Index) -> None:
+        _make_memory(
+            type_="skill",
+            title="tombstoned-skill",
+            body="x",
+            scope="universal",
+            verification="ok",
+            deleted_at="2026-08-01T00:00:00+00:00",
+            vault=vault,
+            index=index,
+        )
+        mcp = build_server(vault, index)
+        results = await _call_tool(mcp, "memstem_list_skills", {"include_deleted": True})
+        assert [r["title"] for r in results] == ["tombstoned-skill"]
+
 
 class TestGetSkillTool:
     async def test_by_title(self, vault: Vault, index: Index) -> None:
@@ -239,6 +282,39 @@ class TestGetSkillTool:
         mcp = build_server(vault, index)
         with pytest.raises(Exception, match="no skill named"):
             await _call_tool(mcp, "memstem_get_skill", {"name": "nope"})
+
+    async def test_tombstoned_treated_as_absent(self, vault: Vault, index: Index) -> None:
+        """ADR 0026: get-by-title must not resolve a tombstoned skill."""
+        _make_memory(
+            type_="skill",
+            title="gone-skill",
+            body="x",
+            scope="universal",
+            verification="ok",
+            deleted_at="2026-08-01T00:00:00+00:00",
+            vault=vault,
+            index=index,
+        )
+        mcp = build_server(vault, index)
+        with pytest.raises(Exception, match="no skill named"):
+            await _call_tool(mcp, "memstem_get_skill", {"name": "gone-skill"})
+
+    async def test_include_deleted_resolves_tombstoned(self, vault: Vault, index: Index) -> None:
+        _make_memory(
+            type_="skill",
+            title="gone-skill",
+            body="still readable",
+            scope="universal",
+            verification="ok",
+            deleted_at="2026-08-01T00:00:00+00:00",
+            vault=vault,
+            index=index,
+        )
+        mcp = build_server(vault, index)
+        skill = await _call_tool(
+            mcp, "memstem_get_skill", {"name": "gone-skill", "include_deleted": True}
+        )
+        assert skill["body"] == "still readable"
 
 
 class TestUpsertTool:
