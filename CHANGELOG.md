@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`memstem_list_skills` and `memstem_get_skill` now honor ADR 0026 tombstones.**
+  Both tools queried `memories` by `type='skill'` without a `deleted_at` filter, so
+  skills whose source files had been deleted (and correctly tombstoned by the
+  source-liveness sweep) kept appearing in listings and resolving by title —
+  recommending skills that no longer exist. They now exclude tombstoned records by
+  default, matching search's visibility contract; a new `include_deleted` parameter
+  restores the old behavior when explicitly requested. Tombstoned content remains
+  reachable via `memstem_get` by id/path, per the ADR.
+
 ## [0.20.0] - 2026-08-01
 
 The MCP SDK v2 release. Verified end-to-end before tagging: official v2 client →
