@@ -21,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back to the launch directory when it never left. Two related defects are fixed in the
   same path: subagent and workflow transcripts (`<cwd>/subagents/`, `<cwd>/wf_<id>/`)
   previously resolved to a parent directory that isn't dash-prefixed and so were emitted
-  with **no project tag at all** — they now inherit their session's project. Existing
-  project records keyed to old tags persist until regenerated; see the ADR.
+  with **no project tag at all** — they now inherit their session's project. Users who
+  launch Claude Code inside a project directory are unaffected: with no `cd` the tag is
+  unchanged, and a `cd` into a subdirectory of a project root (`.git`, `package.json`,
+  `pyproject.toml`, `go.mod`, `Cargo.toml`) is held at the root rather than split off.
+  Existing project records keyed to old tags persist until regenerated; see the ADR.
 
 - **`memstem_list_skills` and `memstem_get_skill` now honor ADR 0026 tombstones.**
   Both tools queried `memories` by `type='skill'` without a `deleted_at` filter, so

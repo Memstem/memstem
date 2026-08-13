@@ -13,6 +13,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import (
     ClaudeCodeAdapter,
+    _encode_cwd,
     _extract_text,
     _format_turn,
     _parse_session_file,
@@ -291,6 +292,54 @@ class TestProjectTagFromCwd:
         record = _session_to_record(path)
         assert record is not None
         assert record.tags == ["home-ubuntu-projects-foo"]
+
+    def test_subdir_of_project_launch_dir_does_not_split(self, tmp_path: Path) -> None:
+        # Launching inside a repo and cd-ing into src/ is the common layout for
+        # everyone who does not use a hub directory. It must stay one project.
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "src").mkdir()
+        bucket = tmp_path / _encode_cwd(str(repo))
+        path = _write_session(
+            bucket / "session.jsonl",
+            cwd=str(repo),
+            extra_lines=[_cwd_line(str(repo / "src")), _cwd_line(str(repo / "src"))],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == [_encode_cwd(str(repo)).lstrip("-")]
+
+    def test_hub_launch_dir_still_splits(self, tmp_path: Path) -> None:
+        # Same shape, but the launch dir is a plain hub with no project marker,
+        # so the directory the session moved into is the project.
+        hub = tmp_path / "hub"
+        project = hub / "projects" / "foo"
+        project.mkdir(parents=True)
+        bucket = tmp_path / _encode_cwd(str(hub))
+        path = _write_session(
+            bucket / "session.jsonl",
+            cwd=str(hub),
+            extra_lines=[_cwd_line(str(project))],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == [_encode_cwd(str(project)).lstrip("-")]
+
+    def test_project_launch_dir_still_yields_to_outside_work(self, tmp_path: Path) -> None:
+        # The guard only protects the launch dir's own subtree.
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        other = tmp_path / "other"
+        other.mkdir()
+        bucket = tmp_path / _encode_cwd(str(repo))
+        path = _write_session(
+            bucket / "session.jsonl",
+            cwd=str(repo),
+            extra_lines=[_cwd_line(str(other))],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == [_encode_cwd(str(other)).lstrip("-")]
 
     def test_no_cwd_entries_preserves_legacy_tag(self, tmp_path: Path) -> None:
         # Pre-cwd transcripts (and other clients) must keep working.

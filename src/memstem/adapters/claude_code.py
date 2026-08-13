@@ -109,6 +109,21 @@ def _bucket_dir(path: Path) -> str:
     return path.parent.name
 
 
+PROJECT_MARKERS = (".git", "package.json", "pyproject.toml", "go.mod", "Cargo.toml")
+
+
+def _is_project_root(path: str) -> bool:
+    """True if `path` looks like the root of a single project."""
+    try:
+        return any(os.path.exists(os.path.join(path, marker)) for marker in PROJECT_MARKERS)
+    except OSError:  # pragma: no cover - defensive
+        return False
+
+
+def _is_within(path: str, parent: str) -> bool:
+    return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
 def _derive_project_dir(bucket: str, cwd_counts: dict[str, int], cwd_last: dict[str, int]) -> str:
     """Pick the encoded project directory a session actually worked in.
 
@@ -123,8 +138,24 @@ def _derive_project_dir(bucket: str, cwd_counts: dict[str, int], cwd_last: dict[
     With no candidates — the session never left where it started, which
     is also the subagent/workflow case — fall back to the launch
     directory, preserving the previous behaviour.
+
+    One exception keeps the common layout intact: when the launch
+    directory is *itself* a project root, everything beneath it belongs
+    to that project, so navigating into ``src/`` must not split the
+    session off into its own tag. Directories under such a launch
+    directory are therefore not candidates. A launch directory that is a
+    plain hub — a home directory holding many projects — carries no
+    marker, so its descendants stay eligible.
     """
-    candidates = {cwd: n for cwd, n in cwd_counts.items() if _encode_cwd(cwd) != bucket}
+    launch = next((cwd for cwd in cwd_counts if _encode_cwd(cwd) == bucket), None)
+    launch_owns_subtree = launch is not None and _is_project_root(launch)
+
+    candidates = {
+        cwd: n
+        for cwd, n in cwd_counts.items()
+        if _encode_cwd(cwd) != bucket
+        and not (launch_owns_subtree and launch is not None and _is_within(cwd, launch))
+    }
     if not candidates:
         return bucket
     best = max(candidates, key=lambda cwd: (candidates[cwd], cwd_last[cwd]))

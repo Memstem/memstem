@@ -68,6 +68,23 @@ back to the launch directory.
 4. **Fall back to the launch directory** when there are no candidates — the
    session never left where it started, or the transcript predates per-entry
    `cwd`. This preserves existing behaviour for every launched-in-place user.
+5. **Exempt the launch directory's own subtree when it is a project root**
+   (contains `.git`, `package.json`, `pyproject.toml`, `go.mod`, or
+   `Cargo.toml`). Someone who launches inside a repo and `cd`s into `src/`
+   is still working on one project, and without this they would be split
+   into `repo` and `repo-src`. A launch directory that is a plain hub — a
+   home directory holding many projects — carries no marker, so its
+   descendants stay eligible, which is the case this ADR exists to fix.
+
+Rejected: **normalizing every candidate to its enclosing project root.**
+It reads as the more principled version of rule 5 and is strictly worse:
+a workspace that is itself a repo but contains independent project
+directories (`~/ari` with `.git` and `~/ari/projects/*` beneath it) would
+collapse all of them back into one tag. Measured on the motivating vault,
+that variant cut 68 tags to 56 and re-merged four distinct projects into
+their parent — reintroducing the bug for a third of them. Rule 5 only ever
+*withholds* a split; it never merges two directories that the launch
+directory does not contain.
 
 Rejected: **ranking by raw frequency**, which reproduces the bug. The launch
 directory is usually the *most* common cwd — in a representative transcript, 17
@@ -92,12 +109,26 @@ regenerated. Deployments carrying meaningful history should re-run project
 records after re-ingesting sessions. The conflated record should be deleted by
 hand; nothing rewrites it in place.
 
-**Directories deeper than the project root still tag separately.** A session run
-entirely in `projects/tpv-cloud/api` tags as that path, not as `tpv-cloud` —
-6 of 602 transcripts in the observed vault. Normalizing to a project root needs
-a notion of where roots live, which is per-installation config; deferred until
-there is evidence it matters. It is a strictly smaller error than the one being
-fixed: a real subdirectory rather than an unrelated project.
+**Users who launch in place are unaffected.** With no `cd`, every recorded cwd
+encodes to the launch directory, there are no candidates, and the tag is what it
+was before — byte for byte. With a `cd` into a subdirectory, rule 5 holds the tag
+at the project root. The behaviour only changes for sessions that move to a
+directory the launch directory does not contain, which is precisely the case the
+old rule got wrong.
+
+**Directories deeper than the project root can still tag separately** when the
+launch directory is a hub. A session launched from `~` and run entirely in
+`projects/tpv-cloud/api` tags as that path, not as `tpv-cloud` — 6 of 602
+transcripts in the observed vault. Resolving this needs a notion of where project
+roots live for arbitrary hub layouts, which is per-installation config; deferred
+until there is evidence it matters. It is a strictly smaller error than the one
+being fixed: a real subdirectory rather than an unrelated project.
+
+**The adapter now stats the filesystem.** Rule 5 checks for marker files in the
+launch directory — one `os.path.exists` sweep per session, against a directory
+that is almost always in cache. If the launch directory has since been deleted,
+the check returns False, the guard is skipped, and the result degrades to
+splitting rather than merging: the safer direction.
 
 **Parsing cost is unchanged** — two dict writes per entry in a loop already
 running, no extra file reads.
