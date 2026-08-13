@@ -6,6 +6,11 @@ Two ingestion paths:
    each file is one conversation, folded into one `MemoryRecord` per
    session (type=session) with the chronological transcript.
 
+   `<encoded-cwd>` names the directory the CLI was *launched* from, which
+   is not necessarily what the session worked on. The project tag is
+   derived from the per-entry `cwd` instead — see `_derive_project_dir`
+   and ADR 0034.
+
 2. **Instructions files** (e.g. `~/.claude/CLAUDE.md`, project-level
    CLAUDE.md, etc.) — passed in as `extra_files` to the constructor.
    Each becomes a single record tagged `instructions` so a search for
@@ -83,6 +88,49 @@ def _extract_h1(body: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _encode_cwd(cwd: str) -> str:
+    """Encode an absolute path the way Claude Code names its session dirs."""
+    return cwd.replace("/", "-")
+
+
+def _bucket_dir(path: Path) -> str:
+    """Return the encoded-launch-cwd directory for a session file.
+
+    Claude Code lays sessions out as ``<root>/<encoded-cwd>/<uuid>.jsonl``,
+    where ``<encoded-cwd>`` is the launch directory with ``/`` replaced by
+    ``-`` — hence the leading dash. Subagent and workflow transcripts nest
+    a level deeper (``<encoded-cwd>/subagents/agent-*.jsonl``,
+    ``<encoded-cwd>/wf_<id>/...``), so walk up to the nearest
+    dash-prefixed ancestor instead of trusting the immediate parent.
+    """
+    for parent in path.parents:
+        if parent.name.startswith("-"):
+            return parent.name
+    return path.parent.name
+
+
+def _derive_project_dir(bucket: str, cwd_counts: dict[str, int], cwd_last: dict[str, int]) -> str:
+    """Pick the encoded project directory a session actually worked in.
+
+    The launch directory is a poor project signal: an agent told to
+    ``cd`` into a project still records the launch cwd on most entries,
+    so every such session lands in one bucket (see ADR 0034). Entries
+    carry a per-entry ``cwd``, so prefer directories the session moved
+    into over the one it started in.
+
+    Candidates are the recorded cwds that differ from the launch
+    directory, ranked by entry count and broken by most-recent use.
+    With no candidates — the session never left where it started, which
+    is also the subagent/workflow case — fall back to the launch
+    directory, preserving the previous behaviour.
+    """
+    candidates = {cwd: n for cwd, n in cwd_counts.items() if _encode_cwd(cwd) != bucket}
+    if not candidates:
+        return bucket
+    best = max(candidates, key=lambda cwd: (candidates[cwd], cwd_last[cwd]))
+    return _encode_cwd(best)
+
+
 def _instructions_record(path: Path, source_name: str = "claude-code") -> MemoryRecord | None:
     """Read a markdown instructions file as an `instructions`-tagged record."""
     if not path.is_file():
@@ -136,8 +184,10 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
     session_id: str | None = None
     first_timestamp: str | None = None
     last_timestamp: str | None = None
+    cwd_counts: dict[str, int] = {}
+    cwd_last: dict[str, int] = {}
 
-    for line in text.splitlines():
+    for index, line in enumerate(text.splitlines()):
         line = line.strip()
         if not line:
             continue
@@ -147,6 +197,11 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
             continue
         if not isinstance(entry, dict):
             continue
+
+        cwd = entry.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            cwd_counts[cwd] = cwd_counts.get(cwd, 0) + 1
+            cwd_last[cwd] = index
 
         ts = entry.get("timestamp")
         if isinstance(ts, str):
@@ -188,6 +243,8 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
         "first_timestamp": first_timestamp,
         "last_timestamp": last_timestamp,
         "turn_count": len(turns),
+        "cwd_counts": cwd_counts,
+        "cwd_last": cwd_last,
     }
 
 
@@ -199,7 +256,11 @@ def _session_to_record(path: Path, source_name: str = "claude-code") -> MemoryRe
     if not isinstance(body, str) or not body.strip():
         return None
 
-    project_dir = path.parent.name
+    project_dir = _derive_project_dir(
+        _bucket_dir(path),
+        parsed["cwd_counts"],
+        parsed["cwd_last"],
+    )
     tags = [project_dir.lstrip("-")] if project_dir.startswith("-") else []
 
     return MemoryRecord(
