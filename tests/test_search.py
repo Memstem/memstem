@@ -1229,3 +1229,37 @@ class TestSearchDegradationFlag:
         results = search.search("cloudflare")
         assert isinstance(results, list)
         assert all(isinstance(r, Result) for r in results)
+
+
+class TestSearchConcurrency:
+    """Search must not queue behind writers holding Index.lock (ADR 0035)."""
+
+    def test_search_completes_while_writer_lock_held(self, vault: Vault, index: Index) -> None:
+        for body in ("tunnel deploy alpha", "tunnel deploy beta", "unrelated"):
+            index.upsert(_make_memory(body=body, vault=vault))
+        search = Search(vault=vault, index=index, embedder=None)
+
+        import threading
+
+        done = threading.Event()
+        hits: list[list[Result]] = []
+
+        def run_search() -> None:
+            hits.append(search.search("tunnel", limit=2))
+            done.set()
+
+        with index.lock:  # bulk ingest owns the shared connection
+            t = threading.Thread(target=run_search)
+            t.start()
+            finished = done.wait(timeout=5.0)
+        t.join(timeout=5.0)
+        assert finished, "search blocked behind the writer lock"
+        assert len(hits[0]) == 2
+
+    def test_search_tracks_in_flight_counter(self, vault: Vault, index: Index) -> None:
+        index.upsert(_make_memory(body="counter probe", vault=vault))
+        search = Search(vault=vault, index=index, embedder=None)
+        assert index.searches_in_flight == 0
+        search.search("probe", limit=1)
+        # Counter always returns to zero after the call, success or not.
+        assert index.searches_in_flight == 0

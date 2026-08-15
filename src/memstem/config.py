@@ -400,6 +400,13 @@ class OpenClawLayout(BaseModel):
     record containing the chronological transcript of user prompts and
     assistant responses."""
 
+    max_trajectory_bytes: int = 64 * 1024 * 1024
+    """Skip trajectory files larger than this (ADR 0035). Parsing reads
+    the whole file into the daemon process, so one runaway multi-hundred-MB
+    trajectory can monopolize it for the duration. Oversized files are
+    skipped with a warning naming the file and the cap; truncate/archive
+    the file or raise this to ingest it. ``0`` disables the cap."""
+
     extra_files: list[str] = Field(default_factory=list)
     """Additional top-level files (relative to workspace root) to ingest
     as memory records. Each gets the workspace's ``agent:<tag>`` tag,

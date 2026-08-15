@@ -288,7 +288,25 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
     }
 
 
-def _trajectory_to_record(path: Path, source_name: str = "openclaw") -> MemoryRecord | None:
+def _trajectory_to_record(
+    path: Path,
+    source_name: str = "openclaw",
+    max_bytes: int = 0,
+) -> MemoryRecord | None:
+    if max_bytes:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if size > max_bytes:
+            logger.warning(
+                "skipping oversized trajectory %s (%d bytes > layout.max_trajectory_bytes %d);"
+                " truncate/archive the file or raise the cap to ingest it",
+                path,
+                size,
+                max_bytes,
+            )
+            return None
     parsed = _parse_trajectory_file(path)
     if parsed is None:
         return None
@@ -633,7 +651,9 @@ class OpenClawAdapter(Adapter):
                 ws_record = _apply_daily_scope(ws_record, path, ws)
                 yield _apply_workspace_tags(ws_record, ws.tag, extra_tags)
             for traj_path in _iter_workspace_trajectories(ws):
-                traj_record = _trajectory_to_record(traj_path, self.name)
+                traj_record = _trajectory_to_record(
+                    traj_path, self.name, max_bytes=ws.layout.max_trajectory_bytes
+                )
                 if traj_record is None:
                     continue
                 yield _apply_workspace_tags(traj_record, ws.tag, [])
@@ -697,7 +717,9 @@ class OpenClawAdapter(Adapter):
                     yield _apply_workspace_tags(record, ws.tag, extra_tags)
                 return
             if _classify_trajectory_path(changed, ws):
-                traj_record = _trajectory_to_record(changed, self.name)
+                traj_record = _trajectory_to_record(
+                    changed, self.name, max_bytes=ws.layout.max_trajectory_bytes
+                )
                 if traj_record is not None:
                     yield _apply_workspace_tags(traj_record, ws.tag, [])
                 return

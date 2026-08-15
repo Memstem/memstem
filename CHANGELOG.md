@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Searches no longer queue behind bulk ingestion**
+  ([ADR 0035](docs/decisions/0035-search-read-connections-and-ingest-backpressure.md)).
+  The daemon serialized every index touch — ingest upserts, embed writes, and
+  search reads — through one shared SQLite connection and one lock, so a large
+  reconcile (e.g. newly added session directories backfilling months of
+  trajectories) made every MCP/CLI search time out for the duration (~28 min
+  observed on the vault that surfaced this; issue #142 was an earlier, partial
+  mitigation). Searches now read on dedicated read-only connections from a small
+  pool — WAL was already enabled, so readers get a consistent snapshot concurrent
+  with the writer — and fall back to the shared locked connection when a reader
+  can't be opened. Two supporting changes land with it: the reconcile loop yields
+  (0.1 s ticks, max 10 s per record) while any search is in flight, and the
+  openclaw adapter skips trajectory files larger than the new
+  `layout.max_trajectory_bytes` (default 64 MiB, `0` = unlimited) with a warning
+  instead of parsing them — a single 151 MB stuck-session log was the trigger for
+  the observed outage.
+
 - **Claude Code sessions are tagged with the project they worked in, not the directory
   the CLI was launched from** ([ADR 0034](docs/decisions/0034-claude-code-project-tag-from-session-cwd.md)).
   Claude Code files sessions under an encoded copy of the *launch* cwd, so anyone who

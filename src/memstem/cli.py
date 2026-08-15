@@ -1168,6 +1168,28 @@ async def _drain_into_pipeline(
             logger.warning("pipeline failed for %s/%s: %s", record.source, record.ref, exc)
 
 
+# Backpressure tuning (ADR 0035): while any interactive search is in
+# flight, the reconcile loop pauses between records in TICK-sized sleeps,
+# up to MAX_WAIT per record so bulk ingest always makes forward progress
+# even under a steady stream of searches.
+_SEARCH_LULL_TICK_S = 0.1
+_SEARCH_LULL_MAX_WAIT_S = 10.0
+
+
+async def _yield_to_searches(pipeline: Pipeline) -> None:
+    """Pause bulk ingest while a search is running (ADR 0035).
+
+    Searches read on their own connections, so this is not about lock
+    contention — it keeps the CPU/GIL free so a search's Python-side
+    scoring isn't time-slicing against back-to-back ``pipeline.process``
+    calls. Bounded so ingest can't be starved indefinitely.
+    """
+    waited = 0.0
+    while pipeline.index.searches_in_flight > 0 and waited < _SEARCH_LULL_MAX_WAIT_S:
+        await asyncio.sleep(_SEARCH_LULL_TICK_S)
+        waited += _SEARCH_LULL_TICK_S
+
+
 async def _reconcile_into_pipeline(
     pipeline: Pipeline,
     stream: AsyncGenerator[MemoryRecord, None],
@@ -1185,6 +1207,7 @@ async def _reconcile_into_pipeline(
             if seen % 200 == 0:
                 await asyncio.sleep(0)
         else:
+            await _yield_to_searches(pipeline)
             try:
                 # process() does synchronous markdown writes + index upserts —
                 # the expensive, loop-blocking work. Run it in a WORKER THREAD
