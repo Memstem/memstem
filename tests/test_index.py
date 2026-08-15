@@ -1285,3 +1285,75 @@ class TestThreadSafety:
         assert errors == [], f"thread errors: {errors[:3]}"
         # Every record was enqueued + dequeued, so the queue ends empty.
         assert index.queue_stats() == {"pending": 0, "failed": 0, "total": 0}
+
+
+class TestReaderConnections:
+    """Read-only search connections + in-flight accounting (ADR 0035)."""
+
+    def test_reader_yields_usable_readonly_connection(self, index: Index) -> None:
+        mem = _make_memory(body="reader smoke test")
+        index.upsert(mem)
+        with index.reader() as rdb:
+            assert rdb is not None
+            row = rdb.execute("SELECT COUNT(*) AS n FROM memories").fetchone()
+            assert row["n"] == 1
+            # query_only makes writes an error, not a hazard.
+            import sqlite3 as _sqlite3
+
+            with pytest.raises(_sqlite3.OperationalError):
+                rdb.execute("DELETE FROM memories")
+
+    def test_query_methods_match_locked_path(self, index: Index) -> None:
+        for body in ("alpha reader", "beta reader", "gamma other"):
+            index.upsert(_make_memory(body=body))
+        locked = index.query_fts("reader", limit=10)
+        with index.reader() as rdb:
+            assert rdb is not None
+            unlocked = index.query_fts("reader", limit=10, db=rdb)
+        assert [h.memory_id for h in unlocked] == [h.memory_id for h in locked]
+
+    def test_reader_bypasses_writer_lock(self, index: Index) -> None:
+        """A reader query completes while another thread holds Index.lock.
+
+        This is the core ADR 0035 property: bulk ingest holding the shared
+        lock must not delay interactive search reads.
+        """
+        index.upsert(_make_memory(body="lock bypass probe"))
+        done = threading.Event()
+        results: list[object] = []
+
+        def search_on_reader() -> None:
+            with index.reader() as rdb:
+                assert rdb is not None
+                results.append(index.query_fts("probe", limit=5, db=rdb))
+            done.set()
+
+        with index.lock:  # simulate ingest holding the writer lock
+            t = threading.Thread(target=search_on_reader)
+            t.start()
+            finished = done.wait(timeout=5.0)
+        t.join(timeout=5.0)
+        assert finished, "reader query blocked behind the writer lock"
+        assert results and len(results[0]) == 1  # type: ignore[arg-type]
+
+    def test_reader_pool_reuses_connections(self, index: Index) -> None:
+        with index.reader() as first:
+            assert first is not None
+        with index.reader() as second:
+            assert second is first
+
+    def test_reader_unavailable_yields_none(self, tmp_path: Path) -> None:
+        idx = Index(tmp_path / "never-created" / "index.db", dimensions=768)
+        with idx.reader() as rdb:
+            assert rdb is None
+
+    def test_searches_in_flight_counter(self, index: Index) -> None:
+        assert index.searches_in_flight == 0
+        index.search_started()
+        index.search_started()
+        assert index.searches_in_flight == 2
+        index.search_finished()
+        assert index.searches_in_flight == 1
+        index.search_finished()
+        index.search_finished()  # extra finish clamps at zero, never negative
+        assert index.searches_in_flight == 0

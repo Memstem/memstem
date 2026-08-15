@@ -918,3 +918,53 @@ class TestWorkspaceWatch:
             await watcher.aclose()
         # The first record we receive should be MEMORY.md.
         assert record.ref.endswith("MEMORY.md")
+
+
+class TestTrajectorySizeCap:
+    """Oversized trajectory files are skipped, not parsed (ADR 0035)."""
+
+    @staticmethod
+    def _write_small_trajectory(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        events = [
+            {
+                "type": "session.started",
+                "ts": "2026-04-26T23:00:00.000Z",
+                "sessionId": "cap123",
+                "workspaceDir": "/home/ubuntu/ari",
+                "data": {"agentId": "main"},
+            },
+            {
+                "type": "prompt.submitted",
+                "ts": "2026-04-26T23:00:01.000Z",
+                "data": {"prompt": "hello"},
+            },
+            {
+                "type": "model.completed",
+                "ts": "2026-04-26T23:00:02.000Z",
+                "data": {"assistantTexts": ["hi there"]},
+            },
+        ]
+        with path.open("w", encoding="utf-8") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+        return path
+
+    def test_oversized_file_skipped_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        traj = self._write_small_trajectory(tmp_path / "cap123.trajectory.jsonl")
+        with caplog.at_level("WARNING"):
+            record = _trajectory_to_record(traj, max_bytes=10)
+        assert record is None
+        assert any("oversized trajectory" in m for m in caplog.messages)
+
+    def test_under_cap_and_uncapped_files_ingest(self, tmp_path: Path) -> None:
+        traj = self._write_small_trajectory(tmp_path / "cap123.trajectory.jsonl")
+        assert _trajectory_to_record(traj, max_bytes=1024 * 1024) is not None
+        assert _trajectory_to_record(traj, max_bytes=0) is not None
+
+    def test_layout_default_cap_is_64mib(self) -> None:
+        from memstem.config import OpenClawLayout
+
+        assert OpenClawLayout().max_trajectory_bytes == 64 * 1024 * 1024

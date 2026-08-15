@@ -1632,3 +1632,40 @@ class TestSearchDegradationNotice:
         captured = capsys.readouterr()
         assert "keyword-only" in captured.err
         assert "[0.5000]" in captured.out
+
+
+class TestReconcileBackpressure:
+    """Bulk reconcile yields to in-flight searches (ADR 0035)."""
+
+    async def test_yield_waits_for_search_then_proceeds(self, tmp_path: Path) -> None:
+        import asyncio
+        import time
+
+        from memstem.cli import _yield_to_searches
+        from memstem.core.index import Index
+
+        index = Index(tmp_path / "index.db", dimensions=768)
+        index.connect()
+
+        class _FakePipeline:
+            pass
+
+        pipeline = _FakePipeline()
+        pipeline.index = index  # type: ignore[attr-defined]
+
+        # No search in flight: returns immediately.
+        t0 = time.monotonic()
+        await _yield_to_searches(pipeline)  # type: ignore[arg-type]
+        assert time.monotonic() - t0 < 0.5
+
+        # Search in flight: waits, then proceeds promptly once it finishes.
+        index.search_started()
+        release = asyncio.get_running_loop().call_later(0.3, index.search_finished)
+        try:
+            t0 = time.monotonic()
+            await _yield_to_searches(pipeline)  # type: ignore[arg-type]
+            waited = time.monotonic() - t0
+            assert 0.2 <= waited < 5.0, f"expected ~0.3s yield, got {waited:.2f}s"
+        finally:
+            release.cancel()
+        index.close()

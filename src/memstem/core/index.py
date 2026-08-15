@@ -15,7 +15,8 @@ import re
 import sqlite3
 import struct
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -439,7 +440,18 @@ class Index:
     workers) and far less complex than a per-thread connection pool.
     The lock does NOT cover embed HTTP calls — those happen above this
     class — so worker concurrency on the network side is preserved.
+
+    Read paths that must not queue behind bulk writers (interactive
+    search — ADR 0035) can borrow a dedicated **read-only** connection
+    via :meth:`reader` instead. WAL mode gives those readers a
+    consistent snapshot concurrent with the single writer, so they
+    bypass ``self._lock`` entirely. Writes never go through a reader
+    (``PRAGMA query_only`` enforces it).
     """
+
+    #: Max idle read-only connections kept for reuse. Searches beyond this
+    #: open a throwaway connection (~ms) rather than queue.
+    READER_POOL_MAX = 4
 
     def __init__(
         self,
@@ -452,6 +464,9 @@ class Index:
         self.on_dimension_mismatch = on_dimension_mismatch
         self._db: sqlite3.Connection | None = None
         self._lock = threading.RLock()
+        self._reader_pool: list[sqlite3.Connection] = []
+        self._reader_pool_lock = threading.Lock()
+        self._searches_in_flight = 0
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -502,6 +517,82 @@ class Index:
         if self._db is not None:
             self._db.close()
             self._db = None
+        with self._reader_pool_lock:
+            readers, self._reader_pool = self._reader_pool, []
+        for conn in readers:
+            conn.close()
+
+    def _open_reader(self) -> sqlite3.Connection:
+        """Open a read-only connection to the index (ADR 0035).
+
+        ``mode=ro`` + ``PRAGMA query_only`` make accidental writes an
+        error rather than a corruption risk; sqlite-vec is loaded because
+        vector scoring runs on this connection. ``check_same_thread=False``
+        because pooled readers are reused across search worker threads
+        (one search holds a reader exclusively for its whole lifetime, so
+        there is never *concurrent* cross-thread use of one connection).
+        """
+        db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.enable_load_extension(True)
+        sqlite_vec.load(db)
+        db.enable_load_extension(False)
+        db.execute("PRAGMA busy_timeout = 5000")
+        db.execute("PRAGMA query_only = ON")
+        return db
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection | None]:
+        """Borrow a read-only connection; yields ``None`` when unavailable.
+
+        Callers must treat ``None`` as "fall back to :attr:`db` under
+        :attr:`lock`" — e.g. the index file not existing yet (fresh vault,
+        first search racing first write) or a filesystem that rejects
+        read-only URIs. On clean exit the connection returns to a small
+        pool; on error it is closed instead so a poisoned connection is
+        never reused.
+        """
+        conn: sqlite3.Connection | None = None
+        with self._reader_pool_lock:
+            if self._reader_pool:
+                conn = self._reader_pool.pop()
+        if conn is None:
+            try:
+                conn = self._open_reader()
+            except sqlite3.Error as exc:
+                logger.warning(
+                    "read-only index connection unavailable (%s); "
+                    "search falls back to the shared locked connection",
+                    exc,
+                )
+                yield None
+                return
+        try:
+            yield conn
+        except BaseException:
+            conn.close()
+            raise
+        with self._reader_pool_lock:
+            if len(self._reader_pool) < self.READER_POOL_MAX:
+                self._reader_pool.append(conn)
+                conn = None
+        if conn is not None:
+            conn.close()
+
+    def search_started(self) -> None:
+        """Mark an interactive search in flight (backpressure — ADR 0035)."""
+        with self._reader_pool_lock:
+            self._searches_in_flight += 1
+
+    def search_finished(self) -> None:
+        with self._reader_pool_lock:
+            self._searches_in_flight = max(0, self._searches_in_flight - 1)
+
+    @property
+    def searches_in_flight(self) -> int:
+        """Number of searches currently running; bulk ingest yields while > 0."""
+        with self._reader_pool_lock:
+            return self._searches_in_flight
 
     def __enter__(self) -> Self:
         self.connect()
@@ -1180,7 +1271,7 @@ class Index:
                 (memory_id,),
             )
 
-    def get_path(self, memory_id: str) -> str | None:
+    def get_path(self, memory_id: str, db: sqlite3.Connection | None = None) -> str | None:
         """Return the vault-relative path for a memory id, or None if missing.
 
         Properly serialized through the Index lock. Every read of
@@ -1192,7 +1283,13 @@ class Index:
         prepared statement object to concurrent callers; native SQLite
         rejects that with ``SQLITE_MISUSE`` ("bad parameter or other API
         misuse") even though both sides see well-formed Python params.
+
+        ``db``: a connection borrowed from :meth:`reader` — runs the
+        query there without taking the shared lock (ADR 0035).
         """
+        if db is not None:
+            row = db.execute("SELECT path FROM memories WHERE id = ?", (str(memory_id),)).fetchone()
+            return row["path"] if row else None
         with self._lock:
             row = self.db.execute(
                 "SELECT path FROM memories WHERE id = ?", (str(memory_id),)
@@ -1309,6 +1406,7 @@ class Index:
         query: str,
         limit: int = 10,
         types: list[str] | None = None,
+        db: sqlite3.Connection | None = None,
     ) -> list[FtsHit]:
         sql = """
             SELECT f.memory_id AS memory_id, bm25(memories_fts) AS score
@@ -1324,8 +1422,11 @@ class Index:
         sql += " ORDER BY score LIMIT ?"
         params.append(limit)
 
-        with self._lock:
-            rows = self.db.execute(sql, params).fetchall()
+        if db is not None:
+            rows = db.execute(sql, params).fetchall()
+        else:
+            with self._lock:
+                rows = self.db.execute(sql, params).fetchall()
         return [FtsHit(memory_id=r["memory_id"], score=float(r["score"])) for r in rows]
 
     def query_vec(
@@ -1333,49 +1434,18 @@ class Index:
         embedding: list[float],
         limit: int = 10,
         types: list[str] | None = None,
+        db: sqlite3.Connection | None = None,
     ) -> list[VecHit]:
         if len(embedding) != self.dimensions:
             raise ValueError(f"query embedding dim {len(embedding)} != index dim {self.dimensions}")
         # Over-fetch from vec then filter by type, since vec0 doesn't support
         # arbitrary predicates inside the MATCH clause.
         fetch_k = limit * 5 if types else limit
-        with self._lock:
-            rows = self.db.execute(
-                """
-                SELECT v.chunk_id, v.memory_id, v.chunk_index, v.distance
-                FROM memories_vec v
-                WHERE v.embedding MATCH ? AND k = ?
-                ORDER BY v.distance
-                """,
-                (_serialize_vector(embedding), fetch_k),
-            ).fetchall()
-
-            if types:
-                type_set = set(types)
-                # Dedupe memory_ids first: a single memory with multiple
-                # chunks appears in `rows` once per chunk, but the type
-                # lookup only needs each id once. Pre-fix this used a
-                # set for placeholders and a list for parameters — when
-                # the over-fetch returned duplicates we ended up with
-                # fewer "?" than bindings and SQLite raised
-                # `ProgrammingError: Incorrect number of bindings
-                # supplied`. The MCP server saw this as
-                # `vec query failed; falling back to BM25`.
-                unique_ids = list({r["memory_id"] for r in rows})
-                id_rows = (
-                    self.db.execute(
-                        f"""
-                    SELECT id, type FROM memories
-                    WHERE id IN ({",".join("?" for _ in unique_ids)})
-                    """,
-                        unique_ids,
-                    ).fetchall()
-                    if unique_ids
-                    else []
-                )
-                allowed = {r["id"] for r in id_rows if r["type"] in type_set}
-                rows = [r for r in rows if r["memory_id"] in allowed][:limit]
-
+        if db is not None:
+            rows = self._query_vec_rows(db, embedding, fetch_k, types, limit)
+        else:
+            with self._lock:
+                rows = self._query_vec_rows(self.db, embedding, fetch_k, types, limit)
         return [
             VecHit(
                 memory_id=r["memory_id"],
@@ -1385,6 +1455,57 @@ class Index:
             )
             for r in rows
         ]
+
+    def _query_vec_rows(
+        self,
+        conn: sqlite3.Connection,
+        embedding: list[float],
+        fetch_k: int,
+        types: list[str] | None,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Vec MATCH + optional type filter on ``conn``.
+
+        The caller owns concurrency: either it holds :attr:`lock` around
+        the shared connection, or ``conn`` is a borrowed reader that no
+        other thread touches (ADR 0035).
+        """
+        rows = conn.execute(
+            """
+            SELECT v.chunk_id, v.memory_id, v.chunk_index, v.distance
+            FROM memories_vec v
+            WHERE v.embedding MATCH ? AND k = ?
+            ORDER BY v.distance
+            """,
+            (_serialize_vector(embedding), fetch_k),
+        ).fetchall()
+
+        if types:
+            type_set = set(types)
+            # Dedupe memory_ids first: a single memory with multiple
+            # chunks appears in `rows` once per chunk, but the type
+            # lookup only needs each id once. Pre-fix this used a
+            # set for placeholders and a list for parameters — when
+            # the over-fetch returned duplicates we ended up with
+            # fewer "?" than bindings and SQLite raised
+            # `ProgrammingError: Incorrect number of bindings
+            # supplied`. The MCP server saw this as
+            # `vec query failed; falling back to BM25`.
+            unique_ids = list({r["memory_id"] for r in rows})
+            id_rows = (
+                conn.execute(
+                    f"""
+                SELECT id, type FROM memories
+                WHERE id IN ({",".join("?" for _ in unique_ids)})
+                """,
+                    unique_ids,
+                ).fetchall()
+                if unique_ids
+                else []
+            )
+            allowed = {r["id"] for r in id_rows if r["type"] in type_set}
+            rows = [r for r in rows if r["memory_id"] in allowed][:limit]
+        return rows
 
     @staticmethod
     def _memory_params(fm: Frontmatter, body: str, path: str) -> dict[str, Any]:

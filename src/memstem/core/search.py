@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import struct
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -211,12 +212,13 @@ class Search:
         query: str,
         limit: int = 10,
         types: list[str] | None = None,
+        db: sqlite3.Connection | None = None,
     ) -> list[FtsHit]:
         sanitized = _sanitize_fts_query(query)
         if not sanitized:
             return []
         try:
-            return self.index.query_fts(sanitized, limit=limit, types=types)
+            return self.index.query_fts(sanitized, limit=limit, types=types, db=db)
         except Exception as exc:
             logger.warning("FTS query failed for %r: %s", query, exc)
             return []
@@ -226,8 +228,9 @@ class Search:
         query_embedding: list[float],
         limit: int = 10,
         types: list[str] | None = None,
+        db: sqlite3.Connection | None = None,
     ) -> list[VecHit]:
-        return self.index.query_vec(query_embedding, limit=limit, types=types)
+        return self.index.query_vec(query_embedding, limit=limit, types=types, db=db)
 
     def search(
         self,
@@ -373,8 +376,66 @@ class Search:
         surface "the embedder failed and this call fell back to keyword-only
         BM25" instead of hiding it in a log line. See :meth:`search` for the
         full parameter documentation.
+
+        Concurrency (ADR 0035): index *reads* run on a borrowed read-only
+        connection so they never queue behind bulk ingest holding
+        ``Index.lock``; WAL gives the reader a consistent snapshot. Cache
+        and log *writes* (HyDE, rerank, query log) stay on the shared
+        locked connection. The in-flight counter around the whole call is
+        the signal bulk ingest uses to yield.
         """
-        bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types)
+        self.index.search_started()
+        try:
+            with self.index.reader() as rdb:
+                return self._retrieve_and_rank(
+                    query,
+                    limit=limit,
+                    types=types,
+                    rrf_k=rrf_k,
+                    bm25_weight=bm25_weight,
+                    vector_weight=vector_weight,
+                    importance_weight=importance_weight,
+                    type_bias=type_bias,
+                    include_expired=include_expired,
+                    include_deprecated=include_deprecated,
+                    include_deleted=include_deleted,
+                    mmr_lambda=mmr_lambda,
+                    rerank_top_n=rerank_top_n,
+                    use_hyde=use_hyde,
+                    log_client=log_client,
+                    log_max_rows=log_max_rows,
+                    rdb=rdb,
+                )
+        finally:
+            self.index.search_finished()
+
+    def _retrieve_and_rank(
+        self,
+        query: str,
+        *,
+        limit: int,
+        types: list[str] | None,
+        rrf_k: int,
+        bm25_weight: float,
+        vector_weight: float,
+        importance_weight: float,
+        type_bias: dict[str, float] | None,
+        include_expired: bool,
+        include_deprecated: bool,
+        include_deleted: bool,
+        mmr_lambda: float | None,
+        rerank_top_n: int | None,
+        use_hyde: bool,
+        log_client: str | None,
+        log_max_rows: int,
+        rdb: sqlite3.Connection | None,
+    ) -> SearchOutcome:
+        """The retrieval pipeline behind :meth:`search_with_status`.
+
+        ``rdb`` is the borrowed read-only connection (or ``None`` to use
+        the shared locked connection — the pre-ADR-0035 behavior).
+        """
+        bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types, db=rdb)
 
         vec: list[VecHit] = []
         query_embedding: list[float] | None = None
@@ -391,6 +452,7 @@ class Search:
                     query_embedding,
                     limit=limit * OVERFETCH_MULTIPLIER,
                     types=types,
+                    db=rdb,
                 )
             except Exception as exc:
                 logger.warning("vec query failed; falling back to BM25: %s", exc)
@@ -423,6 +485,7 @@ class Search:
             include_expired=include_expired,
             include_deprecated=include_deprecated,
             include_deleted=include_deleted,
+            db=rdb,
         )
         if rerank_top_n is not None and rerank_top_n > 0 and results:
             results = self._apply_rerank(query, results, top_n=rerank_top_n)
@@ -430,7 +493,7 @@ class Search:
             results = mmr_rerank(
                 results,
                 query_embedding,
-                lambda r: self._first_chunk_embedding(str(r.memory.id)),
+                lambda r: self._first_chunk_embedding(str(r.memory.id), db=rdb),
                 lambda_=mmr_lambda,
                 k=limit,
             )
@@ -446,7 +509,9 @@ class Search:
             degraded_reason=degraded_reason,
         )
 
-    def _first_chunk_embedding(self, memory_id: str) -> list[float] | None:
+    def _first_chunk_embedding(
+        self, memory_id: str, db: sqlite3.Connection | None = None
+    ) -> list[float] | None:
         """Return the first chunk's embedding for ``memory_id``.
 
         Used by MMR to compute pairwise similarity between candidates.
@@ -461,14 +526,23 @@ class Search:
         (~0.4s per call on a 68k-chunk 4096-dim index; over N MMR
         candidates it was the bulk of a measured ~10s daemon search).
         """
-        with self.index._lock:
-            row = self.index.db.execute(
+        if db is not None:
+            row = db.execute(
                 """
                 SELECT embedding FROM memories_vec
                 WHERE chunk_id = ?
                 """,
                 (f"{memory_id}:0",),
             ).fetchone()
+        else:
+            with self.index._lock:
+                row = self.index.db.execute(
+                    """
+                    SELECT embedding FROM memories_vec
+                    WHERE chunk_id = ?
+                    """,
+                    (f"{memory_id}:0",),
+                ).fetchone()
         if row is None:
             return None
         blob = row[0]
@@ -580,6 +654,7 @@ class Search:
         include_expired: bool = False,
         include_deprecated: bool = False,
         include_deleted: bool = False,
+        db: sqlite3.Connection | None = None,
     ) -> list[Result]:
         """Read each fused hit's `Memory` from the vault, optionally re-score, sort, truncate.
 
@@ -607,7 +682,7 @@ class Search:
             # to race the embed worker's locked calls in the daemon
             # process and trip `InterfaceError: bad parameter or other
             # API misuse` on the worker thread.
-            path = self.index.get_path(hit.memory_id)
+            path = self.index.get_path(hit.memory_id, db=db)
             if path is None:
                 logger.warning("hit %s missing from memories table", hit.memory_id)
                 continue
