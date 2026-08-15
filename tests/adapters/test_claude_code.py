@@ -13,6 +13,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import (
     ClaudeCodeAdapter,
+    _encode_cwd,
     _extract_text,
     _format_turn,
     _parse_session_file,
@@ -27,6 +28,7 @@ def _write_session(
     user_text: str | None = "what is 2+2",
     assistant_text: str | None = "It's 4.",
     ai_title: str | None = None,
+    cwd: str | None = None,
     extra_lines: list[dict[str, Any]] | None = None,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +62,9 @@ def _write_session(
                 "title": ai_title,
             }
         )
+    if cwd is not None:
+        for line in lines:
+            line["cwd"] = cwd
     if extra_lines:
         lines.extend(extra_lines)
     path.write_text(
@@ -204,6 +209,144 @@ class TestSessionToRecord:
         record = _session_to_record(path)
         assert record is not None
         assert "home-ubuntu-foo" in record.tags
+
+
+def _cwd_line(cwd: str, text: str = "more work") -> dict[str, Any]:
+    return {
+        "type": "user",
+        "timestamp": "2026-04-25T15:00:03.000Z",
+        "sessionId": "abc12345-0000-0000-0000-000000000000",
+        "cwd": cwd,
+        "message": {"role": "user", "content": text},
+    }
+
+
+class TestProjectTagFromCwd:
+    """Project tag comes from the cwd worked in, not the launch dir (ADR 0034)."""
+
+    def test_prefers_worked_in_cwd_over_more_frequent_launch_dir(self, tmp_path: Path) -> None:
+        # The launch dir is recorded on more entries than the project the
+        # session cd'd into — the project must still win, otherwise every
+        # session launched from $HOME collapses into one bucket.
+        path = _write_session(
+            tmp_path / "-home-ubuntu/session.jsonl",
+            cwd="/home/ubuntu",
+            extra_lines=[_cwd_line("/home/ubuntu/projects/foo")],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu-projects-foo"]
+        assert record.metadata["project"] == "-home-ubuntu-projects-foo"
+
+    def test_falls_back_to_launch_dir_when_session_never_leaves(self, tmp_path: Path) -> None:
+        path = _write_session(tmp_path / "-home-ubuntu/session.jsonl", cwd="/home/ubuntu")
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu"]
+
+    def test_busiest_project_wins(self, tmp_path: Path) -> None:
+        path = _write_session(
+            tmp_path / "-home-ubuntu/session.jsonl",
+            cwd="/home/ubuntu",
+            extra_lines=[
+                _cwd_line("/home/ubuntu/projects/foo"),
+                _cwd_line("/home/ubuntu/projects/bar"),
+                _cwd_line("/home/ubuntu/projects/bar"),
+            ],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu-projects-bar"]
+
+    def test_tie_broken_by_most_recent(self, tmp_path: Path) -> None:
+        path = _write_session(
+            tmp_path / "-home-ubuntu/session.jsonl",
+            cwd="/home/ubuntu",
+            extra_lines=[
+                _cwd_line("/home/ubuntu/projects/foo"),
+                _cwd_line("/home/ubuntu/projects/bar"),
+            ],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu-projects-bar"]
+
+    def test_subagent_transcript_inherits_launch_dir(self, tmp_path: Path) -> None:
+        # Subagent/workflow transcripts nest below the encoded-cwd dir. The
+        # old parent-dir rule tagged these "subagents" — which does not start
+        # with "-", so they were emitted with no project tag at all.
+        path = _write_session(
+            tmp_path / "-home-ubuntu/subagents/agent-abc.jsonl",
+            cwd="/home/ubuntu",
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu"]
+
+    def test_workflow_transcript_uses_worked_in_cwd(self, tmp_path: Path) -> None:
+        path = _write_session(
+            tmp_path / "-home-ubuntu/wf_2492d8d5/agent-1.jsonl",
+            cwd="/home/ubuntu",
+            extra_lines=[_cwd_line("/home/ubuntu/projects/foo")],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu-projects-foo"]
+
+    def test_subdir_of_project_launch_dir_does_not_split(self, tmp_path: Path) -> None:
+        # Launching inside a repo and cd-ing into src/ is the common layout for
+        # everyone who does not use a hub directory. It must stay one project.
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "src").mkdir()
+        bucket = tmp_path / _encode_cwd(str(repo))
+        path = _write_session(
+            bucket / "session.jsonl",
+            cwd=str(repo),
+            extra_lines=[_cwd_line(str(repo / "src")), _cwd_line(str(repo / "src"))],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == [_encode_cwd(str(repo)).lstrip("-")]
+
+    def test_hub_launch_dir_still_splits(self, tmp_path: Path) -> None:
+        # Same shape, but the launch dir is a plain hub with no project marker,
+        # so the directory the session moved into is the project.
+        hub = tmp_path / "hub"
+        project = hub / "projects" / "foo"
+        project.mkdir(parents=True)
+        bucket = tmp_path / _encode_cwd(str(hub))
+        path = _write_session(
+            bucket / "session.jsonl",
+            cwd=str(hub),
+            extra_lines=[_cwd_line(str(project))],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == [_encode_cwd(str(project)).lstrip("-")]
+
+    def test_project_launch_dir_still_yields_to_outside_work(self, tmp_path: Path) -> None:
+        # The guard only protects the launch dir's own subtree.
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        other = tmp_path / "other"
+        other.mkdir()
+        bucket = tmp_path / _encode_cwd(str(repo))
+        path = _write_session(
+            bucket / "session.jsonl",
+            cwd=str(repo),
+            extra_lines=[_cwd_line(str(other))],
+        )
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == [_encode_cwd(str(other)).lstrip("-")]
+
+    def test_no_cwd_entries_preserves_legacy_tag(self, tmp_path: Path) -> None:
+        # Pre-cwd transcripts (and other clients) must keep working.
+        path = _write_session(tmp_path / "-home-ubuntu-foo/session.jsonl")
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.tags == ["home-ubuntu-foo"]
 
 
 class TestReconcile:
