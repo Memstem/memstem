@@ -317,6 +317,25 @@ class HygieneConfig(BaseModel):
     crashed and cleared on the next acquire attempt. Keeps the loop
     self-healing across daemon crashes mid-cycle."""
 
+    # ADR 0036 — vec table compaction -------------------------------------
+
+    vec_compact_interval_seconds: int = Field(default=7 * 24 * 3600, ge=0)
+    """Cadence for the ``vec_compact`` stage. vec0 preallocates full
+    chunks and frees one only when every slot in it is dead, so a mass
+    delete that leaves scattered survivors (large sources re-chunked,
+    bulk purges, slice rebuilds) pins the table — and every KNN scan —
+    at its peak size. Weekly is enough to keep the table near its live
+    size."""
+
+    vec_compact_max_occupancy: float = Field(default=0.6, ge=0.0, le=1.0)
+    """Only compact when ``live_rows / allocated_slots`` falls below
+    this. At or above it, the scan overhead isn't worth the rebuild."""
+
+    vec_compact_min_dead_slots: int = Field(default=25_000, ge=0)
+    """Only compact when at least this many slots are dead. Keeps tiny
+    vaults from rebuilding over kilobytes. 25k slots at 4096-dim
+    float32 is ~400 MB of dead scan per query."""
+
 
 class HttpServerConfig(BaseModel):
     """Local HTTP server configuration.

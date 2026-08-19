@@ -2104,11 +2104,73 @@ def _sync_embedder_secret(cfg: Config) -> None:
         logger.warning("daemon: could not persist embedder key to %s: %s", auth.secrets_path(), exc)
 
 
+@app.command(name="vec-compact")
+def vec_compact(
+    vault: str | None = typer.Option(None, help="Vault path override"),
+    vacuum: bool = typer.Option(
+        False,
+        "--vacuum",
+        help=(
+            "Run VACUUM after compaction so the db file actually shrinks. "
+            "Needs free disk roughly equal to the post-compaction db size "
+            "and blocks until the copy finishes."
+        ),
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Compact even when the table is already near-full (skips no-op check).",
+    ),
+) -> None:
+    """Rebuild the vector table, dropping dead vec0 slots (ADR 0036).
+
+    vec0 frees a chunk only when every slot in it is dead, so a mass
+    delete that leaves scattered survivors pins the table — and every
+    vector search's scan — at its peak size. This stages the live rows,
+    recreates ``memories_vec`` at the same dimensions, and reinserts —
+    no re-embedding involved. **Stop the daemon first**: this opens the
+    index for writing.
+    """
+    cfg = _load_config(_resolve_vault_path(vault))
+    index = _open_index(cfg)
+    try:
+        live, slots = index.vec_occupancy()
+        dead = slots - live
+        db_file = cfg.index_path or cfg.vault_path / "_meta" / "index.db"
+        typer.echo(f"vec table: {live} live rows / {slots} slots ({dead} dead)")
+        if not force and (slots == 0 or dead == 0):
+            typer.echo("nothing to compact (use --force to rebuild anyway)")
+            return
+        result = index.compact_vectors()
+        typer.echo(
+            f"compacted: {result.live_rows} rows, slots "
+            f"{result.slots_before} -> {result.slots_after} ({result.seconds:.1f}s)"
+        )
+        if vacuum:
+            typer.echo("vacuuming (this copies the whole db file — be patient)...")
+            before = db_file.stat().st_size if db_file.exists() else 0
+            index.db.execute("VACUUM")
+            after = db_file.stat().st_size if db_file.exists() else 0
+            typer.echo(f"vacuum done: {before / 1e9:.1f} GB -> {after / 1e9:.1f} GB")
+    finally:
+        index.close()
+
+
 @app.command()
 def daemon(
     vault: str | None = typer.Option(None, help="Vault path override"),
 ) -> None:
     """Run adapter reconcile + watch loop, ingesting into the vault and index."""
+    # Surface INFO-level operational logs (hygiene cycle timings, embed
+    # worker state, compaction results) on stderr so the process manager
+    # captures them. Before this, nothing configured logging, so only
+    # WARNING+ reached the last-resort handler and multi-day daemon runs
+    # produced zero log lines. Override with MEMSTEM_LOG_LEVEL.
+    logging.basicConfig(
+        level=os.environ.get("MEMSTEM_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
     cfg = _load_config(_resolve_vault_path(vault))
     # ADR 0031: self-heal the cold-spawn key fallback before anything else —
     # the embedder key this process resolved from its env becomes the

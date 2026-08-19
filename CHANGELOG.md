@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Vector searches no longer scan unbounded dead space; recurring
+  multi-minute search stalls fixed**
+  ([ADR 0036](docs/decisions/0036-vec-table-compaction.md)). sqlite-vec's
+  `vec0` preallocates full 1024-slot chunks (16 MB each at 4096 dims) and
+  frees a chunk only when every slot in it is dead, so a mass delete that
+  leaves scattered survivors — large trajectories re-chunked, bulk purges,
+  slice rebuilds — pins the table at its peak size forever. One production
+  vault reached 5.3%
+  occupancy — a 36.8 GB vector table holding ~2 GB of live vectors — and
+  every KNN query scanned all of it: 10–20 s warm, 15–60+ min when the page
+  cache was cold (the recurring "search stall / burst release" incidents).
+  New: `Index.compact_vectors()` rebuilds the table keeping only live rows
+  (byte-identical, no re-embedding); a weekly `vec_compact` hygiene stage
+  runs it automatically past occupancy/dead-slot thresholds (configurable
+  via `hygiene.vec_compact_*`); and `memstem vec-compact [--vacuum]
+  [--force]` is the offline operator form.
+- **The daemon now emits INFO-level logs.** Nothing ever configured Python
+  logging, so only WARNING+ reached stderr via the last-resort handler and
+  multi-day daemon runs produced zero log lines — hygiene cycle timings,
+  embed worker state, and compaction results were invisible to the process
+  manager. `memstem daemon` now calls `logging.basicConfig` (level from
+  `MEMSTEM_LOG_LEVEL`, default `INFO`).
+
 - **Searches no longer queue behind bulk ingestion**
   ([ADR 0035](docs/decisions/0035-search-read-connections-and-ingest-backpressure.md)).
   The daemon serialized every index touch — ingest upserts, embed writes, and

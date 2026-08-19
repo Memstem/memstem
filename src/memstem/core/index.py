@@ -101,6 +101,16 @@ class VecHit:
     """L2 distance (lower = closer)."""
 
 
+@dataclass(frozen=True, slots=True)
+class VecCompactResult:
+    """Outcome of :meth:`Index.compact_vectors` (ADR 0036)."""
+
+    live_rows: int
+    slots_before: int
+    slots_after: int
+    seconds: float
+
+
 MIGRATIONS: dict[int, str] = {
     1: """
         CREATE TABLE schema_version (version INTEGER NOT NULL PRIMARY KEY);
@@ -922,6 +932,107 @@ class Index:
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
+    def vec_occupancy(self) -> tuple[int, int]:
+        """``(live_rows, allocated_slots)`` for ``memories_vec``.
+
+        vec0 preallocates full 1024-slot chunks (16 MB each at 4096
+        dims) and frees a chunk only when *every* slot in it is dead.
+        A mass delete that leaves a few survivors per chunk — large
+        sources re-chunked, bulk purges, slice rebuilds — pins the
+        table at its peak size: later inserts do reuse dead slots, but
+        steady-state insert volume never refills a large overhang. The
+        gap between the two numbers is dead space every KNN scan still
+        reads — see ADR 0036.
+        """
+        with self._lock:
+            live = self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0]
+            slots = self.db.execute(
+                "SELECT coalesce(sum(size), 0) FROM memories_vec_chunks"
+            ).fetchone()[0]
+        return int(live), int(slots)
+
+    def compact_vectors(self) -> VecCompactResult:
+        """Rebuild ``memories_vec`` keeping only live rows (ADR 0036).
+
+        Stages every live ``(chunk_id, memory_id, chunk_index, embedding)``
+        into a plain table, drops the vec0 table, recreates it from its
+        original DDL (preserving dimensions), and reinserts. Runs as one
+        transaction under the writer lock: WAL readers see the swap
+        atomically, and any failure rolls the whole thing back. Row
+        counts are verified at both hops; a mismatch aborts.
+
+        Does NOT ``VACUUM`` — freed pages are reused internally but the
+        db file does not shrink. Callers that want the file smaller
+        (the CLI's ``--vacuum``) run that separately, outside the lock's
+        transaction.
+        """
+        start_monotonic = datetime.now(UTC)
+        with self._lock:
+            ddl_row = self.db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'"
+            ).fetchone()
+            if ddl_row is None or ddl_row["sql"] is None:
+                raise RuntimeError("memories_vec does not exist; nothing to compact")
+            ddl = ddl_row["sql"]
+            live, slots_before = (
+                self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0],
+                self.db.execute(
+                    "SELECT coalesce(sum(size), 0) FROM memories_vec_chunks"
+                ).fetchone()[0],
+            )
+            self.db.execute("DROP TABLE IF EXISTS _vec_compact_stage")
+            with self.db:
+                self.db.execute(
+                    """
+                    CREATE TABLE _vec_compact_stage(
+                        chunk_id TEXT PRIMARY KEY,
+                        memory_id TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        embedding BLOB NOT NULL
+                    )
+                    """
+                )
+                self.db.execute(
+                    "INSERT INTO _vec_compact_stage "
+                    "SELECT chunk_id, memory_id, chunk_index, embedding FROM memories_vec"
+                )
+                staged = self.db.execute("SELECT count(*) FROM _vec_compact_stage").fetchone()[0]
+                if staged != live:
+                    raise RuntimeError(
+                        f"vec compact aborted: staged {staged} rows but vec0 reports "
+                        f"{live} live — rolling back"
+                    )
+                self.db.execute("DROP TABLE memories_vec")
+                self.db.execute(ddl)
+                self.db.execute(
+                    "INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding) "
+                    "SELECT chunk_id, memory_id, chunk_index, embedding FROM _vec_compact_stage"
+                )
+                rebuilt = self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0]
+                if rebuilt != live:
+                    raise RuntimeError(
+                        f"vec compact aborted: rebuilt table holds {rebuilt} rows, "
+                        f"expected {live} — rolling back"
+                    )
+                self.db.execute("DROP TABLE _vec_compact_stage")
+            slots_after = self.db.execute(
+                "SELECT coalesce(sum(size), 0) FROM memories_vec_chunks"
+            ).fetchone()[0]
+        elapsed = (datetime.now(UTC) - start_monotonic).total_seconds()
+        logger.info(
+            "compact_vectors: %d live rows, slots %d -> %d (%.1fs)",
+            live,
+            slots_before,
+            slots_after,
+            elapsed,
+        )
+        return VecCompactResult(
+            live_rows=int(live),
+            slots_before=int(slots_before),
+            slots_after=int(slots_after),
+            seconds=elapsed,
+        )
 
     # ---- Embed state ------------------------------------------------------
 
