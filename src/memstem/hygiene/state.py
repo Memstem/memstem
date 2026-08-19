@@ -43,11 +43,13 @@ class HygieneSnapshot(TypedDict):
 STAGE_DISTILL_SESSIONS = "distill_sessions"
 STAGE_IMPORTANCE = "importance"
 STAGE_PROJECT_RECORDS = "project_records"
+STAGE_VEC_COMPACT = "vec_compact"
 
 ALL_STAGES = (
     STAGE_DISTILL_SESSIONS,
     STAGE_IMPORTANCE,
     STAGE_PROJECT_RECORDS,
+    STAGE_VEC_COMPACT,
 )
 
 

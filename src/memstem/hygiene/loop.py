@@ -34,6 +34,7 @@ from memstem.hygiene.state import (
     STAGE_DISTILL_SESSIONS,
     STAGE_IMPORTANCE,
     STAGE_PROJECT_RECORDS,
+    STAGE_VEC_COMPACT,
     acquire_stage_lock,
     due_for_run,
     release_stage_lock,
@@ -119,6 +120,11 @@ class HygieneLoop:
                 STAGE_PROJECT_RECORDS,
                 self.cfg.project_records_interval_seconds,
                 self._run_project_records,
+            ),
+            (
+                STAGE_VEC_COMPACT,
+                self.cfg.vec_compact_interval_seconds,
+                self._run_vec_compact,
             ),
         ]
         for stage, interval, fn in stages:
@@ -221,6 +227,41 @@ class HygieneLoop:
     #
     # These are called via asyncio.to_thread — synchronous, may block on
     # SQLite / LLM IO, no asyncio primitives inside.
+
+    def _run_vec_compact(self) -> None:
+        """Rebuild the vec0 table when dead slots pass the thresholds (ADR 0036).
+
+        The gate lives here (not in the scheduler) so a healthy table
+        still advances ``last_run`` — otherwise the stage would re-check
+        every poll tick forever once due.
+        """
+        live, slots = self.index.vec_occupancy()
+        dead = slots - live
+        if slots == 0 or dead < self.cfg.vec_compact_min_dead_slots:
+            logger.info(
+                "hygiene[vec_compact]: skip (live=%d slots=%d dead=%d < min %d)",
+                live,
+                slots,
+                dead,
+                self.cfg.vec_compact_min_dead_slots,
+            )
+            return
+        occupancy = live / slots
+        if occupancy >= self.cfg.vec_compact_max_occupancy:
+            logger.info(
+                "hygiene[vec_compact]: skip (occupancy %.2f >= %.2f)",
+                occupancy,
+                self.cfg.vec_compact_max_occupancy,
+            )
+            return
+        result = self.index.compact_vectors()
+        logger.info(
+            "hygiene[vec_compact]: %d live rows, slots %d -> %d (%.1fs)",
+            result.live_rows,
+            result.slots_before,
+            result.slots_after,
+            result.seconds,
+        )
 
     def _run_importance(self) -> None:
         from memstem.hygiene.importance import (
