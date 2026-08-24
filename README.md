@@ -33,7 +33,7 @@ Memstem solves this by:
 
 ## Architecture (one paragraph)
 
-Markdown files in a structured tree are the canonical store. A SQLite database with FTS5 and sqlite-vec is the rebuildable index. A daemon watches each connected AI's filesystem and ingests deltas. An MCP server exposes search, get, and skill retrieval to clients. A hygiene loop runs inside the daemon — distilling sessions, judging duplicates, scoring importance, and building project records on configurable intervals.
+Markdown files in a structured tree are the canonical store. A SQLite database with FTS5 and sqlite-vec is the rebuildable index. A daemon watches each connected AI's filesystem and ingests deltas. An MCP server exposes search, get, and skill retrieval to clients. A hygiene loop runs inside the daemon — distilling sessions (and re-distilling them as they grow), scoring importance, building project records, and compacting the vector table on configurable intervals.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and [ROADMAP.md](./ROADMAP.md) for the phase plan.
 
@@ -368,7 +368,13 @@ What you get:
 - **Session distillations** at `vault/distillations/<source>/<session_id>.md` —
   one paragraph + structured Key entities / Deliverables / Decisions /
   Status sections per session. Provenance always points back to the
-  source transcript.
+  source transcript, and records a snapshot of its size — when a
+  session later outgrows that snapshot by 500+ words or 10+ turns
+  (a long-running or reopened session), the default scan re-distills
+  it in place so the summary follows the transcript
+  ([ADR 0037](./docs/decisions/0037-stale-distillation-refresh.md);
+  `--no-refresh-stale` disables, `--min-new-words` / `--min-new-turns`
+  tune the gate).
 - **Project records** at `vault/memories/projects/<slug>.md` — one
   per Claude Code project tag with ≥2 sessions. Canonical project
   name extracted from the work itself, accumulated decisions,
