@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from memstem.config import HygieneConfig, SearchConfig
 from memstem.core.dedup import normalized_body_hash, record_body_hash
@@ -454,7 +455,7 @@ def build_server(
             "SELECT path FROM memories WHERE id = ?", (id_or_path,)
         ).fetchone()
         if row is None:
-            raise ValueError(f"no memory found for {id_or_path!r}")
+            raise ToolError(f"no memory found for {id_or_path!r}")
         memory = res.vault.read(row["path"])
         if log_client is not None:
             log_get(
@@ -517,7 +518,7 @@ def build_server(
             query += " AND deleted_at IS NULL"
         rows = res.index.db.execute(query, ("skill", name)).fetchall()
         if not rows:
-            raise ValueError(f"no skill named {name!r}")
+            raise ToolError(f"no skill named {name!r}")
         return _serialize_memory(res.vault.read(rows[0]["path"]))
 
     @mcp.tool()
@@ -545,7 +546,7 @@ def build_server(
         # Vault._resolve.) The content is never lost — retrying without
         # `path` always lands at an auto-generated location.
         if path is not None and any(part.startswith("_") for part in Path(path).parts):
-            raise ValueError(
+            raise ToolError(
                 f"path {path!r} touches an underscore-prefixed directory, which is "
                 "reserved for vault internals (e.g. _meta). Omit `path` to store at "
                 "an auto-generated location."
