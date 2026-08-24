@@ -309,6 +309,12 @@ class HygieneLoop:
                 "distill-retry cap",
                 plan.skipped_failed,
             )
+        if plan.stale_refresh_candidates:
+            logger.info(
+                "hygiene[distill_sessions]: %d stale summar%s queued for refresh (ADR 0037)",
+                plan.stale_refresh_candidates,
+                "y" if plan.stale_refresh_candidates == 1 else "ies",
+            )
         if not plan.proposals:
             logger.info("hygiene[distill_sessions]: no eligible sessions")
             return

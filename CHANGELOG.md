@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Stale session summaries now refresh automatically**
+  ([ADR 0037](docs/decisions/0037-stale-distillation-refresh.md)). Session
+  distillation was one-shot: the candidate scan skipped any session with an
+  existing linked distillation, so a summary written early in a long-running
+  or reopened session was never rewritten — and because distillations are
+  deliberately boosted in search, the stale summary outranked the fresh
+  transcript (the follow-up ADR 0020 deferred; reported from observed recall
+  lapses by Brad Snape). Every distillation now records a snapshot of its
+  source transcript (`provenance.source_word_count` / `source_turn_count` /
+  `source_updated`), and the default scan re-distills a session once its
+  transcript outgrows that snapshot by ≥ 500 words or ≥ 10 turns
+  (`--min-new-words` / `--min-new-turns`; `--no-refresh-stale` restores the
+  old existence-only skip). Pre-0037 distillations with no snapshot refresh
+  once on a timestamp check, then become delta-gated. Refreshes overwrite in
+  place (same id, `created` preserved — previously a `--force` rewrite reset
+  it), re-enqueue for embedding, ride the existing empty-summary retry cap,
+  and are queued after never-distilled sessions so a refresh backlog can't
+  starve first-time distillation under `distill_max_per_cycle`.
+
 ### Fixed
 
 - **MCP tool errors surface their message again on mcp 2.1.** mcp 2.1.0

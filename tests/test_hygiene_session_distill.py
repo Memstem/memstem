@@ -28,6 +28,9 @@ from memstem.hygiene.session_distill import (
     DEFAULT_MAX_INPUT_CHARS,
     DISTILLATION_KIND_TAG,
     PROVENANCE_REF_PREFIX,
+    PROVENANCE_SOURCE_TURN_COUNT,
+    PROVENANCE_SOURCE_UPDATED,
+    PROVENANCE_SOURCE_WORD_COUNT,
     SessionCandidate,
     apply_distillations,
     build_session_prompt,
@@ -117,22 +120,31 @@ def _write_distillation(
     source: str = "hygiene-worker",
     tags: list[str] | None = None,
     importance: float = DEFAULT_DISTILLATION_IMPORTANCE,
+    updated: datetime | None = None,
+    source_word_count: int | None = None,
+    source_turn_count: int | None = None,
 ) -> Memory:
+    stamp = (updated or datetime(2026, 4, 28, tzinfo=UTC)).isoformat()
+    provenance: dict[str, object] = {
+        "source": source,
+        "ref": f"{PROVENANCE_REF_PREFIX}{linked_session_id}",
+        "ingested_at": stamp,
+    }
+    if source_word_count is not None:
+        provenance[PROVENANCE_SOURCE_WORD_COUNT] = source_word_count
+    if source_turn_count is not None:
+        provenance[PROVENANCE_SOURCE_TURN_COUNT] = source_turn_count
     payload: dict[str, object] = {
         "id": str(uuid4()),
         "type": "distillation",
-        "created": datetime(2026, 4, 28, tzinfo=UTC).isoformat(),
-        "updated": datetime(2026, 4, 28, tzinfo=UTC).isoformat(),
+        "created": stamp,
+        "updated": stamp,
         "source": source,
         "title": title,
         "tags": tags or [DISTILLATION_KIND_TAG],
         "links": [f"memory://sessions/{linked_session_id}"],
         "importance": importance,
-        "provenance": {
-            "source": source,
-            "ref": f"{PROVENANCE_REF_PREFIX}{linked_session_id}",
-            "ingested_at": datetime(2026, 4, 28, tzinfo=UTC).isoformat(),
-        },
+        "provenance": provenance,
     }
     fm = validate(payload)
     return Memory(
@@ -295,6 +307,127 @@ def test_find_distilled_session_ids_ignores_non_session_links(vault: Vault) -> N
     m = Memory(frontmatter=fm, body="x", path=Path("distillations/topic/x.md"))
     vault.write(m)
     assert find_distilled_session_ids(vault) == {"legit-session"}
+
+
+# ─── Staleness-driven refresh (ADR 0037) ──────────────────────────
+
+
+class TestStaleRefresh:
+    def test_word_growth_past_threshold_requeues_session(self, vault: Vault) -> None:
+        _write_session(vault, session_id="s1", turns=12, words_per_turn=100)  # ~1212 words
+        d = _write_distillation(
+            vault, linked_session_id="s1", source_word_count=100, source_turn_count=12
+        )
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert [c.session_id for c in candidates] == ["s1"]
+        assert stats["stale_refresh_candidates"] == 1
+        assert stats["skipped_already_distilled"] == 0
+
+    def test_current_snapshot_stays_skipped(self, vault: Vault) -> None:
+        session = _write_session(vault, session_id="s1", turns=12)
+        word_count = len((session.body or "").split())
+        d = _write_distillation(
+            vault, linked_session_id="s1", source_word_count=word_count, source_turn_count=12
+        )
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert candidates == []
+        assert stats["skipped_already_distilled"] == 1
+        assert stats["stale_refresh_candidates"] == 0
+
+    def test_turn_growth_past_threshold_requeues_session(self, vault: Vault) -> None:
+        session = _write_session(vault, session_id="s1", turns=30)
+        word_count = len((session.body or "").split())
+        # Word delta is zero; turn delta is 30 - 12 = 18 >= 10.
+        d = _write_distillation(
+            vault, linked_session_id="s1", source_word_count=word_count, source_turn_count=12
+        )
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert [c.session_id for c in candidates] == ["s1"]
+        assert stats["stale_refresh_candidates"] == 1
+
+    def test_legacy_distillation_falls_back_to_timestamps(self, vault: Vault) -> None:
+        """Pre-ADR-0037 distillations (no snapshot) refresh when the session is newer."""
+        stamp = datetime(2026, 4, 28, tzinfo=UTC)
+        _write_session(vault, session_id="s1", turns=12, updated=stamp + timedelta(days=1))
+        d = _write_distillation(vault, linked_session_id="s1", updated=stamp)
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert [c.session_id for c in candidates] == ["s1"]
+        assert stats["stale_refresh_candidates"] == 1
+
+    def test_legacy_distillation_not_older_than_session_stays_skipped(self, vault: Vault) -> None:
+        stamp = datetime(2026, 4, 28, tzinfo=UTC)
+        _write_session(vault, session_id="s1", turns=12, updated=stamp)
+        d = _write_distillation(vault, linked_session_id="s1", updated=stamp)
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert candidates == []
+        assert stats["skipped_already_distilled"] == 1
+
+    def test_refresh_stale_off_restores_existence_only_skip(self, vault: Vault) -> None:
+        _write_session(vault, session_id="s1", turns=12, words_per_turn=100)
+        d = _write_distillation(
+            vault, linked_session_id="s1", source_word_count=100, source_turn_count=12
+        )
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None, refresh_stale=False)
+        assert candidates == []
+        assert stats["skipped_already_distilled"] == 1
+
+    def test_custom_thresholds_honored(self, vault: Vault) -> None:
+        _write_session(vault, session_id="s1", turns=12)  # ~156 words
+        d = _write_distillation(
+            vault, linked_session_id="s1", source_word_count=100, source_turn_count=12
+        )
+        vault.write(d)
+        # Delta ~56 words: below the 500 default, above a 50-word override.
+        candidates, _ = find_session_candidates(vault, recency_days=None, min_new_words=50)
+        assert [c.session_id for c in candidates] == ["s1"]
+
+    def test_never_distilled_sessions_ordered_before_refreshes(self, vault: Vault) -> None:
+        """A refresh backlog must not starve first-time distillation under the
+        daemon's per-cycle cap — fresh sessions come first regardless of walk
+        order (the stale session's id sorts before the fresh one here)."""
+        _write_session(vault, session_id="a-stale", turns=12, words_per_turn=100)
+        d = _write_distillation(
+            vault, linked_session_id="a-stale", source_word_count=100, source_turn_count=12
+        )
+        vault.write(d)
+        _write_session(vault, session_id="z-new", turns=12)
+        candidates, _ = find_session_candidates(vault, recency_days=None)
+        assert [c.session_id for c in candidates] == ["z-new", "a-stale"]
+
+    def test_refresh_overwrites_in_place_preserving_id_and_created(
+        self, vault: Vault, index: Index
+    ) -> None:
+        """End-to-end: a stale session re-distills onto the same record —
+        same memory id, original ``created``, bumped ``updated``, and a
+        fresh provenance snapshot for the next staleness check."""
+        _write_session(vault, session_id="s1", turns=12, words_per_turn=100)
+        d = _write_distillation(
+            vault, linked_session_id="s1", source_word_count=100, source_turn_count=12
+        )
+        vault.write(d)
+        later = datetime(2026, 5, 10, tzinfo=UTC)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nrefreshed summary")
+        plan = compute_distillation_plan(vault, stub, recency_days=None, now=later)
+        assert len(plan.proposals) == 1
+        result = apply_distillations(vault, index, plan, now=later, track_failures=False)
+        assert result.written == 1
+        refreshed = vault.read(Path("distillations/claude-code/s1.md"))
+        assert str(refreshed.id) == str(d.id)
+        assert refreshed.frontmatter.created == d.frontmatter.created
+        assert refreshed.frontmatter.updated == later
+        prov = refreshed.frontmatter.provenance
+        assert prov is not None
+        extra = prov.model_extra or {}
+        assert extra[PROVENANCE_SOURCE_WORD_COUNT] > 100
+        assert extra[PROVENANCE_SOURCE_TURN_COUNT] == 12
+        assert PROVENANCE_SOURCE_UPDATED in extra
 
 
 # ─── Prompt construction ──────────────────────────────────────────
