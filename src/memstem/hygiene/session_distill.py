@@ -111,6 +111,27 @@ DEFAULT_RECENCY_DAYS = 30
 """Default recency window for the candidate scan. ``--backfill``
 disables this filter (every session is a candidate)."""
 
+DEFAULT_REDISTILL_MIN_NEW_WORDS = 500
+"""ADR 0037 §Delta gate: a distilled session becomes a refresh candidate
+when its transcript has grown by at least this many words since the
+snapshot recorded on the distillation (``provenance.source_word_count``).
+Set alongside :data:`DEFAULT_REDISTILL_MIN_NEW_TURNS` so the *new*
+content alone roughly clears the ADR 0020 meaningfulness threshold —
+the gate is content growth, never wall clock, because the summarizer
+shares the fleet GPU backend (see ADR 0028's contention lesson)."""
+
+DEFAULT_REDISTILL_MIN_NEW_TURNS = 10
+"""ADR 0037 §Delta gate: turn-count companion to
+:data:`DEFAULT_REDISTILL_MIN_NEW_WORDS`. Either threshold qualifies."""
+
+PROVENANCE_SOURCE_WORD_COUNT = "source_word_count"
+PROVENANCE_SOURCE_TURN_COUNT = "source_turn_count"
+PROVENANCE_SOURCE_UPDATED = "source_updated"
+"""Provenance extra keys stamped on every distillation (ADR 0037): a
+snapshot of the source transcript's size and ``updated`` at generation
+time, read back by the staleness gate on later scans. ``Provenance`` is
+``extra="allow"`` so these are not a schema change."""
+
 DEFAULT_MAX_DISTILL_ATTEMPTS = 3
 """How many times the daemon retries a session whose summarizer call keeps
 returning empty before it stops trying. Without this cap a session that
@@ -312,6 +333,7 @@ class DistillationPlan:
     skipped_too_short: int = 0
     skipped_failed: int = 0
     skipped_transient: int = 0
+    stale_refresh_candidates: int = 0
 
 
 @dataclass
@@ -345,21 +367,82 @@ def _session_id_from_link(link: str) -> str | None:
     return None
 
 
-def find_distilled_session_ids(vault: Vault) -> set[str]:
-    """Return the set of session ids already covered by a distillation.
+def find_distillations_by_session(vault: Vault) -> dict[str, Memory]:
+    """Map each already-distilled session id to its distillation Memory.
 
     Walks every ``type: distillation`` record in the vault and pulls
     the source session ids out of its ``links`` field. Used by
-    :func:`find_session_candidates` to skip sessions that already
-    have a companion distillation, making re-runs cheap.
+    :func:`find_session_candidates` both to skip sessions that already
+    have a *current* companion distillation and to detect stale ones
+    (ADR 0037) via the provenance snapshot on the record.
     """
-    covered: set[str] = set()
+    covered: dict[str, Memory] = {}
     for memory in vault.walk(types=[MemoryType.DISTILLATION.value]):
         for link in memory.frontmatter.links:
             session_id = _session_id_from_link(link)
             if session_id:
-                covered.add(session_id)
+                covered[session_id] = memory
     return covered
+
+
+def find_distilled_session_ids(vault: Vault) -> set[str]:
+    """Return the set of session ids already covered by a distillation.
+
+    Existence-only view over :func:`find_distillations_by_session`,
+    kept for callers (e.g. ``hygiene/verify.py``) that don't care
+    about staleness.
+    """
+    return set(find_distillations_by_session(vault))
+
+
+def _provenance_int(distillation: Memory, key: str) -> int | None:
+    prov = distillation.frontmatter.provenance
+    if prov is None:
+        return None
+    extra = getattr(prov, "model_extra", None) or {}
+    raw = extra.get(key)
+    if isinstance(raw, bool):  # bool is an int subclass; reject it
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def is_distillation_stale(
+    session: Memory,
+    distillation: Memory,
+    *,
+    min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
+    min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
+) -> bool:
+    """Return True iff ``session`` has grown enough to earn a re-distill.
+
+    The gate (ADR 0037) compares the session's current size against the
+    snapshot stamped on the distillation's provenance at generation time:
+    stale when it has gained at least ``min_new_words`` words OR
+    ``min_new_turns`` turns.
+
+    Legacy distillations (written before ADR 0037, no snapshot) fall
+    back to a timestamp check — stale when the session's ``updated`` is
+    newer than the distillation's. They earn one snapshot-stamping
+    refresh; every later refresh is delta-gated.
+    """
+    snap_words = _provenance_int(distillation, PROVENANCE_SOURCE_WORD_COUNT)
+    snap_turns = _provenance_int(distillation, PROVENANCE_SOURCE_TURN_COUNT)
+    if snap_words is None and snap_turns is None:
+        return session.frontmatter.updated > distillation.frontmatter.updated
+    if snap_words is not None:
+        if _word_count(session.body or "") - snap_words >= min_new_words:
+            return True
+    if snap_turns is not None:
+        if _extract_turn_count(session) - snap_turns >= min_new_turns:
+            return True
+    return False
 
 
 def _word_count(body: str) -> int:
@@ -460,17 +543,22 @@ def find_session_candidates(
     recency_days: int | None = DEFAULT_RECENCY_DAYS,
     include_already_distilled: bool = False,
     excluded_session_ids: set[str] | None = None,
+    refresh_stale: bool = True,
+    min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
+    min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
     now: datetime | None = None,
 ) -> tuple[list[SessionCandidate], dict[str, int]]:
     """Walk vault sessions, filter, and return candidates + skip counts.
 
     Returns ``(candidates, stats)`` where ``stats`` carries:
     - ``total_sessions_scanned``: number of session records walked.
-    - ``skipped_already_distilled``: sessions filtered by the
-      already-covered set (when ``include_already_distilled=False``).
+    - ``skipped_already_distilled``: sessions whose distillation exists
+      and is still current (when ``include_already_distilled=False``).
     - ``skipped_too_short``: sessions failing the turn/word threshold.
     - ``skipped_failed``: sessions filtered by ``excluded_session_ids``
       (permanently-failed sessions the daemon has given up retrying).
+    - ``stale_refresh_candidates``: already-distilled sessions included
+      again because their transcript outgrew the summary (ADR 0037).
 
     ``recency_days=None`` disables the recency filter (the
     ``--backfill`` mode); pass an integer N to limit candidates to
@@ -479,15 +567,25 @@ def find_session_candidates(
     ``excluded_session_ids`` are skipped outright — the daemon passes the
     sessions that have exceeded the distill-retry cap so they stop consuming
     a summarizer call (and the per-cycle budget) every tick.
+
+    ``refresh_stale`` (ADR 0037) re-admits a distilled session when
+    :func:`is_distillation_stale` says its summary is behind the
+    transcript by at least ``min_new_words`` words or ``min_new_turns``
+    turns. Never-distilled sessions are returned *before* stale
+    refreshes so a refresh backlog can't starve first-time distillation
+    under the daemon's per-cycle cap.
     """
     cutoff: datetime | None = None
     if recency_days is not None:
         cutoff = (now or datetime.now(tz=UTC)) - timedelta(days=recency_days)
 
-    covered = set() if include_already_distilled else find_distilled_session_ids(vault)
+    covered: dict[str, Memory] = (
+        {} if include_already_distilled else find_distillations_by_session(vault)
+    )
     excluded = excluded_session_ids or set()
 
     candidates: list[SessionCandidate] = []
+    refresh_candidates: list[SessionCandidate] = []
     total = 0
     skipped_already = 0
     skipped_short = 0
@@ -499,24 +597,32 @@ def find_session_candidates(
         if cutoff is not None and memory.frontmatter.updated < cutoff:
             continue
         session_id = Path(memory.path).stem
-        if session_id in covered:
-            skipped_already += 1
-            continue
         if session_id in excluded:
             skipped_failed += 1
+            continue
+        existing = covered.get(session_id)
+        if existing is not None and not (
+            refresh_stale
+            and is_distillation_stale(
+                memory, existing, min_new_words=min_new_words, min_new_turns=min_new_turns
+            )
+        ):
+            skipped_already += 1
             continue
         if not is_meaningful_session(memory, min_turns=min_turns, min_words=min_words):
             skipped_short += 1
             continue
-        candidates.append(_candidate_from_memory(memory))
+        target = candidates if existing is None else refresh_candidates
+        target.append(_candidate_from_memory(memory))
 
     stats = {
         "total_sessions_scanned": total,
         "skipped_already_distilled": skipped_already,
         "skipped_too_short": skipped_short,
         "skipped_failed": skipped_failed,
+        "stale_refresh_candidates": len(refresh_candidates),
     }
-    return candidates, stats
+    return candidates + refresh_candidates, stats
 
 
 # ─── Prompt construction ──────────────────────────────────────────
@@ -588,6 +694,7 @@ def materialize_distillation(
     importance: float = DEFAULT_DISTILLATION_IMPORTANCE,
     now: datetime | None = None,
     memory_id: str | None = None,
+    created: datetime | None = None,
 ) -> Memory:
     """Build the ``type: distillation`` :class:`Memory` for a candidate.
 
@@ -604,6 +711,13 @@ def materialize_distillation(
     - ``tags`` inherited from the source (so a search for the project
       tag still matches the distillation) plus a static
       ``distillation:session`` marker.
+    - ``provenance.source_word_count`` / ``source_turn_count`` /
+      ``source_updated`` — the ADR 0037 snapshot of the transcript this
+      summary was generated from, read back by the staleness gate.
+
+    On a refresh (``memory_id``/``created`` passed from the existing
+    record) the original ``created`` is preserved and only ``updated``
+    moves to ``now``.
     """
     timestamp = now or datetime.now(tz=UTC)
     new_id = memory_id or str(uuid4())
@@ -611,7 +725,7 @@ def materialize_distillation(
     payload: dict[str, Any] = {
         "id": new_id,
         "type": MemoryType.DISTILLATION.value,
-        "created": timestamp.isoformat(),
+        "created": (created or timestamp).isoformat(),
         "updated": timestamp.isoformat(),
         "source": "hygiene-worker",
         "title": title,
@@ -623,6 +737,9 @@ def materialize_distillation(
             "ref": f"{PROVENANCE_REF_PREFIX}{candidate.session_id}",
             "ingested_at": timestamp.isoformat(),
             "summarizer": summarizer_name,
+            PROVENANCE_SOURCE_WORD_COUNT: candidate.word_count,
+            PROVENANCE_SOURCE_TURN_COUNT: candidate.turn_count,
+            PROVENANCE_SOURCE_UPDATED: candidate.updated.isoformat(),
         },
     }
     fm = validate(payload)
@@ -641,6 +758,9 @@ def compute_distillation_plan(
     min_words: int = DEFAULT_MIN_WORDS,
     recency_days: int | None = DEFAULT_RECENCY_DAYS,
     force: bool = False,
+    refresh_stale: bool = True,
+    min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
+    min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
     prompt_template: str | None = None,
     now: datetime | None = None,
     max_candidates: int | None = None,
@@ -652,8 +772,10 @@ def compute_distillation_plan(
 
     ``force=True`` rewrites distillations even when one already
     exists for a session (mirrors ``--force`` on the CLI). The default
-    skips sessions covered by an existing ``type: distillation``
-    record so re-runs are cheap.
+    skips sessions covered by an existing *current* ``type: distillation``
+    record so re-runs are cheap; ``refresh_stale`` (ADR 0037, default
+    on) re-admits sessions whose transcript has outgrown the summary by
+    ``min_new_words`` words or ``min_new_turns`` turns.
 
     The summarizer's :meth:`generate_cached` is called with ``db`` so
     repeated runs short-circuit on cached output. ``db=None`` skips
@@ -690,6 +812,9 @@ def compute_distillation_plan(
         recency_days=recency_days,
         include_already_distilled=force,
         excluded_session_ids=excluded,
+        refresh_stale=refresh_stale,
+        min_new_words=min_new_words,
+        min_new_turns=min_new_turns,
         now=now,
     )
 
@@ -739,6 +864,7 @@ def compute_distillation_plan(
         skipped_too_short=stats["skipped_too_short"],
         skipped_failed=stats["skipped_failed"],
         skipped_transient=skipped_transient,
+        stale_refresh_candidates=stats["stale_refresh_candidates"],
     )
 
 
@@ -804,6 +930,7 @@ def apply_distillations(
                 proposal.summarizer_name,
                 now=now,
                 memory_id=memory_id,
+                created=existing.frontmatter.created if existing is not None else None,
             )
             vault.write(memory)
             index.upsert(memory)
@@ -840,6 +967,7 @@ def format_plan_summary(plan: DistillationPlan) -> str:
     lines = [
         f"  scanned: {plan.total_sessions_scanned} session record(s)",
         f"  skipped (already distilled): {plan.skipped_already_distilled}",
+        f"  stale summaries queued for refresh: {plan.stale_refresh_candidates}",
         f"  skipped (too short): {plan.skipped_too_short}",
         f"  skipped (retry cap reached): {plan.skipped_failed}",
         f"  skipped (transient backend, will retry): {plan.skipped_transient}",
@@ -873,8 +1001,13 @@ __all__ = [
     "DEFAULT_MIN_TURNS",
     "DEFAULT_MIN_WORDS",
     "DEFAULT_RECENCY_DAYS",
+    "DEFAULT_REDISTILL_MIN_NEW_TURNS",
+    "DEFAULT_REDISTILL_MIN_NEW_WORDS",
     "DISTILLATION_KIND_TAG",
     "PROVENANCE_REF_PREFIX",
+    "PROVENANCE_SOURCE_TURN_COUNT",
+    "PROVENANCE_SOURCE_UPDATED",
+    "PROVENANCE_SOURCE_WORD_COUNT",
     "ApplyResult",
     "DistillationPlan",
     "DistillationProposal",
@@ -883,12 +1016,14 @@ __all__ = [
     "build_session_prompt",
     "clear_distill_failure",
     "compute_distillation_plan",
+    "find_distillations_by_session",
     "find_distilled_session_ids",
     "find_session_candidates",
     "format_plan_summary",
     "format_proposals",
     "get_distill_failure_records",
     "get_distill_failures",
+    "is_distillation_stale",
     "is_meaningful_session",
     "materialize_distillation",
     "record_distill_failure",

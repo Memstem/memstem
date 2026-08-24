@@ -2550,12 +2550,46 @@ def hygiene_distill_sessions(
             help=("Recency window in days (default 30). Ignored when --backfill is set."),
         ),
     ] = 30,
+    refresh_stale: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-stale/--no-refresh-stale",
+            help=(
+                "Re-distill sessions whose transcript has outgrown their "
+                "existing summary by --min-new-words words or "
+                "--min-new-turns turns (ADR 0037). Default on; "
+                "--no-refresh-stale restores the old existence-only skip."
+            ),
+        ),
+    ] = True,
+    min_new_words: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Staleness gate: minimum words the transcript must have "
+                "gained since its summary was written to qualify for a "
+                "refresh (default 500)."
+            ),
+        ),
+    ] = 500,
+    min_new_turns: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Staleness gate: minimum turns the transcript must have "
+                "gained since its summary was written to qualify for a "
+                "refresh (default 10). Either gate qualifies."
+            ),
+        ),
+    ] = 10,
 ) -> None:
     """Generate type=distillation records for meaningful sessions (ADR 0020).
 
     Walks every session in the vault, filters by the meaningfulness
     threshold (turn count + word count) and skips sessions that already
-    have a linked distillation, then calls the configured summarizer to
+    have a *current* linked distillation (a session whose transcript has
+    outgrown its summary is re-distilled — ADR 0037, see
+    --refresh-stale), then calls the configured summarizer to
     produce a 1-paragraph rollup with structured Key entities /
     Deliverables / Decisions / Status sections.
 
@@ -2620,6 +2654,9 @@ def hygiene_distill_sessions(
             min_words=min_words,
             recency_days=None if backfill else recency_days,
             force=force,
+            refresh_stale=refresh_stale,
+            min_new_words=min_new_words,
+            min_new_turns=min_new_turns,
         )
         typer.echo("")
         typer.echo(format_plan_summary(plan))
