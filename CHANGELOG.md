@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP tool errors surface their message again on mcp 2.1.** mcp 2.1.0
+  masks generic exceptions raised inside tools as `Error executing tool
+  <name>` (upstream hardening), which hid Memstem's intentional guidance —
+  `no memory found for ...`, `no skill named ...`, and the underscore-path
+  upsert refusal that tells the agent how to recover (and broke CI on every
+  fresh install). Those raises now use `ToolError` (present since mcp
+  2.0.0, so no pin change), which passes through verbatim on 2.0.x and
+  2.1.x alike.
+
 - **Vector searches no longer scan unbounded dead space; recurring
   multi-minute search stalls fixed**
   ([ADR 0036](docs/decisions/0036-vec-table-compaction.md)). sqlite-vec's
