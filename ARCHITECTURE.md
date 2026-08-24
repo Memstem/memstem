@@ -122,7 +122,12 @@ session sets into retrieval-shaped records:
 - **Session distillation** (`memstem hygiene distill-sessions`): one
   `type: distillation` per meaningful session, link-back via
   frontmatter. Importance seeded above raw sessions so the existing
-  multiplier surfaces them on close ties.
+  multiplier surfaces them on close ties. Each distillation records a
+  snapshot of its source transcript (word/turn count) in provenance;
+  a session that outgrows the snapshot by 500+ words or 10+ turns is
+  re-distilled in place — delta-gated, never wall-clock — so a stale
+  summary can't outrank the fresh transcript it summarizes
+  (ADR 0037).
 - **Project records** (`memstem hygiene project-records`): one
   `type: project` per Claude Code project tag with ≥2 sessions,
   preferring linked distillations as input. Hand-edited records
