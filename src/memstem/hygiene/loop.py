@@ -305,6 +305,7 @@ class HygieneLoop:
             max_candidates=self.cfg.distill_max_per_cycle,
             max_input_chars=self.cfg.summarizer_max_input_chars,
             recency_days=self.cfg.distill_recency_days or None,
+            concurrency=self.cfg.distill_concurrency,
             lock=self.index.lock,
         )
         if plan.skipped_failed:

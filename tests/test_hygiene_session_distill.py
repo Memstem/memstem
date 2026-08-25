@@ -527,6 +527,39 @@ class TestCapRaiseBackfill:
         assert candidates == []
 
 
+class TestConcurrentPlan:
+    """distill_concurrency > 1 runs plan-phase summarizer calls in a pool."""
+
+    def test_concurrent_plan_matches_serial(self, vault: Vault) -> None:
+        for i in range(6):
+            _write_session(vault, session_id=f"s{i}", turns=12)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nconcurrent")
+        serial = compute_distillation_plan(vault, stub, recency_days=None, concurrency=1)
+        concurrent = compute_distillation_plan(vault, stub, recency_days=None, concurrency=4)
+        assert [p.candidate.session_id for p in concurrent.proposals] == [
+            p.candidate.session_id for p in serial.proposals
+        ]
+        assert all(p.summary == "## Summary\n\nconcurrent" for p in concurrent.proposals)
+
+    def test_concurrent_transient_failures_counted_not_proposed(self, vault: Vault) -> None:
+        _write_session(vault, session_id="ok", turns=12)
+        bad = _write_session(vault, session_id="bad", turns=14)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nfine")
+        stub.set_transient(build_session_prompt(_candidate_of(bad)))
+        plan = compute_distillation_plan(vault, stub, recency_days=None, concurrency=4)
+        ids = [p.candidate.session_id for p in plan.proposals]
+        assert ids == ["ok"]
+        assert plan.skipped_transient == 1
+
+
+def _candidate_of(memory: Memory) -> SessionCandidate:
+    from memstem.hygiene.session_distill import _candidate_from_memory
+
+    return _candidate_from_memory(memory)
+
+
 # ─── Prompt construction ──────────────────────────────────────────
 
 

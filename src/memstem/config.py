@@ -324,6 +324,15 @@ class HygieneConfig(BaseModel):
     is self-backfilling: summaries generated from a harder-truncated
     read become refresh candidates (see ``source_read_chars``)."""
 
+    distill_concurrency: int = Field(default=1, ge=1, le=16)
+    """Concurrent summarizer calls during the distill plan phase.
+    Default 1 (serial — unchanged behavior). At a raised ADR 0038 cap a
+    single call takes minutes, so a serial 50-candidate cycle is
+    wall-clock-bound on the backend; a small pool (4 is a good cloud
+    default) cuts cycle time proportionally. Safe because the
+    summarizer-cache I/O is serialized by ``Index.lock``; keep it
+    modest to respect backend rate limits (429s skip-and-retry)."""
+
     summarizer_timeout_seconds: float = Field(default=120.0, ge=1.0)
     """HTTP timeout for one summarizer call. The 120s default is ample
     for 32k-char prompts; a raised ADR 0038 cap can push single prompts

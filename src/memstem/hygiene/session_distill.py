@@ -793,6 +793,7 @@ def compute_distillation_plan(
     min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
     min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
+    concurrency: int = 1,
     prompt_template: str | None = None,
     now: datetime | None = None,
     max_candidates: int | None = None,
@@ -854,23 +855,22 @@ def compute_distillation_plan(
     if max_candidates is not None and max_candidates >= 0:
         candidates = candidates[:max_candidates]
 
-    proposals: list[DistillationProposal] = []
-    skipped_transient = 0
-    for candidate in candidates:
+    def _summarize_one(candidate: SessionCandidate) -> DistillationProposal | None:
+        """One candidate's plan step. Returns None on a transient failure
+        (the candidate is skipped without a proposal, so apply records no
+        failure and it stays eligible for the next cycle)."""
         prompt = build_session_prompt(
             candidate, prompt_template=prompt_template, max_input_chars=max_input_chars
         )
         # ``db`` is sqlite3.Connection in production but typed as
         # ``object`` here so callers can pass ``None`` without import
-        # gymnastics.
+        # gymnastics. Cache I/O inside generate_cached is serialized by
+        # ``lock``, which is what makes the concurrent path safe.
         try:
             summary = summarizer.generate_cached(prompt, db=db, lock=lock)  # type: ignore[arg-type]
         except TransientSummarizerError as exc:
             # The backend was unreachable/overloaded — NOT this session's fault.
-            # Skip it WITHOUT emitting an (empty) proposal, so apply_distillations
-            # records no failure and the cap is untouched. It stays eligible and
-            # is retried next cycle, exactly like the embed worker's transient
-            # path. This is the fix for the 2026-06 distillation stalls, where a
+            # This is the fix for the 2026-06 distillation stalls, where a
             # momentary blip was indistinguishable from "unsummarizable content".
             logger.warning(
                 "hygiene[distill_sessions]: session %s skipped — transient "
@@ -878,19 +878,36 @@ def compute_distillation_plan(
                 candidate.session_id,
                 exc,
             )
-            skipped_transient += 1
-            continue
+            return None
         skipped_reason: str | None = None
         if not summary:
             skipped_reason = "summarizer returned empty (NoOp default or LLM unreachable)"
-        proposals.append(
-            DistillationProposal(
-                candidate=candidate,
-                summary=summary,
-                summarizer_name=summarizer.name,
-                skipped_reason=skipped_reason,
-            )
+        return DistillationProposal(
+            candidate=candidate,
+            summary=summary,
+            summarizer_name=summarizer.name,
+            skipped_reason=skipped_reason,
         )
+
+    results: list[DistillationProposal | None]
+    if concurrency > 1 and len(candidates) > 1:
+        # ADR 0038 follow-up: the plan phase is pure LLM calls, and at a
+        # raised input cap a single call takes minutes — serial cycles are
+        # wall-clock-bound on the backend, not the daemon. A small pool
+        # (bounded by config) runs candidates concurrently; candidate order
+        # is preserved via executor.map so plans stay deterministic.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(
+            max_workers=min(concurrency, len(candidates)),
+            thread_name_prefix="distill",
+        ) as pool:
+            results = list(pool.map(_summarize_one, candidates))
+    else:
+        results = [_summarize_one(c) for c in candidates]
+
+    proposals = [r for r in results if r is not None]
+    skipped_transient = sum(1 for r in results if r is None)
 
     return DistillationPlan(
         proposals=proposals,
