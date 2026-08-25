@@ -2582,6 +2582,17 @@ def hygiene_distill_sessions(
             ),
         ),
     ] = 10,
+    max_input_chars: Annotated[
+        int | None,
+        typer.Option(
+            help=(
+                "Cap on transcript chars fed to the summarizer (ADR 0038). "
+                "Default: the vault's hygiene.summarizer_max_input_chars "
+                "(32000 unless raised). Raise only when the summarizer "
+                "route reaches a large-context model."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Generate type=distillation records for meaningful sessions (ADR 0020).
 
@@ -2622,6 +2633,9 @@ def hygiene_distill_sessions(
     cfg = _load_config(_resolve_vault_path(vault))
     vault_obj = Vault(cfg.vault_path)
     index = _open_index(cfg)
+    effective_max_input = (
+        max_input_chars if max_input_chars is not None else cfg.hygiene.summarizer_max_input_chars
+    )
 
     summarizer: Summarizer
     provider_lc = provider.lower()
@@ -2657,6 +2671,7 @@ def hygiene_distill_sessions(
             refresh_stale=refresh_stale,
             min_new_words=min_new_words,
             min_new_turns=min_new_turns,
+            max_input_chars=effective_max_input,
         )
         typer.echo("")
         typer.echo(format_plan_summary(plan))
@@ -2672,7 +2687,13 @@ def hygiene_distill_sessions(
                 # track_failures is daemon-only: a manual CLI run shouldn't
                 # accrue retry state (the operator is here on purpose and can
                 # re-run / --force).
-                result = apply_distillations(vault_obj, index, plan, track_failures=False)
+                result = apply_distillations(
+                    vault_obj,
+                    index,
+                    plan,
+                    track_failures=False,
+                    max_input_chars=effective_max_input,
+                )
             typer.echo(
                 f"\napplied: {result.written} distillation(s) written, "
                 f"{result.skipped_no_summary} skipped (empty summary), "

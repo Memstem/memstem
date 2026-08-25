@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The summarizer input cap is now config, and raising it backfills
+  itself** ([ADR 0038](docs/decisions/0038-route-aware-summarizer-input-cap.md)).
+  `hygiene.summarizer_max_input_chars` (default 32,000 — unchanged
+  behavior) replaces the hardcoded distillation cap; the CLI gains
+  `--max-input-chars`. Field measurement showed the old cap was no edge
+  case: 46% of distilled sessions on the maintainer's vault exceed it,
+  so day-scale sessions were routinely summarized from a head+tail
+  slice that can miss mid-session decisions. Raise the knob only on a
+  host whose summarizer route reaches a large-context model (a
+  16k-context host 400s on oversized prompts, and the sidecar doesn't
+  fail over on 4xx). Every distillation now records
+  `provenance.source_read_chars` — how much transcript it actually
+  read — and "the current cap could read ≥10k chars more than this
+  summary saw" is a new staleness condition, so a cap raise turns every
+  harder-truncated summary into an ordinary ADR 0037 refresh candidate
+  that drains through normal hygiene cycles. No backfill tooling, no
+  flag day; pre-0038 records are assumed to have read the old 32k.
+
 ## [0.21.0] - 2026-08-24
 
 ### Added

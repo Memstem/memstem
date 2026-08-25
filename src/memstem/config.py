@@ -305,6 +305,16 @@ class HygieneConfig(BaseModel):
     ``http://localhost:11434`` for Ollama). Ignored when
     ``summarizer_provider`` is ``noop``."""
 
+    summarizer_max_input_chars: int = Field(default=32000, ge=1000)
+    """Cap on session-transcript chars fed to the distill summarizer
+    (ADR 0038). Default matches the fleet's self-hosted 16k-token
+    Gemma. Raise it ONLY on a host whose summarizer primary route
+    reaches a large-context model (e.g. the 128k-token cloud route,
+    ~400k chars) — on a 16k-context host an oversized prompt gets a
+    400, and the sidecar does not fail over on 4xx. Raising the cap
+    is self-backfilling: summaries generated from a harder-truncated
+    read become refresh candidates (see ``source_read_chars``)."""
+
     summarizer_api_key_env: str = "OPENAI_API_KEY"
     """Env var name to read the summarizer API key from. Self-hosted
     OpenAI-compatible servers usually ignore the key value but require

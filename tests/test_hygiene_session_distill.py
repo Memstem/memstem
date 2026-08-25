@@ -28,6 +28,7 @@ from memstem.hygiene.session_distill import (
     DEFAULT_MAX_INPUT_CHARS,
     DISTILLATION_KIND_TAG,
     PROVENANCE_REF_PREFIX,
+    PROVENANCE_SOURCE_READ_CHARS,
     PROVENANCE_SOURCE_TURN_COUNT,
     PROVENANCE_SOURCE_UPDATED,
     PROVENANCE_SOURCE_WORD_COUNT,
@@ -123,6 +124,7 @@ def _write_distillation(
     updated: datetime | None = None,
     source_word_count: int | None = None,
     source_turn_count: int | None = None,
+    source_read_chars: int | None = None,
 ) -> Memory:
     stamp = (updated or datetime(2026, 4, 28, tzinfo=UTC)).isoformat()
     provenance: dict[str, object] = {
@@ -134,6 +136,8 @@ def _write_distillation(
         provenance[PROVENANCE_SOURCE_WORD_COUNT] = source_word_count
     if source_turn_count is not None:
         provenance[PROVENANCE_SOURCE_TURN_COUNT] = source_turn_count
+    if source_read_chars is not None:
+        provenance[PROVENANCE_SOURCE_READ_CHARS] = source_read_chars
     payload: dict[str, object] = {
         "id": str(uuid4()),
         "type": "distillation",
@@ -428,6 +432,99 @@ class TestStaleRefresh:
         assert extra[PROVENANCE_SOURCE_WORD_COUNT] > 100
         assert extra[PROVENANCE_SOURCE_TURN_COUNT] == 12
         assert PROVENANCE_SOURCE_UPDATED in extra
+
+
+class TestCapRaiseBackfill:
+    """ADR 0038: raising max_input_chars re-queues harder-truncated summaries."""
+
+    def _big_session(self, vault: Vault, chars: int = 60000) -> Memory:
+        body = _session_body(20, words_per_turn=chars // 20 // 5)  # ~5 chars/word
+        return _write_session(vault, session_id="big", body=body, turns=20)
+
+    def test_default_cap_never_fires(self, vault: Vault) -> None:
+        session = self._big_session(vault)
+        d = _write_distillation(
+            vault,
+            linked_session_id="big",
+            source_word_count=len((session.body or "").split()),
+            source_turn_count=20,
+            source_read_chars=32000,
+        )
+        vault.write(d)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert candidates == []
+        assert stats["skipped_already_distilled"] == 1
+
+    def test_raised_cap_requeues_truncated_summary(self, vault: Vault) -> None:
+        session = self._big_session(vault)
+        d = _write_distillation(
+            vault,
+            linked_session_id="big",
+            source_word_count=len((session.body or "").split()),
+            source_turn_count=20,
+            source_read_chars=32000,
+        )
+        vault.write(d)
+        candidates, stats = find_session_candidates(
+            vault, recency_days=None, max_input_chars=200000
+        )
+        assert [c.session_id for c in candidates] == ["big"]
+        assert stats["stale_refresh_candidates"] == 1
+
+    def test_legacy_no_read_stamp_assumed_old_default(self, vault: Vault) -> None:
+        """A pre-0038 summary (snapshot but no read stamp) is assumed to have
+        read the old 32k default, so a cap raise still re-queues it."""
+        session = self._big_session(vault)
+        d = _write_distillation(
+            vault,
+            linked_session_id="big",
+            source_word_count=len((session.body or "").split()),
+            source_turn_count=20,
+        )
+        vault.write(d)
+        candidates, _ = find_session_candidates(vault, recency_days=None, max_input_chars=200000)
+        assert [c.session_id for c in candidates] == ["big"]
+
+    def test_small_session_unaffected_by_cap_raise(self, vault: Vault) -> None:
+        session = _write_session(vault, session_id="small", turns=12)
+        d = _write_distillation(
+            vault,
+            linked_session_id="small",
+            source_word_count=len((session.body or "").split()),
+            source_turn_count=12,
+            source_read_chars=len(session.body or ""),
+        )
+        vault.write(d)
+        candidates, _ = find_session_candidates(vault, recency_days=None, max_input_chars=200000)
+        assert candidates == []
+
+    def test_refresh_converges_after_rewrite(self, vault: Vault, index: Index) -> None:
+        """After the cap-raise refresh, source_read_chars reflects the new
+        bound so the session is not re-queued again."""
+        session = self._big_session(vault)
+        d = _write_distillation(
+            vault,
+            linked_session_id="big",
+            source_word_count=len((session.body or "").split()),
+            source_turn_count=20,
+            source_read_chars=32000,
+        )
+        vault.write(d)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nfull-read summary")
+        plan = compute_distillation_plan(vault, stub, recency_days=None, max_input_chars=200000)
+        assert len(plan.proposals) == 1
+        result = apply_distillations(
+            vault, index, plan, track_failures=False, max_input_chars=200000
+        )
+        assert result.written == 1
+        refreshed = vault.read(Path("distillations/claude-code/big.md"))
+        prov = refreshed.frontmatter.provenance
+        assert prov is not None
+        extra = prov.model_extra or {}
+        assert extra[PROVENANCE_SOURCE_READ_CHARS] == len(session.body or "")
+        candidates, _ = find_session_candidates(vault, recency_days=None, max_input_chars=200000)
+        assert candidates == []
 
 
 # ─── Prompt construction ──────────────────────────────────────────
