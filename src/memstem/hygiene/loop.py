@@ -199,6 +199,7 @@ class HygieneLoop:
                 openai_kwargs: dict[str, object] = {
                     "model": self.cfg.summarizer_model or DEFAULT_OPENAI_MODEL,
                     "api_key_env": self.cfg.summarizer_api_key_env,
+                    "timeout": self.cfg.summarizer_timeout_seconds,
                 }
                 if self.cfg.summarizer_base_url:
                     openai_kwargs["base_url"] = self.cfg.summarizer_base_url
@@ -206,6 +207,7 @@ class HygieneLoop:
             elif provider == "ollama":
                 ollama_kwargs: dict[str, object] = {
                     "model": self.cfg.summarizer_model or DEFAULT_OLLAMA_MODEL,
+                    "timeout": self.cfg.summarizer_timeout_seconds,
                 }
                 if self.cfg.summarizer_base_url:
                     ollama_kwargs["base_url"] = self.cfg.summarizer_base_url

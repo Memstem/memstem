@@ -324,6 +324,14 @@ class HygieneConfig(BaseModel):
     is self-backfilling: summaries generated from a harder-truncated
     read become refresh candidates (see ``source_read_chars``)."""
 
+    summarizer_timeout_seconds: float = Field(default=120.0, ge=1.0)
+    """HTTP timeout for one summarizer call. The 120s default is ample
+    for 32k-char prompts; a raised ADR 0038 cap can push single prompts
+    to ~100k tokens, where prefill alone can exceed it on a per-token
+    cloud route (observed 2026-08-25: a 662KB session deterministically
+    timed out at 120s and re-skipped every cycle). Raise alongside
+    ``summarizer_max_input_chars``."""
+
     summarizer_api_key_env: str = "OPENAI_API_KEY"
     """Env var name to read the summarizer API key from. Self-hosted
     OpenAI-compatible servers usually ignore the key value but require

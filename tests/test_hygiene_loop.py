@@ -247,6 +247,15 @@ def test_distill_passes_recency_and_cap_from_config(vault: Vault, index: Index) 
     assert captured["recency_days"] is None
 
 
+def test_summarizer_timeout_from_config(vault: Vault, index: Index) -> None:
+    """The loop's summarizer inherits hygiene.summarizer_timeout_seconds."""
+    cfg = HygieneConfig(summarizer_provider="openai", summarizer_timeout_seconds=300.0)
+    loop = HygieneLoop(vault, index, cfg)
+    s = loop._get_summarizer()
+    assert s is not None
+    assert getattr(s, "timeout", None) == 300.0
+
+
 def test_summarizer_noop_built_lazily(vault: Vault, index: Index) -> None:
     cfg = _fast_cfg(summarizer_provider="noop")
     loop = HygieneLoop(vault, index, cfg)

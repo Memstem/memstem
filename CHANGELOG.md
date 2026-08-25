@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hygiene.summarizer_timeout_seconds` config knob** (default 120 —
+  unchanged). A raised ADR 0038 input cap can push single distill
+  prompts to ~100k tokens, where one call can legitimately exceed 120s
+  on a per-token cloud route; the affected session then re-skipped as
+  transient every cycle. Raise this alongside
+  `summarizer_max_input_chars`.
+
 - **`hygiene.distill_recency_days` config knob.** The daemon's
   distill-sessions recency window (previously fixed at 30 days) is now
   configurable; `0` disables the window so every session is a
