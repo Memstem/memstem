@@ -124,9 +124,17 @@ DEFAULT_REDISTILL_MIN_NEW_TURNS = 10
 """ADR 0037 §Delta gate: turn-count companion to
 :data:`DEFAULT_REDISTILL_MIN_NEW_WORDS`. Either threshold qualifies."""
 
+DEFAULT_REDISTILL_MIN_UNREAD_CHARS = 10000
+"""ADR 0038 §Self-backfill gate: a distilled session is also stale when
+the current cap could read at least this many more chars of it than the
+existing summary actually read (``provenance.source_read_chars``).
+With the cap unchanged this can never fire; raising the cap turns every
+harder-truncated summary into an ordinary refresh candidate."""
+
 PROVENANCE_SOURCE_WORD_COUNT = "source_word_count"
 PROVENANCE_SOURCE_TURN_COUNT = "source_turn_count"
 PROVENANCE_SOURCE_UPDATED = "source_updated"
+PROVENANCE_SOURCE_READ_CHARS = "source_read_chars"
 """Provenance extra keys stamped on every distillation (ADR 0037): a
 snapshot of the source transcript's size and ``updated`` at generation
 time, read back by the staleness gate on later scans. ``Provenance`` is
@@ -419,6 +427,8 @@ def is_distillation_stale(
     *,
     min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
     min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
+    min_unread_chars: int = DEFAULT_REDISTILL_MIN_UNREAD_CHARS,
 ) -> bool:
     """Return True iff ``session`` has grown enough to earn a re-distill.
 
@@ -431,7 +441,21 @@ def is_distillation_stale(
     back to a timestamp check — stale when the session's ``updated`` is
     newer than the distillation's. They earn one snapshot-stamping
     refresh; every later refresh is delta-gated.
+
+    ADR 0038 adds a second axis: stale when the *current* cap could read
+    at least ``min_unread_chars`` more of the transcript than the
+    existing summary actually read (``source_read_chars``). A summary
+    with no recorded read (pre-0038) is assumed to have read the old
+    32k default. With an unchanged cap the condition can never fire;
+    raising the cap makes harder-truncated summaries ordinary refresh
+    candidates — the cap raise backfills itself.
     """
+    transcript_chars = len(session.body or "")
+    read_chars = _provenance_int(distillation, PROVENANCE_SOURCE_READ_CHARS)
+    assumed_read = read_chars if read_chars is not None else DEFAULT_MAX_INPUT_CHARS
+    if min(transcript_chars, max_input_chars) - assumed_read >= min_unread_chars:
+        return True
+
     snap_words = _provenance_int(distillation, PROVENANCE_SOURCE_WORD_COUNT)
     snap_turns = _provenance_int(distillation, PROVENANCE_SOURCE_TURN_COUNT)
     if snap_words is None and snap_turns is None:
@@ -546,6 +570,7 @@ def find_session_candidates(
     refresh_stale: bool = True,
     min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
     min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
     now: datetime | None = None,
 ) -> tuple[list[SessionCandidate], dict[str, int]]:
     """Walk vault sessions, filter, and return candidates + skip counts.
@@ -604,7 +629,11 @@ def find_session_candidates(
         if existing is not None and not (
             refresh_stale
             and is_distillation_stale(
-                memory, existing, min_new_words=min_new_words, min_new_turns=min_new_turns
+                memory,
+                existing,
+                min_new_words=min_new_words,
+                min_new_turns=min_new_turns,
+                max_input_chars=max_input_chars,
             )
         ):
             skipped_already += 1
@@ -695,6 +724,7 @@ def materialize_distillation(
     now: datetime | None = None,
     memory_id: str | None = None,
     created: datetime | None = None,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
 ) -> Memory:
     """Build the ``type: distillation`` :class:`Memory` for a candidate.
 
@@ -740,6 +770,7 @@ def materialize_distillation(
             PROVENANCE_SOURCE_WORD_COUNT: candidate.word_count,
             PROVENANCE_SOURCE_TURN_COUNT: candidate.turn_count,
             PROVENANCE_SOURCE_UPDATED: candidate.updated.isoformat(),
+            PROVENANCE_SOURCE_READ_CHARS: min(len(candidate.body), max_input_chars),
         },
     }
     fm = validate(payload)
@@ -761,6 +792,7 @@ def compute_distillation_plan(
     refresh_stale: bool = True,
     min_new_words: int = DEFAULT_REDISTILL_MIN_NEW_WORDS,
     min_new_turns: int = DEFAULT_REDISTILL_MIN_NEW_TURNS,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
     prompt_template: str | None = None,
     now: datetime | None = None,
     max_candidates: int | None = None,
@@ -815,6 +847,7 @@ def compute_distillation_plan(
         refresh_stale=refresh_stale,
         min_new_words=min_new_words,
         min_new_turns=min_new_turns,
+        max_input_chars=max_input_chars,
         now=now,
     )
 
@@ -824,7 +857,9 @@ def compute_distillation_plan(
     proposals: list[DistillationProposal] = []
     skipped_transient = 0
     for candidate in candidates:
-        prompt = build_session_prompt(candidate, prompt_template=prompt_template)
+        prompt = build_session_prompt(
+            candidate, prompt_template=prompt_template, max_input_chars=max_input_chars
+        )
         # ``db`` is sqlite3.Connection in production but typed as
         # ``object`` here so callers can pass ``None`` without import
         # gymnastics.
@@ -890,6 +925,7 @@ def apply_distillations(
     now: datetime | None = None,
     lock: _Lock | None = None,
     track_failures: bool = True,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
 ) -> ApplyResult:
     """Persist every non-skipped proposal as a vault Memory + index row.
 
@@ -931,6 +967,7 @@ def apply_distillations(
                 now=now,
                 memory_id=memory_id,
                 created=existing.frontmatter.created if existing is not None else None,
+                max_input_chars=max_input_chars,
             )
             vault.write(memory)
             index.upsert(memory)
@@ -1003,8 +1040,10 @@ __all__ = [
     "DEFAULT_RECENCY_DAYS",
     "DEFAULT_REDISTILL_MIN_NEW_TURNS",
     "DEFAULT_REDISTILL_MIN_NEW_WORDS",
+    "DEFAULT_REDISTILL_MIN_UNREAD_CHARS",
     "DISTILLATION_KIND_TAG",
     "PROVENANCE_REF_PREFIX",
+    "PROVENANCE_SOURCE_READ_CHARS",
     "PROVENANCE_SOURCE_TURN_COUNT",
     "PROVENANCE_SOURCE_UPDATED",
     "PROVENANCE_SOURCE_WORD_COUNT",

@@ -301,6 +301,7 @@ class HygieneLoop:
             summarizer,
             db=self.index.db,
             max_candidates=self.cfg.distill_max_per_cycle,
+            max_input_chars=self.cfg.summarizer_max_input_chars,
             lock=self.index.lock,
         )
         if plan.skipped_failed:
@@ -319,7 +320,13 @@ class HygieneLoop:
             logger.info("hygiene[distill_sessions]: no eligible sessions")
             return
 
-        result = apply_distillations(self.vault, self.index, plan, lock=self.index.lock)
+        result = apply_distillations(
+            self.vault,
+            self.index,
+            plan,
+            lock=self.index.lock,
+            max_input_chars=self.cfg.summarizer_max_input_chars,
+        )
         logger.info(
             "hygiene[distill_sessions]: wrote %d, skipped_no_summary=%d, errors=%d",
             result.written,
