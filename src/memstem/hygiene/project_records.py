@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -515,6 +516,7 @@ def compute_project_record_plan(
     prompt_template: str | None = None,
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
     now: datetime | None = None,
+    lock: AbstractContextManager[Any] | None = None,
 ) -> ProjectRecordPlan:
     """Build the full project-record plan against the configured summarizer.
 
@@ -557,7 +559,7 @@ def compute_project_record_plan(
             prompt_template=prompt_template,
             max_input_chars=max_input_chars,
         )
-        body = summarizer.generate_cached(prompt, db=db)  # type: ignore[arg-type]
+        body = summarizer.generate_cached(prompt, db=db, lock=lock)  # type: ignore[arg-type]
         skipped_reason: str | None = None
         if not body:
             skipped_reason = "summarizer returned empty (NoOp default or LLM unreachable)"

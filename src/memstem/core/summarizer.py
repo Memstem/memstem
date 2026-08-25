@@ -33,7 +33,9 @@ import hashlib
 import logging
 import sqlite3
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +217,7 @@ class Summarizer(ABC):
         self,
         prompt: str,
         db: sqlite3.Connection | None = None,
+        lock: AbstractContextManager[Any] | None = None,
     ) -> str:
         """Generate with cache-aware orchestration.
 
@@ -226,10 +229,21 @@ class Summarizer(ABC):
         The cache is bypassed when ``db is None`` (used by tests that
         don't want to round-trip through SQLite) and by NoOp (which
         overrides this method for the trivial path).
+
+        ``lock`` serializes the cache read/write against other users of
+        a shared connection (the daemon passes ``Index.lock``). It is
+        held ONLY around the cache I/O, never across the LLM call — a
+        raised ADR 0038 cap makes single calls take minutes, and
+        holding the lock that long would starve embed workers and
+        searches. Without it, ``with db:`` here races the embed
+        workers' commits on the daemon's shared connection
+        (observed 2026-08-25: ``SystemError: error return without
+        exception set`` aborting a whole distill cycle mid-plan).
         """
         chash = content_hash(prompt)
         if db is not None:
-            cached = cache_lookup(db, chash=chash, summarizer=self.name)
+            with lock or nullcontext():
+                cached = cache_lookup(db, chash=chash, summarizer=self.name)
             if cached is not None:
                 return cached
         try:
@@ -244,7 +258,8 @@ class Summarizer(ABC):
         if not isinstance(output, str):
             return ""
         if db is not None and output:
-            cache_write(db, chash=chash, summarizer=self.name, output=output)
+            with lock or nullcontext():
+                cache_write(db, chash=chash, summarizer=self.name, output=output)
         return output
 
 
@@ -266,6 +281,7 @@ class NoOpSummarizer(Summarizer):
         self,
         prompt: str,
         db: sqlite3.Connection | None = None,
+        lock: AbstractContextManager[Any] | None = None,
     ) -> str:
         # Skip the cache entirely — NoOp's output is constant and free,
         # so caching it would waste rows and writes.

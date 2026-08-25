@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Summarizer-cache I/O is now serialized with the daemon's index
+  lock.** `generate_cached`'s cache read/write ran on the daemon's
+  shared SQLite connection without the `Index.lock` every other writer
+  uses, racing the embed workers' commits — observed as
+  `SystemError: error return without exception set` aborting a whole
+  distill cycle mid-plan once ADR 0038's raised cap made cycles long
+  enough to reliably overlap embed traffic. The lock is held only
+  around the cache I/O, never across the LLM call (which can take
+  minutes at a raised cap).
+
 ### Added
 
 - **`hygiene.summarizer_timeout_seconds` config knob** (default 120 —
