@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hygiene.distill_concurrency` config knob** (default 1 — serial,
+  unchanged). At a raised ADR 0038 cap a single summarizer call takes
+  minutes, so a 50-candidate cycle is wall-clock-bound on the backend;
+  a small thread pool runs plan-phase calls concurrently (order
+  preserved, transient-failure semantics unchanged; safe because the
+  summarizer cache is lock-serialized). 4 is a good cloud-route
+  default.
 - **`hygiene.summarizer_timeout_seconds` config knob** (default 120 —
   unchanged). A raised ADR 0038 input cap can push single distill
   prompts to ~100k tokens, where one call can legitimately exceed 120s
