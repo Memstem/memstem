@@ -288,6 +288,15 @@ class HygieneConfig(BaseModel):
     """Cap on distillations applied per cycle. Prevents a cold vault
     from running thousands of LLM calls on the first tick."""
 
+    distill_recency_days: int = Field(default=30, ge=0)
+    """Recency window for the distill-sessions candidate scan: only
+    sessions updated within the last N days are considered (matches the
+    CLI's ``--recency-days``). ``0`` disables the window entirely —
+    every session in the vault is a candidate, which combined with the
+    ADR 0038 self-backfill rule re-summarizes the whole history after a
+    cap raise. Widen it deliberately (e.g. for a historical backfill),
+    then rely on ``distill_max_per_cycle`` to pace the drain."""
+
     summarizer_provider: str = "openai"
     """Provider used by the loop for distillation + project-records.
     ``"openai"`` (default), ``"ollama"``, or ``"noop"`` to record the

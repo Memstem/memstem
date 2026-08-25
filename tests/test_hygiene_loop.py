@@ -218,6 +218,35 @@ async def test_run_is_cancellable(vault: Vault, index: Index) -> None:
 # ─── Summarizer lazy build ─────────────────────────────────────────
 
 
+def test_distill_passes_recency_and_cap_from_config(vault: Vault, index: Index) -> None:
+    """The distill stage forwards distill_recency_days and
+    summarizer_max_input_chars from config; 0 days disables the window."""
+    cfg = HygieneConfig(
+        summarizer_provider="noop",
+        distill_recency_days=120,
+        summarizer_max_input_chars=320000,
+    )
+    loop = HygieneLoop(vault, index, cfg)
+    captured: dict[str, object] = {}
+
+    def fake_plan(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        from memstem.hygiene.session_distill import DistillationPlan
+
+        return DistillationPlan()
+
+    with patch("memstem.hygiene.session_distill.compute_distillation_plan", fake_plan):
+        loop._run_distill_sessions()
+    assert captured["recency_days"] == 120
+    assert captured["max_input_chars"] == 320000
+
+    cfg0 = HygieneConfig(summarizer_provider="noop", distill_recency_days=0)
+    loop0 = HygieneLoop(vault, index, cfg0)
+    with patch("memstem.hygiene.session_distill.compute_distillation_plan", fake_plan):
+        loop0._run_distill_sessions()
+    assert captured["recency_days"] is None
+
+
 def test_summarizer_noop_built_lazily(vault: Vault, index: Index) -> None:
     cfg = _fast_cfg(summarizer_provider="noop")
     loop = HygieneLoop(vault, index, cfg)

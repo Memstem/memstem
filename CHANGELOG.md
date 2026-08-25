@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hygiene.distill_recency_days` config knob.** The daemon's
+  distill-sessions recency window (previously fixed at 30 days) is now
+  configurable; `0` disables the window so every session is a
+  candidate. Widen it deliberately for a historical backfill — e.g.
+  after an ADR 0038 cap raise, a wider window lets the self-backfill
+  rule re-summarize truncated summaries from months back, paced by
+  `distill_max_per_cycle`.
+
 - **The summarizer input cap is now config, and raising it backfills
   itself** ([ADR 0038](docs/decisions/0038-route-aware-summarizer-input-cap.md)).
   `hygiene.summarizer_max_input_chars` (default 32,000 — unchanged
