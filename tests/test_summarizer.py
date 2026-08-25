@@ -161,6 +161,41 @@ class _RaisingSummarizer(smod.Summarizer):
         raise RuntimeError("model is on fire")
 
 
+def test_generate_cached_holds_lock_only_around_cache_io(
+    cache_db: sqlite3.Connection,
+) -> None:
+    """The optional lock serializes cache read/write against other users of a
+    shared connection, but is NEVER held across the LLM call itself — a raised
+    input cap makes single calls take minutes."""
+
+    events: list[str] = []
+
+    class _Lock:
+        def __enter__(self) -> None:
+            events.append("acquire")
+
+        def __exit__(self, *exc: object) -> None:
+            events.append("release")
+
+    class _Tracking(smod.Summarizer):
+        name = "tracking"
+
+        def generate(self, prompt: str) -> str:
+            events.append("generate")
+            return "output"
+
+    out = _Tracking().generate_cached("prompt", db=cache_db, lock=_Lock())
+    assert out == "output"
+    # lookup (acquire/release), generate OUTSIDE the lock, write (acquire/release)
+    assert events == ["acquire", "release", "generate", "acquire", "release"]
+
+    # Cache hit path: one lock cycle, no generate.
+    events.clear()
+    out = _Tracking().generate_cached("prompt", db=cache_db, lock=_Lock())
+    assert out == "output"
+    assert events == ["acquire", "release"]
+
+
 def test_generate_cached_swallows_subclass_exceptions(cache_db: sqlite3.Connection) -> None:
     s = _RaisingSummarizer()
     out = s.generate_cached("anything", db=cache_db)

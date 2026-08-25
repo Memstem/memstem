@@ -350,7 +350,9 @@ class HygieneLoop:
             logger.info("hygiene[project_records]: skipped — summarizer unavailable")
             return
 
-        plan = compute_project_record_plan(self.vault, summarizer, db=self.index.db)
+        plan = compute_project_record_plan(
+            self.vault, summarizer, db=self.index.db, lock=self.index.lock
+        )
         if not plan.proposals:
             logger.info("hygiene[project_records]: no eligible projects")
             return

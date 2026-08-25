@@ -864,7 +864,7 @@ def compute_distillation_plan(
         # ``object`` here so callers can pass ``None`` without import
         # gymnastics.
         try:
-            summary = summarizer.generate_cached(prompt, db=db)  # type: ignore[arg-type]
+            summary = summarizer.generate_cached(prompt, db=db, lock=lock)  # type: ignore[arg-type]
         except TransientSummarizerError as exc:
             # The backend was unreachable/overloaded — NOT this session's fault.
             # Skip it WITHOUT emitting an (empty) proposal, so apply_distillations
