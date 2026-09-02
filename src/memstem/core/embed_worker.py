@@ -149,7 +149,12 @@ class EmbedWorker:
         - ``False`` after a permanent error → leave the streak alone
           (don't punish the queue for a single bad record).
         """
-        claimed = self.index.claim_pending(
+        # Off the event loop, like every other index touch in this worker
+        # (ADR 0039): a synchronous claim here once froze the whole daemon —
+        # HTTP server included — for the 47 minutes a vec compaction held
+        # `Index._lock`.
+        claimed = await asyncio.to_thread(
+            self.index.claim_pending,
             limit=self.batch_size,
             claimant=self._claimant,
             lease_seconds=self.CLAIM_LEASE_SECONDS,

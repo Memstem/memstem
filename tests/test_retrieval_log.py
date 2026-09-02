@@ -109,6 +109,39 @@ class TestLogSearchResults:
         log_search_results(index.db, query="alpha", hits=[], client="cli")
         assert count(index.db) == 0
 
+    def test_skips_write_when_lock_held_too_long(self, vault: Vault, index: Index) -> None:
+        # ADR 0039: a search must never hang waiting to write its query-log
+        # rows. When the serialization lock is held past the timeout, the
+        # write is skipped (rows dropped) rather than blocking.
+        import threading
+
+        m = _make_memory(body="alpha one", vault=vault)
+        index.upsert(m)
+        hits = [LoggedHit(memory_id=str(m.id), rank=1, score=0.5)]
+
+        held = threading.Lock()
+        held.acquire()  # simulate a long-running writer holding the lock
+
+        start = datetime.now(UTC)
+        log_search_results(index.db, query="alpha", hits=hits, client="cli", lock=held)
+        waited = (datetime.now(UTC) - start).total_seconds()
+        held.release()
+
+        # Skipped, not blocked: no rows written and it returned quickly
+        # (well under the module's 2s LOCK_TIMEOUT_SECONDS).
+        assert count(index.db) == 0
+        assert waited < 5.0
+
+    def test_writes_when_lock_available(self, vault: Vault, index: Index) -> None:
+        # A free timed lock is acquired and the rows land normally.
+        import threading
+
+        m = _make_memory(body="alpha one", vault=vault)
+        index.upsert(m)
+        hits = [LoggedHit(memory_id=str(m.id), rank=1, score=0.5)]
+        log_search_results(index.db, query="alpha", hits=hits, client="cli", lock=threading.Lock())
+        assert count(index.db) == 1
+
     def test_failure_does_not_raise(self, vault: Vault, index: Index) -> None:
         # Deliberately corrupt the query_log table to force a sqlite error
         # at insert time. The wrapper must NOT propagate it — search must

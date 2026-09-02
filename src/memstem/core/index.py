@@ -15,7 +15,7 @@ import re
 import sqlite3
 import struct
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -952,15 +952,35 @@ class Index:
             ).fetchone()[0]
         return int(live), int(slots)
 
-    def compact_vectors(self) -> VecCompactResult:
-        """Rebuild ``memories_vec`` keeping only live rows (ADR 0036).
+    def compact_vectors(
+        self,
+        *,
+        batch_size: int = 2000,
+        _after_batch: Callable[[], None] | None = None,
+    ) -> VecCompactResult:
+        """Rebuild ``memories_vec`` keeping only live rows (ADR 0036/0039).
 
-        Stages every live ``(chunk_id, memory_id, chunk_index, embedding)``
-        into a plain table, drops the vec0 table, recreates it from its
-        original DDL (preserving dimensions), and reinserts. Runs as one
-        transaction under the writer lock: WAL readers see the swap
-        atomically, and any failure rolls the whole thing back. Row
-        counts are verified at both hops; a mismatch aborts.
+        Two phases so the writer lock is never held for the whole rebuild
+        (a monolithic run once blocked the daemon for 47 minutes on a
+        147k-row vault — ADR 0039):
+
+        - *Bulk copy (lock per batch):* a borrowed reader connection
+          full-scans the vec0 table on its own WAL snapshot while rows are
+          appended to the plain staging table ``batch_size`` at a time,
+          each batch its own short writer transaction. Normal daemon
+          writes interleave freely between batches.
+        - *Delta + swap (one short locked transaction):* rows for memories
+          re-embedded since the snapshot opened (``embed_state.embedded_at``)
+          are refreshed, rows for memories deleted meanwhile are dropped,
+          then the vec0 table is dropped, recreated from its original DDL
+          (preserving dimensions), and refilled from staging. Row counts
+          are verified at both hops; a mismatch rolls the swap back.
+          Searches stay live throughout: retrieval reads a WAL snapshot
+          (ADR 0035) and the query log skips on lock contention.
+
+        A build-aside vec0 table + ``ALTER TABLE RENAME`` would shrink the
+        locked window further but sqlite-vec (as of 0.1.9) does not rename
+        its shadow tables, so drop-and-refill under the lock it is.
 
         Does NOT ``VACUUM`` — freed pages are reused internally but the
         db file does not shrink. Callers that want the file smaller
@@ -968,6 +988,12 @@ class Index:
         transaction.
         """
         start_monotonic = datetime.now(UTC)
+        # Snapshot marker for the delta pass. Taken BEFORE the reader opens
+        # its snapshot so the "changed since" set is a superset of anything
+        # the bulk copy could have missed. Same isoformat as embedded_at
+        # writes, so lexical comparison is exact.
+        t0 = start_monotonic.isoformat()
+        select_cols = "chunk_id, memory_id, chunk_index, embedding"
         with self._lock:
             ddl_row = self.db.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'"
@@ -975,14 +1001,11 @@ class Index:
             if ddl_row is None or ddl_row["sql"] is None:
                 raise RuntimeError("memories_vec does not exist; nothing to compact")
             ddl = ddl_row["sql"]
-            live, slots_before = (
-                self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0],
-                self.db.execute(
-                    "SELECT coalesce(sum(size), 0) FROM memories_vec_chunks"
-                ).fetchone()[0],
-            )
-            self.db.execute("DROP TABLE IF EXISTS _vec_compact_stage")
+            slots_before = self.db.execute(
+                "SELECT coalesce(sum(size), 0) FROM memories_vec_chunks"
+            ).fetchone()[0]
             with self.db:
+                self.db.execute("DROP TABLE IF EXISTS _vec_compact_stage")
                 self.db.execute(
                     """
                     CREATE TABLE _vec_compact_stage(
@@ -993,10 +1016,78 @@ class Index:
                     )
                     """
                 )
+
+        # -- Phase A: bulk copy off a reader snapshot, lock held per batch --
+        # Keyset pagination (WHERE chunk_id > ? ORDER BY chunk_id LIMIT n) with a
+        # FRESH short-lived cursor per batch — never a single cursor held open
+        # across the copy. A long-open read cursor on the vec0 table silently
+        # swallows concurrent inserts on the writer connection (observed: an
+        # interleaved re-embed's rows never landed), which the batched approach
+        # avoids. Correctness of anything that slips through is still guaranteed
+        # by the Phase B delta pass.
+        with self.reader() as rdb:
+            if rdb is None:
+                # No read-only connection (fresh vault, exotic fs): stage in
+                # one locked pass like the pre-0039 behavior. The delta pass
+                # below is then a no-op by construction.
+                with self._lock, self.db:
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO _vec_compact_stage "
+                        f"SELECT {select_cols} FROM memories_vec"
+                    )
+            else:
+                last_chunk_id = ""
+                while True:
+                    rows = rdb.execute(
+                        f"SELECT {select_cols} FROM memories_vec "
+                        "WHERE chunk_id > ? ORDER BY chunk_id LIMIT ?",
+                        (last_chunk_id, batch_size),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    payload = [tuple(r) for r in rows]
+                    last_chunk_id = payload[-1][0]
+                    with self._lock, self.db:
+                        self.db.executemany(
+                            "INSERT OR REPLACE INTO _vec_compact_stage "
+                            "(chunk_id, memory_id, chunk_index, embedding) "
+                            "VALUES (?, ?, ?, ?)",
+                            payload,
+                        )
+                    if _after_batch is not None:
+                        # Test seam: lets a test mutate the live table between
+                        # batches to exercise the delta pass deterministically.
+                        _after_batch()
+
+        # -- Phase B: delta catch-up + swap in one short locked transaction --
+        with self._lock:
+            with self.db:
+                changed = [
+                    row[0]
+                    for row in self.db.execute(
+                        "SELECT memory_id FROM embed_state WHERE embedded_at >= ?", (t0,)
+                    ).fetchall()
+                ]
+                for i in range(0, len(changed), 500):
+                    chunk = changed[i : i + 500]
+                    marks = ",".join("?" * len(chunk))
+                    self.db.execute(
+                        f"DELETE FROM _vec_compact_stage WHERE memory_id IN ({marks})",
+                        chunk,
+                    )
+                    self.db.execute(
+                        "INSERT INTO _vec_compact_stage "
+                        f"SELECT {select_cols} FROM memories_vec "
+                        f"WHERE memory_id IN ({marks})",
+                        chunk,
+                    )
+                # Rows whose live counterpart vanished mid-copy (deletes,
+                # re-chunks that shrank a memory's chunk count).
                 self.db.execute(
-                    "INSERT INTO _vec_compact_stage "
-                    "SELECT chunk_id, memory_id, chunk_index, embedding FROM memories_vec"
+                    "DELETE FROM _vec_compact_stage "
+                    "WHERE chunk_id NOT IN (SELECT chunk_id FROM memories_vec)"
                 )
+                live = self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0]
                 staged = self.db.execute("SELECT count(*) FROM _vec_compact_stage").fetchone()[0]
                 if staged != live:
                     raise RuntimeError(
@@ -1007,7 +1098,7 @@ class Index:
                 self.db.execute(ddl)
                 self.db.execute(
                     "INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding) "
-                    "SELECT chunk_id, memory_id, chunk_index, embedding FROM _vec_compact_stage"
+                    f"SELECT {select_cols} FROM _vec_compact_stage"
                 )
                 rebuilt = self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0]
                 if rebuilt != live:
