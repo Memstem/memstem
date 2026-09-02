@@ -47,8 +47,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Iterable
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Iterable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -60,6 +60,42 @@ logger = logging.getLogger(__name__)
 # worker thread, so they must serialize against the embed workers. Passing
 # nothing (CLI / dedicated connection) is a no-op. See Index.get_path.
 _Lock = AbstractContextManager[Any]
+
+LOCK_TIMEOUT_SECONDS = 2.0
+"""How long a log write waits for the shared lock before giving up.
+
+The query log is non-canonical by charter (see module docstring): losing
+rows under contention only drifts importance toward heuristic-only. What
+must NEVER happen is a search hanging behind a long-running writer — a
+vec compaction once held the lock for 47 minutes and every search of the
+window froze at this final logging step (ADR 0039). Locks that don't
+support timed acquire (plain context managers) block as before.
+"""
+
+
+@contextmanager
+def _acquire_or_skip(lock: _Lock | None, timeout: float) -> Iterator[bool]:
+    """Yield True holding ``lock``, or False (without it) on timeout.
+
+    ``None`` and locks without a timed ``acquire`` degrade to the old
+    behavior (no-op / plain blocking ``with``).
+    """
+    if lock is None:
+        yield True
+        return
+    acquire = getattr(lock, "acquire", None)
+    release = getattr(lock, "release", None)
+    if not callable(acquire) or not callable(release):
+        with lock:
+            yield True
+        return
+    if not acquire(timeout=timeout):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        release()
 
 
 DEFAULT_MAX_ROWS = 100_000
@@ -109,15 +145,23 @@ def log_search_results(
     if not rows:
         return
     try:
-        with lock or nullcontext(), db:
-            db.executemany(
-                """
-                INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
-            _maybe_prune(db, max_rows=max_rows)
+        with _acquire_or_skip(lock, LOCK_TIMEOUT_SECONDS) as acquired:
+            if not acquired:
+                logger.debug(
+                    "query_log: lock busy > %.1fs, dropping %d search rows (ADR 0039)",
+                    LOCK_TIMEOUT_SECONDS,
+                    len(rows),
+                )
+                return
+            with db:
+                db.executemany(
+                    """
+                    INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+                _maybe_prune(db, max_rows=max_rows)
     except sqlite3.Error as exc:
         # Common reasons: schema-version drift, foreign-key cascade race
         # (memory_id deleted between search and log), or a corrupted file.
@@ -137,15 +181,23 @@ def log_get(
     """Record a ``memstem_get`` open. ``query``, ``rank``, and ``score`` are NULL."""
     timestamp = (now or datetime.now(tz=UTC)).isoformat()
     try:
-        with lock or nullcontext(), db:
-            db.execute(
-                """
-                INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
-                VALUES (?, ?, NULL, ?, ?, NULL, NULL)
-                """,
-                (timestamp, "get", client, memory_id),
-            )
-            _maybe_prune(db, max_rows=max_rows)
+        with _acquire_or_skip(lock, LOCK_TIMEOUT_SECONDS) as acquired:
+            if not acquired:
+                logger.debug(
+                    "query_log: lock busy > %.1fs, dropping get row for %s (ADR 0039)",
+                    LOCK_TIMEOUT_SECONDS,
+                    memory_id,
+                )
+                return
+            with db:
+                db.execute(
+                    """
+                    INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
+                    VALUES (?, ?, NULL, ?, ?, NULL, NULL)
+                    """,
+                    (timestamp, "get", client, memory_id),
+                )
+                _maybe_prune(db, max_rows=max_rows)
     except sqlite3.Error as exc:
         logger.warning("query_log: failed to record get for %s: %s", memory_id, exc)
 

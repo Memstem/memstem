@@ -355,17 +355,23 @@ class HygieneConfig(BaseModel):
 
     # ADR 0036 — vec table compaction -------------------------------------
 
-    vec_compact_interval_seconds: int = Field(default=7 * 24 * 3600, ge=0)
-    """Cadence for the ``vec_compact`` stage. vec0 preallocates full
-    chunks and frees one only when every slot in it is dead, so a mass
-    delete that leaves scattered survivors (large sources re-chunked,
-    bulk purges, slice rebuilds) pins the table — and every KNN scan —
-    at its peak size. Weekly is enough to keep the table near its live
-    size."""
+    vec_compact_interval_seconds: int = Field(default=24 * 3600, ge=0)
+    """Cadence for the ``vec_compact`` stage's threshold CHECK (the
+    occupancy/min-dead gates below decide whether a rebuild actually
+    runs). vec0 preallocates full chunks and frees one only when every
+    slot in it is dead, so a mass delete that leaves scattered
+    survivors (large sources re-chunked, bulk purges, slice rebuilds)
+    pins the table — and every KNN scan — at its peak size. Daily
+    (ADR 0039; was weekly) keeps scans near the live size on
+    high-churn vaults: a week of ADR 0037 re-summaries once grew a
+    147k-row table to 60% dead, and every query paid for it."""
 
-    vec_compact_max_occupancy: float = Field(default=0.6, ge=0.0, le=1.0)
+    vec_compact_max_occupancy: float = Field(default=0.8, ge=0.0, le=1.0)
     """Only compact when ``live_rows / allocated_slots`` falls below
-    this. At or above it, the scan overhead isn't worth the rebuild."""
+    this — i.e. when more than 20% of slots are dead (ADR 0039; was
+    0.6). At or above it, the scan overhead isn't worth the rebuild.
+    With compaction no longer blocking search, running it at a lower
+    dead fraction is cheap and keeps every KNN scan small."""
 
     vec_compact_min_dead_slots: int = Field(default=25_000, ge=0)
     """Only compact when at least this many slots are dead. Keeps tiny

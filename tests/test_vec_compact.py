@@ -37,6 +37,18 @@ def _upsert(index: Index, memory_id: str, n: int, seed: int = 0) -> None:
     )
 
 
+def _parent(index: Index, memory_id: str) -> None:
+    """Insert the parent ``memories`` row so ``record_embed_state`` doesn't hit
+    the FK-violation branch (which deletes the vec rows). In production the
+    embed worker only records state for memories that exist."""
+    index.db.execute(
+        """INSERT OR IGNORE INTO memories(id, type, source, title, body, path, created, updated)
+           VALUES (?, 'memory', 'test', 't', 'b', ?, '2026-01-01', '2026-01-01')""",
+        (memory_id, f"{memory_id}.md"),
+    )
+    index.db.commit()
+
+
 def _fragment(index: Index) -> None:
     """Reproduce the production failure shape: a mass delete that leaves a
     few live rows pinned in every chunk. vec0 preallocates full chunks and
@@ -166,3 +178,76 @@ class TestHygieneVecCompactStage:
 
         _, slots_after = index.vec_occupancy()
         assert slots_after == slots_before
+
+
+class TestCompactConcurrency:
+    """ADR 0039: mutations that land between bulk-copy batches must be
+    reconciled by the delta pass, not lost or duplicated."""
+
+    def _checksum(self, index: Index) -> str:
+        return _vector_checksum(index)
+
+    def test_reembed_during_copy_is_reconciled(self, index: Index) -> None:
+        for m in range(4):
+            _upsert(index, f"m{m}", 2, seed=m * 100)
+
+        fired = {"done": False}
+
+        def mutate() -> None:
+            if fired["done"]:
+                return
+            fired["done"] = True
+            # Re-embed m1 with different vectors mid-copy; record the
+            # embed_state row exactly like the embed worker does — that
+            # timestamp is what the delta pass keys on.
+            _upsert(index, "m1", 2, seed=55_000)
+            _parent(index, "m1")
+            index.record_embed_state("m1", "hash-new", "sig")
+
+        index.compact_vectors(batch_size=2, _after_batch=mutate)
+
+        expected = self._checksum(index)
+        live, _ = index.vec_occupancy()
+        assert live == 8
+        assert self._checksum(index) == expected
+        hits = index.query_vec(_vec(55_000), limit=1)
+        assert hits[0].memory_id == "m1"
+
+    def test_delete_during_copy_is_reconciled(self, index: Index) -> None:
+        for m in range(4):
+            _upsert(index, f"m{m}", 2, seed=m * 100)
+
+        fired = {"done": False}
+
+        def mutate() -> None:
+            if fired["done"]:
+                return
+            fired["done"] = True
+            index.delete("m2")
+
+        result = index.compact_vectors(batch_size=2, _after_batch=mutate)
+
+        assert result.live_rows == 6
+        live, _ = index.vec_occupancy()
+        assert live == 6
+        assert index.query_vec(_vec(200), limit=1)[0].memory_id != "m2"
+
+    def test_insert_during_copy_is_reconciled(self, index: Index) -> None:
+        for m in range(4):
+            _upsert(index, f"m{m}", 2, seed=m * 100)
+
+        fired = {"done": False}
+
+        def mutate() -> None:
+            if fired["done"]:
+                return
+            fired["done"] = True
+            _upsert(index, "brand-new", 3, seed=77_000)
+            _parent(index, "brand-new")
+            index.record_embed_state("brand-new", "hash", "sig")
+
+        result = index.compact_vectors(batch_size=2, _after_batch=mutate)
+
+        assert result.live_rows == 11
+        hits = index.query_vec(_vec(77_000), limit=1)
+        assert hits[0].memory_id == "brand-new"

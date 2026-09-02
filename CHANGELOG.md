@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vec compaction no longer freezes search (ADR 0039).** The weekly
+  `vec_compact` stage rebuilt the vec0 table in one transaction under
+  the writer lock — 47 minutes on a 147k-row vault — and every `/search`
+  in that window hung. Three fixes: (1) `compact_vectors` now bulk-copies
+  live rows off a read-only snapshot in small per-batch locked writes,
+  then catches up re-embeds/deletes and swaps the table in one short
+  locked transaction, so the lock is never held for the whole rebuild;
+  (2) the embed worker claims its queue batch via a worker thread instead
+  of on the asyncio event loop, so a lock held elsewhere can no longer
+  freeze the daemon (HTTP server included); (3) query-log writes on the
+  search path acquire the shared lock with a 2s timeout and skip on
+  contention rather than blocking — the log is non-canonical by design.
+
+### Changed
+
+- **`vec_compact` cadence is now daily and threshold-gated** (ADR 0039):
+  `vec_compact_interval_seconds` 7d → 1d and `vec_compact_max_occupancy`
+  0.6 → 0.8 (compact once >20% of slots are dead). With compaction no
+  longer blocking search, running it sooner keeps KNN scans near the live
+  table size instead of letting a week of dead slots accumulate.
+
 ## [0.22.0] - 2026-08-25
 
 ### Fixed
