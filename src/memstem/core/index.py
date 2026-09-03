@@ -957,6 +957,24 @@ class Index:
     VEC_BUILD_TABLE = "memories_vec_new"
     VEC_OLD_TABLE = "memories_vec_old"
 
+    def _drop_vec_table_fast(self, name: str) -> None:
+        """``DROP TABLE IF EXISTS name`` without zero-filling freed pages.
+
+        Ubuntu/Debian ship SQLite with ``SQLITE_SECURE_DELETE`` compiled in, so
+        a plain DROP of a multi-GB vec0 table rewrites every freed page through
+        the WAL — 48 s and an I/O storm that stalled concurrent searches on the
+        2026-09-03 live run (ADR 0040 addendum). The index is derived data
+        (the vault markdown is canonical), so page zeroing buys nothing here.
+        Caller holds :attr:`_lock`; runs in its own transaction.
+        """
+        prev = self.db.execute("PRAGMA secure_delete").fetchone()[0]
+        try:
+            self.db.execute("PRAGMA secure_delete = OFF")
+            with self.db:
+                self.db.execute(f"DROP TABLE IF EXISTS {name}")
+        finally:
+            self.db.execute(f"PRAGMA secure_delete = {'ON' if prev else 'OFF'}")
+
     def _vec_shadow_names(self, base: str) -> list[str]:
         """All sqlite_master table names belonging to vec0 table ``base``.
 
@@ -991,8 +1009,8 @@ class Index:
     def compact_vectors(
         self,
         *,
-        batch_size: int = 1000,
-        batch_pause_seconds: float = 0.1,
+        batch_size: int = 500,
+        batch_pause_seconds: float = 0.25,
         _after_batch: Callable[[], None] | None = None,
     ) -> VecCompactResult:
         """Rebuild ``memories_vec`` keeping only live rows (ADR 0036/0039/0040).
@@ -1057,9 +1075,9 @@ class Index:
             slots_before = self.db.execute(
                 f"SELECT coalesce(sum(size), 0) FROM {live_t}_chunks"
             ).fetchone()[0]
+            self._drop_vec_table_fast(build_t)
+            self._drop_vec_table_fast(old_t)
             with self.db:
-                self.db.execute(f"DROP TABLE IF EXISTS {build_t}")
-                self.db.execute(f"DROP TABLE IF EXISTS {old_t}")
                 self.db.execute("DROP TABLE IF EXISTS _vec_compact_stage")  # pre-0040 leftover
                 self.db.execute(build_ddl)
 
@@ -1112,16 +1130,28 @@ class Index:
                             "SELECT memory_id FROM embed_state WHERE embedded_at >= ?", (t0,)
                         ).fetchall()
                     ]
-                    for i in range(0, len(changed), 500):
-                        chunk = changed[i : i + 500]
-                        marks = ",".join("?" * len(chunk))
-                        self.db.execute(
-                            f"DELETE FROM {build_t} WHERE memory_id IN ({marks})", chunk
+                    if changed:
+                        # Resolve the affected chunk_ids from the `_rowids` shadow
+                        # tables (plain B-trees) and touch vec0 only by primary
+                        # key — a `WHERE memory_id IN (...)` on vec0 is a full
+                        # scan that reads every embedding (11.9 s on the live run).
+                        changed_set = set(changed)
+
+                        def _chunks_of(table: str) -> list[str]:
+                            return [
+                                r[0]
+                                for r in self.db.execute(f"SELECT id FROM {table}_rowids")
+                                if r[0].rsplit(":", 1)[0] in changed_set
+                            ]
+
+                        self.db.executemany(
+                            f"DELETE FROM {build_t} WHERE chunk_id = ?",
+                            [(c,) for c in _chunks_of(build_t)],
                         )
-                        self.db.execute(
+                        self.db.executemany(
                             f"INSERT INTO {build_t}({select_cols}) "
-                            f"SELECT {select_cols} FROM {live_t} WHERE memory_id IN ({marks})",
-                            chunk,
+                            f"SELECT {select_cols} FROM {live_t} WHERE chunk_id = ?",
+                            [(c,) for c in _chunks_of(live_t)],
                         )
                     _t("delta", tm)
                     tm = time.monotonic()
@@ -1176,16 +1206,16 @@ class Index:
             # a crash here leaves only a stray _old table that the next run's
             # startup cleanup removes.
             tm = time.monotonic()
-            with self._lock, self.db:
-                self.db.execute(f"DROP TABLE IF EXISTS {old_t}")
+            with self._lock:
+                self._drop_vec_table_fast(old_t)
             _t("drop_old", tm)
         except BaseException:
             # Leave the live table untouched (the swap txn rolled back) and
             # clear the half-built table so the next run starts clean.
             try:
-                with self._lock, self.db:
-                    self.db.execute(f"DROP TABLE IF EXISTS {build_t}")
-                    self.db.execute(f"DROP TABLE IF EXISTS {old_t}")
+                with self._lock:
+                    self._drop_vec_table_fast(build_t)
+                    self._drop_vec_table_fast(old_t)
             except sqlite3.Error:
                 logger.exception("compact_vectors: failed to drop scratch tables after error")
             raise
