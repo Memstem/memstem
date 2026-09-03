@@ -42,6 +42,30 @@ swaps it in atomically:
 The locked window is now the delta + a count + a drop + eight renames:
 milliseconds, independent of vault size.
 
+## Addendum (2026-09-03, same day) — keep O(table) work out of the lock
+
+The first live run of this design still held the lock ~2.3 min on the 149k-row
+vault (4 search timeouts). Two O(table-size) steps were inside the swap
+transaction: `DROP TABLE memories_vec` (freeing a multi-GB table page by page)
+and the prune `DELETE ... WHERE chunk_id NOT IN (SELECT chunk_id FROM
+memories_vec)` (two vec0 full scans). Revised:
+
+- The old table is **renamed aside** to `memories_vec_old*` inside the swap
+  and dropped afterwards in its own transaction. Search is already on the new
+  table when the drop runs.
+- The prune diffs the two `_rowids` shadow tables (plain B-trees whose `id`
+  column is the row's chunk_id) and point-deletes the few chunk_ids that
+  vanished, instead of a vec0 `NOT IN` scan. This stays correct for orphan
+  vec rows (a `memories`-table prune would make every compaction abort
+  while one exists — orphans do occur transiently, see the
+  "Orphan vec rows cleaned" path in `record_embed_state`).
+- Per-step timings (`delta`, `prune`, `verify`, `rename`, `drop_old`) are
+  logged so the locked window is measured, not assumed.
+- The build loop pauses `batch_pause_seconds` (default 0.1 s) between
+  ~16 MB batches; during the unpaused live run concurrent searches ran
+  2–14 s (baseline 2–3 s) from I/O contention. Compaction gets slightly
+  longer; it holds no lock, so that is free.
+
 ## Consequences
 
 - Compaction no longer degrades search at any vault size; daily cadence
