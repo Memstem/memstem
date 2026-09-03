@@ -13,8 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step still refilled the vec0 table under the writer lock — ~20 minutes on
   a 149k-row vault, freezing search nightly. The compacted copy is now built
   beside the live table and swapped in by renaming the vec0 table and all of
-  its shadow tables in one short transaction (milliseconds). Any failure
-  rolls back with the old table untouched.
+  its shadow tables in one short transaction. The old table is renamed
+  aside and dropped after the swap, and the prune uses the `memories`
+  table, so nothing O(table size) runs under the lock; per-step swap
+  timings are logged. The build loop pauses briefly between batches to
+  keep concurrent searches responsive. Any failure rolls back with the
+  old table untouched.
 
 - **Vec compaction no longer freezes search (ADR 0039).** The weekly
   `vec_compact` stage rebuilt the vec0 table in one transaction under

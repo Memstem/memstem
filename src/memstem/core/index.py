@@ -15,6 +15,7 @@ import re
 import sqlite3
 import struct
 import threading
+import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -954,29 +955,44 @@ class Index:
 
     VEC_TABLE = "memories_vec"
     VEC_BUILD_TABLE = "memories_vec_new"
+    VEC_OLD_TABLE = "memories_vec_old"
 
     def _vec_shadow_names(self, base: str) -> list[str]:
         """All sqlite_master table names belonging to vec0 table ``base``.
 
         Includes the virtual table itself plus its shadow tables
         (``_info``, ``_chunks``, ``_rowids``, ``_vector_chunks00``,
-        ``_metadatachunks00``, ...). Ordered so the virtual table comes
-        first — renaming it first and then the shadows is the order that
-        was verified to leave a queryable table (ADR 0040).
+        ``_metadatachunks00``, ...). A *sibling* vec0 table whose name
+        extends ``base`` (``memories_vec_new``, ``memories_vec_old``) and
+        that sibling's own shadows are excluded — a bare prefix match would
+        otherwise rename them along with ``base``'s. Ordered so the virtual
+        table comes first — renaming it first and then the shadows is the
+        order verified to leave a queryable table (ADR 0040).
         """
         rows = self.db.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' "
             "AND (name = ? OR name LIKE ? ESCAPE '\\') ORDER BY name",
             (base, base.replace("_", "\\_") + "\\_%"),
         ).fetchall()
-        names = [r[0] for r in rows]
+        siblings = [
+            r["name"]
+            for r in rows
+            if r["name"] != base
+            and (r["sql"] or "").lstrip().upper().startswith("CREATE VIRTUAL TABLE")
+        ]
+        names = [
+            r["name"]
+            for r in rows
+            if not any(r["name"] == v or r["name"].startswith(v + "_") for v in siblings)
+        ]
         names.sort(key=lambda n: (n != base, n))
         return names
 
     def compact_vectors(
         self,
         *,
-        batch_size: int = 2000,
+        batch_size: int = 1000,
+        batch_pause_seconds: float = 0.1,
         _after_batch: Callable[[], None] | None = None,
     ) -> VecCompactResult:
         """Rebuild ``memories_vec`` keeping only live rows (ADR 0036/0039/0040).
@@ -1013,8 +1029,12 @@ class Index:
         """
         start_monotonic = datetime.now(UTC)
         t0 = start_monotonic.isoformat()
-        live_t, build_t = self.VEC_TABLE, self.VEC_BUILD_TABLE
+        live_t, build_t, old_t = self.VEC_TABLE, self.VEC_BUILD_TABLE, self.VEC_OLD_TABLE
         select_cols = "chunk_id, memory_id, chunk_index, embedding"
+        swap_timings: dict[str, float] = {}
+
+        def _t(label: str, since: float) -> None:
+            swap_timings[label] = round(time.monotonic() - since, 3)
 
         with self._lock:
             ddl_row = self.db.execute(
@@ -1039,6 +1059,7 @@ class Index:
             ).fetchone()[0]
             with self.db:
                 self.db.execute(f"DROP TABLE IF EXISTS {build_t}")
+                self.db.execute(f"DROP TABLE IF EXISTS {old_t}")
                 self.db.execute("DROP TABLE IF EXISTS _vec_compact_stage")  # pre-0040 leftover
                 self.db.execute(build_ddl)
 
@@ -1070,10 +1091,21 @@ class Index:
                             )
                         if _after_batch is not None:
                             _after_batch()
+                        if batch_pause_seconds > 0:
+                            # ~16 MB of vector writes per batch; a short pause lets
+                            # concurrent KNN scans get I/O in between (unpaused live
+                            # run 2026-09-03: searches 2-14 s vs ~2-3 s baseline).
+                            time.sleep(batch_pause_seconds)
 
             # -- Delta + atomic swap: one short locked transaction --
+            # Nothing O(table size) runs in here: the old table is renamed
+            # aside (not dropped — dropping a multi-GB vec0 table frees pages
+            # one by one) and the prune uses the regular `memories` table, not
+            # a vec0 NOT IN scan. The first live run of the drop+NOT-IN shape
+            # held the lock ~2.3 min (2026-09-03, ADR 0040 addendum).
             with self._lock:
                 with self.db:
+                    tm = time.monotonic()
                     changed = [
                         row[0]
                         for row in self.db.execute(
@@ -1091,10 +1123,27 @@ class Index:
                             f"SELECT {select_cols} FROM {live_t} WHERE memory_id IN ({marks})",
                             chunk,
                         )
-                    self.db.execute(
-                        f"DELETE FROM {build_t} "
-                        f"WHERE chunk_id NOT IN (SELECT chunk_id FROM {live_t})"
-                    )
+                    _t("delta", tm)
+                    tm = time.monotonic()
+                    # Rows whose live counterpart vanished since the copy started
+                    # (deletes the embed_state delta cannot see). Diff the two
+                    # `_rowids` shadow tables — plain B-trees holding each row's
+                    # chunk_id as `id` — instead of a vec0 NOT IN scan, then point-
+                    # delete by primary key. Also covers orphan vec rows correctly
+                    # (a `memories`-table prune would abort on them).
+                    gone = [
+                        r[0]
+                        for r in self.db.execute(
+                            f"SELECT id FROM {build_t}_rowids "
+                            f"WHERE id NOT IN (SELECT id FROM {live_t}_rowids)"
+                        ).fetchall()
+                    ]
+                    if gone:
+                        self.db.executemany(
+                            f"DELETE FROM {build_t} WHERE chunk_id = ?", [(g,) for g in gone]
+                        )
+                    _t("prune", tm)
+                    tm = time.monotonic()
                     live = self.db.execute(f"SELECT count(*) FROM {live_t}_rowids").fetchone()[0]
                     built = self.db.execute(f"SELECT count(*) FROM {build_t}_rowids").fetchone()[0]
                     if built != live:
@@ -1102,36 +1151,53 @@ class Index:
                             f"vec compact aborted: build table holds {built} rows but "
                             f"{live_t} reports {live} live — rolling back"
                         )
-                    self.db.execute(f"DROP TABLE {live_t}")
+                    _t("verify", tm)
+                    tm = time.monotonic()
+                    for name in self._vec_shadow_names(live_t):
+                        self.db.execute(
+                            f'ALTER TABLE "{name}" RENAME TO "{old_t + name[len(live_t) :]}"'
+                        )
                     for name in self._vec_shadow_names(build_t):
-                        target = live_t + name[len(build_t) :]
-                        self.db.execute(f'ALTER TABLE "{name}" RENAME TO "{target}"')
+                        self.db.execute(
+                            f'ALTER TABLE "{name}" RENAME TO "{live_t + name[len(build_t) :]}"'
+                        )
                     rebuilt = self.db.execute(f"SELECT count(*) FROM {live_t}_rowids").fetchone()[0]
                     if rebuilt != live:
                         raise RuntimeError(
                             f"vec compact aborted: swapped table holds {rebuilt} rows, "
                             f"expected {live} — rolling back"
                         )
+                    _t("rename", tm)
                 slots_after = self.db.execute(
                     f"SELECT coalesce(sum(size), 0) FROM {live_t}_chunks"
                 ).fetchone()[0]
+            # Old table is unreferenced now — drop it in its own transaction.
+            # Search already serves from the new table (reader connections);
+            # a crash here leaves only a stray _old table that the next run's
+            # startup cleanup removes.
+            tm = time.monotonic()
+            with self._lock, self.db:
+                self.db.execute(f"DROP TABLE IF EXISTS {old_t}")
+            _t("drop_old", tm)
         except BaseException:
             # Leave the live table untouched (the swap txn rolled back) and
             # clear the half-built table so the next run starts clean.
             try:
                 with self._lock, self.db:
                     self.db.execute(f"DROP TABLE IF EXISTS {build_t}")
+                    self.db.execute(f"DROP TABLE IF EXISTS {old_t}")
             except sqlite3.Error:
-                logger.exception("compact_vectors: failed to drop build table after error")
+                logger.exception("compact_vectors: failed to drop scratch tables after error")
             raise
 
         elapsed = (datetime.now(UTC) - start_monotonic).total_seconds()
         logger.info(
-            "compact_vectors: %d live rows, slots %d -> %d (%.1fs)",
+            "compact_vectors: %d live rows, slots %d -> %d (%.1fs) swap=%s",
             live,
             slots_before,
             slots_after,
             elapsed,
+            swap_timings,
         )
         return VecCompactResult(
             live_rows=int(live),

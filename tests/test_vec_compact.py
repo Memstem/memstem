@@ -310,6 +310,45 @@ class TestAtomicSwap:
         assert not any(n.startswith("memories_vec_new") for n in self._tables(index))
         assert checksum != _vector_checksum(index)  # ghost was added; nothing lost
 
+    def test_shadow_names_exclude_sibling_vec_tables(self, index: Index) -> None:
+        _upsert(index, "m1", 1)
+        ddl = index.db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='memories_vec'"
+        ).fetchone()[0]
+        index.db.execute(ddl.replace("memories_vec", "memories_vec_new", 1))
+        index.db.execute(ddl.replace("memories_vec", "memories_vec_old", 1))
+        index.db.commit()
+        live_names = index._vec_shadow_names("memories_vec")
+        assert live_names[0] == "memories_vec"
+        assert "memories_vec_rowids" in live_names
+        assert not any("_new" in n or "_old" in n for n in live_names)
+        new_names = index._vec_shadow_names("memories_vec_new")
+        assert new_names[0] == "memories_vec_new"
+        assert all(n.startswith("memories_vec_new") for n in new_names)
+        index.db.execute("DROP TABLE memories_vec_new")
+        index.db.execute("DROP TABLE memories_vec_old")
+        index.db.commit()
+
+    def test_no_old_table_left_after_swap(self, index: Index) -> None:
+        _fragment(index)
+        index.compact_vectors(batch_size=1, batch_pause_seconds=0)
+        assert not any(n.startswith("memories_vec_old") for n in self._tables(index))
+        assert index.vec_occupancy()[0] == 2
+
+    def test_leftover_old_table_from_crash_is_cleared(self, index: Index) -> None:
+        _upsert(index, "m1", 2)
+        ddl = index.db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='memories_vec'"
+        ).fetchone()[0]
+        index.db.execute(ddl.replace("memories_vec", "memories_vec_old", 1))
+        index.db.commit()
+        assert any(n.startswith("memories_vec_old") for n in self._tables(index))
+
+        index.compact_vectors(batch_pause_seconds=0)
+
+        assert not any(n.startswith("memories_vec_old") for n in self._tables(index))
+        assert index.query_vec(_vec(1), limit=1)[0].memory_id == "m1"
+
     def test_leftover_build_table_from_crash_is_cleared(self, index: Index) -> None:
         _upsert(index, "m1", 2)
         ddl = index.db.execute(
