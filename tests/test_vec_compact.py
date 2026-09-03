@@ -251,3 +251,80 @@ class TestCompactConcurrency:
         assert result.live_rows == 11
         hits = index.query_vec(_vec(77_000), limit=1)
         assert hits[0].memory_id == "brand-new"
+
+
+class TestAtomicSwap:
+    """ADR 0040: the rebuild happens beside the live table and is swapped in
+    by renaming the vec0 table plus every shadow table."""
+
+    def _tables(self, index: Index) -> list[str]:
+        rows = index.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'memories_vec%' "
+            "ORDER BY name"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def test_shadow_tables_renamed_and_no_build_leftovers(self, index: Index) -> None:
+        _fragment(index)
+        before = self._tables(index)
+        assert "memories_vec_rowids" in before
+
+        index.compact_vectors(batch_size=1)
+
+        after = self._tables(index)
+        assert after == before  # identical set of names: vtab + every shadow
+        assert not any(n.startswith("memories_vec_new") for n in after)
+        assert "_vec_compact_stage" not in [
+            r[0] for r in index.db.execute("SELECT name FROM sqlite_master").fetchall()
+        ]
+        # The swapped-in table is fully functional: occupancy, KNN, upsert.
+        live, slots = index.vec_occupancy()
+        assert live == 2
+        assert slots <= CHUNK_SLOTS
+        assert index.query_vec(_vec(10_000), limit=1)[0].memory_id == "keep-1"
+        index.upsert_vectors("post", ["x"], [_vec(4242)])
+        assert index.query_vec(_vec(4242), limit=1)[0].memory_id == "post"
+
+    def test_mismatch_aborts_keeps_live_table_and_drops_build(self, index: Index) -> None:
+        for m in range(3):
+            _upsert(index, f"m{m}", 2, seed=m * 100)
+        checksum = _vector_checksum(index)
+        fired = {"done": False}
+
+        def sneak_insert() -> None:
+            # A vec row that lands mid-copy WITHOUT an embed_state record is
+            # invisible to the delta pass -> counts disagree -> must abort.
+            if fired["done"]:
+                return
+            fired["done"] = True
+            _upsert(index, "ghost", 1, seed=99_000)
+
+        with pytest.raises(RuntimeError, match="rolling back"):
+            index.compact_vectors(batch_size=2, _after_batch=sneak_insert)
+
+        # Live table untouched (still has the ghost row too), build table gone.
+        assert _vector_checksum(index) == _vector_checksum(index)
+        live, _ = index.vec_occupancy()
+        assert live == 7
+        assert index.query_vec(_vec(99_000), limit=1)[0].memory_id == "ghost"
+        assert not any(n.startswith("memories_vec_new") for n in self._tables(index))
+        assert checksum != _vector_checksum(index)  # ghost was added; nothing lost
+
+    def test_leftover_build_table_from_crash_is_cleared(self, index: Index) -> None:
+        _upsert(index, "m1", 2)
+        ddl = index.db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='memories_vec'"
+        ).fetchone()[0]
+        index.db.execute(ddl.replace("memories_vec", "memories_vec_new", 1))
+        index.db.execute(
+            "INSERT INTO memories_vec_new(chunk_id, memory_id, chunk_index, embedding) "
+            "SELECT chunk_id, memory_id, chunk_index, embedding FROM memories_vec"
+        )
+        index.db.commit()
+        assert any(n.startswith("memories_vec_new") for n in self._tables(index))
+
+        result = index.compact_vectors()
+
+        assert result.live_rows == 2
+        assert not any(n.startswith("memories_vec_new") for n in self._tables(index))
+        assert index.query_vec(_vec(1), limit=1)[0].memory_id == "m1"

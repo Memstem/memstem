@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Vec compaction is now fully non-blocking (ADR 0040).** ADR 0039's final
+  step still refilled the vec0 table under the writer lock — ~20 minutes on
+  a 149k-row vault, freezing search nightly. The compacted copy is now built
+  beside the live table and swapped in by renaming the vec0 table and all of
+  its shadow tables in one short transaction (milliseconds). Any failure
+  rolls back with the old table untouched.
+
 - **Vec compaction no longer freezes search (ADR 0039).** The weekly
   `vec_compact` stage rebuilt the vec0 table in one transaction under
   the writer lock — 47 minutes on a 147k-row vault — and every `/search`
