@@ -66,6 +66,20 @@ memories_vec)` (two vec0 full scans). Revised:
   2–14 s (baseline 2–3 s) from I/O contention. Compaction gets slightly
   longer; it holds no lock, so that is free.
 
+## Addendum 2 (2026-09-03) — the last 48 s: secure_delete
+
+Second live run: swap transaction 12 s (delta 11.9 s, prune/verify/rename
+< 0.1 s) and it did **not** stall search; the one remaining search timeout
+mapped exactly onto `drop_old` = 48 s. Ubuntu's SQLite is compiled with
+`SQLITE_SECURE_DELETE`, so dropping the 2.4 GB old table zero-fills every
+freed page through the WAL — the 48 s is that write, and its I/O starves
+concurrent KNN scans. Scratch-table drops now run with
+`PRAGMA secure_delete = OFF` (restored afterwards); the index is derived
+data. The delta pass resolves affected chunk_ids from the `_rowids` shadow
+tables and touches vec0 by primary key only (was a full-scan
+`WHERE memory_id IN`). Build batches are 500 rows with a 0.25 s pause to
+cut the write rate under concurrent searches.
+
 ## Consequences
 
 - Compaction no longer degrades search at any vault size; daily cadence

@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aside and dropped after the swap, and the prune uses the `memories`
   table, so nothing O(table size) runs under the lock; per-step swap
   timings are logged. The build loop pauses briefly between batches to
-  keep concurrent searches responsive. Any failure rolls back with the
-  old table untouched.
+  keep concurrent searches responsive, scratch-table drops run with
+  `secure_delete` off (Ubuntu's SQLite zero-fills freed pages, which made
+  dropping the old table a 48 s I/O storm), and the delta pass touches
+  vec0 by primary key only. Any failure rolls back with the old table
+  untouched.
 
 - **Vec compaction no longer freezes search (ADR 0039).** The weekly
   `vec_compact` stage rebuilt the vec0 table in one transaction under
