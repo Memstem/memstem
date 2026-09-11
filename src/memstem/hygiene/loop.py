@@ -239,21 +239,27 @@ class HygieneLoop:
         """
         live, slots = self.index.vec_occupancy()
         dead = slots - live
+        dead_pct = (100.0 * dead / slots) if slots else 0.0
         if slots == 0 or dead < self.cfg.vec_compact_min_dead_slots:
             logger.info(
-                "hygiene[vec_compact]: skip (live=%d slots=%d dead=%d < min %d)",
+                "hygiene[vec_compact]: skip (live=%d slots=%d dead=%d (%.0f%%) < min %d)",
                 live,
                 slots,
                 dead,
+                dead_pct,
                 self.cfg.vec_compact_min_dead_slots,
             )
             return
         occupancy = live / slots
         if occupancy >= self.cfg.vec_compact_max_occupancy:
             logger.info(
-                "hygiene[vec_compact]: skip (occupancy %.2f >= %.2f)",
+                "hygiene[vec_compact]: skip (occupancy %.2f >= %.2f; live=%d slots=%d dead=%d (%.0f%%))",
                 occupancy,
                 self.cfg.vec_compact_max_occupancy,
+                live,
+                slots,
+                dead,
+                dead_pct,
             )
             return
         result = self.index.compact_vectors()
