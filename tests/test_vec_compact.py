@@ -168,6 +168,30 @@ class TestHygieneVecCompactStage:
         _, slots_after = index.vec_occupancy()
         assert slots_after == slots_before  # untouched
 
+    def test_default_floor_compacts_small_fragmented_vault(self, index: Index) -> None:
+        # ADR 0041: a two-chunk vault that is ~99% dead must compact under the
+        # DEFAULT thresholds. Through 0.22.0 the 25k-slot floor meant a
+        # 31k-vector vault sat at 41% dead and the stage skipped every cycle.
+        _fragment(index)
+        live, slots = index.vec_occupancy()
+        defaults = HygieneConfig()
+        assert defaults.vec_compact_min_dead_slots <= slots - live
+        assert live / slots < defaults.vec_compact_max_occupancy
+
+        self._loop(
+            index,
+            vec_compact_min_dead_slots=defaults.vec_compact_min_dead_slots,
+            vec_compact_max_occupancy=defaults.vec_compact_max_occupancy,
+        )._run_vec_compact()
+
+        live_after, slots_after = index.vec_occupancy()
+        assert live_after == live
+        assert slots_after <= CHUNK_SLOTS
+
+    def test_default_floor_is_one_chunk(self) -> None:
+        # One chunk of dead slots is the least a rebuild can reclaim.
+        assert HygieneConfig().vec_compact_min_dead_slots == CHUNK_SLOTS
+
     def test_skips_at_high_occupancy(self, index: Index) -> None:
         # 100% occupancy: gate on occupancy even with min_dead_slots=0.
         index.upsert_vectors("m1", ["a", "b"], [_vec(1), _vec(2)])

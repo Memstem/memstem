@@ -373,10 +373,19 @@ class HygieneConfig(BaseModel):
     With compaction no longer blocking search, running it at a lower
     dead fraction is cheap and keeps every KNN scan small."""
 
-    vec_compact_min_dead_slots: int = Field(default=25_000, ge=0)
-    """Only compact when at least this many slots are dead. Keeps tiny
-    vaults from rebuilding over kilobytes. 25k slots at 4096-dim
-    float32 is ~400 MB of dead scan per query."""
+    vec_compact_min_dead_slots: int = Field(default=1_024, ge=0)
+    """Only compact when at least this many slots are dead — one full
+    vec0 chunk (16 MB at 4096-dim float32). Below a chunk's worth of
+    dead slots a rebuild can reclaim at most one chunk, so it is not
+    worth even a lock-free pass. The occupancy gate above is the real
+    threshold; this floor only keeps single-chunk vaults quiet.
+
+    Was 25,000 (~400 MB of dead scan) through 0.22.0 — sized against a
+    185k-vector vault where that is one day of churn, and never
+    re-derived for small vaults: a 31k-vector vault sat at 41% dead
+    and the stage skipped every cycle because it could not reach the
+    floor (ADR 0041). With compaction lock-free (ADR 0040) a small
+    rebuild costs seconds of slightly slower search, not a freeze."""
 
 
 class HttpServerConfig(BaseModel):

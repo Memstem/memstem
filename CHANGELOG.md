@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`vec_compact_min_dead_slots` default 25,000 → 1,024** (ADR 0041). The
+  absolute floor was sized against a 185k-vector vault, where 25k dead
+  slots is a day of churn, and it silently disabled compaction on every
+  smaller vault: a 31k-vector vault sat at 41% dead (19k slots) and the
+  stage logged a skip every cycle because it could not reach the floor,
+  while a 13k-vector vault reached 54% dead. The occupancy gate
+  (`vec_compact_max_occupancy`, compact when >20% dead) is now the
+  operative threshold at every vault size; the floor is one vec0 chunk,
+  the least a rebuild can reclaim. Large vaults are unaffected (their
+  occupancy gate already binds first). Skip log lines now include the
+  dead-slot percentage.
+
 - **`vec_compact` cadence is now daily and threshold-gated** (ADR 0039):
   `vec_compact_interval_seconds` 7d → 1d and `vec_compact_max_occupancy`
   0.6 → 0.8 (compact once >20% of slots are dead). With compaction no
