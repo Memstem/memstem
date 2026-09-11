@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-11
+
+Vec compaction is lock-free (ADR 0039/0040) and its gate now scales with the vault (ADR 0041), so small vaults compact themselves instead of accumulating dead slots below a floor sized for the largest one.
+
 ### Fixed
 
 - **Vec compaction is now fully non-blocking (ADR 0040).** ADR 0039's final
