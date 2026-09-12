@@ -345,6 +345,30 @@ adapters:
 
 Run `memstem doctor` after edits to verify every configured target exists and the embedder is reachable.
 
+### What a session record holds (and what it does not)
+
+A `type: session` record is the **conversation**, not the transcript. Each
+adapter keeps the user and assistant text and reduces everything else to a
+marker or drops it:
+
+| Source | Kept | Reduced to a marker | Dropped |
+|---|---|---|---|
+| Claude Code | user + assistant text | `[tool_use: <name>]`, `[tool_result]` | tool arguments, command output, file contents, diffs, images |
+| Codex | user + assistant text | `[function_call: <name>]`, `[function_call_output]` | reasoning, developer/permissions boilerplate, environment stubs |
+| OpenClaw | text blocks | — | `tool_use`, `tool_result`, `thinking` blocks (no marker) |
+
+Uploaded or pasted images leave no trace unless the assistant described them in
+its reply. Distillations and project records are derived from these session
+records, so they cannot recover tool output either.
+
+The practical consequence: **Memstem is not a transcript archive.** It keeps a
+session record even after its source file is deleted (the record is tombstoned,
+not removed — see [ADR 0026](./docs/decisions/0026-source-deletion-tombstone.md)),
+but it can never re-derive the commands, results, or pictures that were only in
+the raw transcript. If you want the full record, archive the transcripts rather
+than deleting them; if you only want the conversation to be searchable, Memstem
+already has it.
+
 ## Distillation + project records
 
 Two hygiene commands turn raw session transcripts and per-project

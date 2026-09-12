@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- README: a plain statement of what a session record keeps per adapter and what becomes a marker or is dropped (tool I/O, images). Prompted by a user who enabled 30-day transcript deletion on the assumption that Memstem held the whole conversation.
+
 ## [0.23.0] - 2026-09-11
 
 Vec compaction is lock-free (ADR 0039/0040) and its gate now scales with the vault (ADR 0041), so small vaults compact themselves instead of accumulating dead slots below a floor sized for the largest one.
