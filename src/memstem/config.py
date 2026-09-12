@@ -355,14 +355,17 @@ class HygieneConfig(BaseModel):
 
     # ADR 0036 — vec table compaction -------------------------------------
 
-    vec_compact_interval_seconds: int = Field(default=24 * 3600, ge=0)
+    vec_compact_interval_seconds: int = Field(default=12 * 3600, ge=0)
     """Cadence for the ``vec_compact`` stage's threshold CHECK (the
     occupancy/min-dead gates below decide whether a rebuild actually
-    runs). vec0 preallocates full chunks and frees one only when every
+    runs). Twice daily since 0.24 (was daily): the check is one count
+    query, so a shorter cadence is free when nothing is due, and it halves
+    how long a heavy day can leave a vault past the gate before the
+    lock-free rebuild (ADR 0040) picks it up. vec0 preallocates full chunks and frees one only when every
     slot in it is dead, so a mass delete that leaves scattered
     survivors (large sources re-chunked, bulk purges, slice rebuilds)
-    pins the table — and every KNN scan — at its peak size. Daily
-    (ADR 0039; was weekly) keeps scans near the live size on
+    pins the table — and every KNN scan — at its peak size. A short cadence
+    (ADR 0039 made it daily from weekly) keeps scans near the live size on
     high-churn vaults: a week of ADR 0037 re-summaries once grew a
     147k-row table to 60% dead, and every query paid for it."""
 
