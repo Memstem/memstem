@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `vec_compact_interval_seconds` default 24h → 12h. The stage's threshold check is a single count query and only rebuilds past the 20% gate (ADR 0041), so checking twice a day is free when nothing is due and halves the longest a heavy day can leave a vault dirty. Prompted by a small-vault user whose heavy days add ~5 points of dead slots every three hours. Operators who set the key explicitly are unaffected.
+
 ### Documentation
 
 - README: a plain statement of what a session record keeps per adapter and what becomes a marker or is dropped (tool I/O, images). Prompted by a user who enabled 30-day transcript deletion on the assumption that Memstem held the whole conversation.

@@ -72,6 +72,12 @@ pays for all week (the ADR 0036 problem, re-created between compactions).
    keeps KNN scans near-minimal all week, and each run stays small. Vaults
    with low churn skip at the gate as before.
 
+   *Amended 2026-09-12:* the check cadence default is now 12 h (`min_dead_slots`
+   became relative in ADR 0041). Rationale: the check is a count query, so a
+   shorter cadence costs nothing when nothing is due, and it bounds how long a
+   burst of churn can sit past the gate at half a day instead of a day. Not a
+   performance change — a day at 25 % dead is tens of milliseconds per query.
+
 ## Consequences
 
 - A compaction can no longer take search down. Its cost becomes a brief
