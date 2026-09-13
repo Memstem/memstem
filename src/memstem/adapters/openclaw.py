@@ -26,7 +26,8 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncGenerator, Iterator
+import sqlite3
+from collections.abc import AsyncGenerator, Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,9 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from memstem.adapters.base import Adapter, MemoryRecord
+from memstem.adapters.openclaw_sqlite import database_fingerprint, discover_databases, read_database
+from memstem.adapters.plugin_skills import iter_plugin_skills
+from memstem.adapters.trajectory import merge_transcripts
 from memstem.config import OpenClawWorkspace
 
 logger = logging.getLogger(__name__)
@@ -82,7 +86,15 @@ def _file_to_record(path: Path, source_name: str) -> MemoryRecord | None:
 
     title = meta.get("title")
     if not isinstance(title, str) or not title.strip():
-        title = _extract_h1(body) or path.stem
+        skill_name = meta.get("name") if record_type == "skill" else None
+        fallback = (
+            skill_name.strip()
+            if isinstance(skill_name, str) and skill_name.strip()
+            else path.parent.name
+            if record_type == "skill"
+            else path.stem
+        )
+        title = _extract_h1(body) or fallback
 
     raw_tags = meta.get("tags", [])
     tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
@@ -193,6 +205,14 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
         logger.warning("could not read %s: %s", path, exc)
         return None
 
+    return _parse_trajectory_lines(text.splitlines(), path.name.removesuffix(TRAJECTORY_SUFFIX))
+
+
+def _parse_trajectory_lines(
+    lines: Iterable[str], fallback_id: str, *, preserve_history: bool = False
+) -> dict[str, Any]:
+    """Shared event parser; native rolling windows also retain disjoint snapshots."""
+    snapshot_history = ""
     turns: list[str] = []
     best_snapshot: list[Any] | None = None
     title: str | None = None
@@ -202,15 +222,19 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
     workspace_dir: str | None = None
     agent_id: str | None = None
 
-    for line in text.splitlines():
+    for line in lines:
         line = line.strip()
         if not line:
             continue
         try:
             entry: dict[str, Any] = json.loads(line)
         except json.JSONDecodeError:
+            if preserve_history:
+                logger.warning("malformed OpenClaw trajectory event in session %s", fallback_id)
             continue
         if not isinstance(entry, dict):
+            if preserve_history:
+                logger.warning("non-object OpenClaw trajectory event in session %s", fallback_id)
             continue
 
         ts = entry.get("ts")
@@ -251,6 +275,16 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
                 if turn:
                     turns.append(turn)
             snapshot = data.get("messagesSnapshot") if isinstance(data, dict) else None
+            if preserve_history and isinstance(snapshot, list):
+                snapshot_history = merge_transcripts(
+                    snapshot_history,
+                    "\n\n".join(
+                        t
+                        for t in _turns_from_snapshot(snapshot)
+                        if t
+                        not in ("**Assistant:** [Truncated]", "**User:** [OpenClaw heartbeat poll]")
+                    ),
+                )
             if isinstance(snapshot, list) and (
                 best_snapshot is None or len(snapshot) > len(best_snapshot)
             ):
@@ -266,7 +300,7 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
 
     if not session_id:
         # Trajectory filenames are `<id>.trajectory.jsonl`; strip both suffixes.
-        session_id = path.name.removesuffix(TRAJECTORY_SUFFIX) or path.stem
+        session_id = fallback_id
 
     if title is None and turns:
         for turn in turns:
@@ -279,7 +313,11 @@ def _parse_trajectory_file(path: Path) -> dict[str, Any] | None:
     return {
         "session_id": session_id,
         "title": title,
-        "body": "\n\n".join(turns),
+        "body": (
+            merge_transcripts(snapshot_history, "\n\n".join(turns))
+            if preserve_history
+            else "\n\n".join(turns)
+        ),
         "first_timestamp": first_timestamp,
         "last_timestamp": last_timestamp,
         "turn_count": len(turns),
@@ -619,6 +657,7 @@ class OpenClawAdapter(Adapter):
     ) -> None:
         self.workspaces = list(workspaces) if workspaces else []
         self.shared_files = list(shared_files) if shared_files else []
+        self._poll_fingerprints: dict[tuple[str, Path], object] = {}
 
     @property
     def _has_workspace_config(self) -> bool:
@@ -629,6 +668,11 @@ class OpenClawAdapter(Adapter):
         are guarded by their containing directory."""
         roots = [Path(ws.path) for ws in self.workspaces]
         roots += [Path(f).parent for f in self.shared_files]
+        for ws in self.workspaces:
+            roots += [
+                (ws.path / p).expanduser().resolve()
+                for p in (*ws.layout.plugin_skill_roots, *ws.layout.plugin_skill_allowed_roots)
+            ]
         return roots
 
     async def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
@@ -643,8 +687,16 @@ class OpenClawAdapter(Adapter):
                     yield legacy_record
 
     async def _reconcile_workspaces(self) -> AsyncGenerator[MemoryRecord, None]:
+        seen: set[Path] = set()
         for ws in self.workspaces:
-            for path, extra_tags in _iter_workspace_files(ws):
+            files = list(_iter_workspace_files(ws))
+            files.extend((p, []) for p in iter_plugin_skills(ws))
+            for path, extra_tags in files:
+                if path.name == "SKILL.md":
+                    path = path.resolve()
+                    if path in seen:
+                        continue
+                    seen.add(path)
                 ws_record = _file_to_record(path, self.name)
                 if ws_record is None:
                     continue
@@ -657,6 +709,8 @@ class OpenClawAdapter(Adapter):
                 if traj_record is None:
                     continue
                 yield _apply_workspace_tags(traj_record, ws.tag, [])
+        async for native_record in self._poll_external(force=True):
+            yield native_record
         for shared in self.shared_files:
             if not shared.is_file():
                 continue
@@ -664,6 +718,41 @@ class OpenClawAdapter(Adapter):
             if shared_record is None:
                 continue
             yield _apply_shared_tag(shared_record)
+
+    async def _poll_external(self, *, force: bool = False) -> AsyncGenerator[MemoryRecord, None]:
+        for ws in self.workspaces:
+            for db in await asyncio.to_thread(discover_databases, ws):
+                key = (ws.tag, db)
+                try:
+                    fingerprint = database_fingerprint(db)
+                    if not force and self._poll_fingerprints.get(key) == fingerprint:
+                        continue
+                    records = await asyncio.to_thread(read_database, db, ws)
+                    for record in records:
+                        yield record
+                    self._poll_fingerprints[key] = fingerprint
+                except (OSError, sqlite3.Error) as exc:
+                    logger.warning("OpenClaw SQLite read failed for %s: %s", db, exc)
+            if force:
+                continue  # full reconcile already walked plugin files
+            for path in await asyncio.to_thread(list, iter_plugin_skills(ws)):
+                key = (ws.tag, path)
+                try:
+                    stat = path.stat()
+                    skill_fingerprint = (
+                        stat.st_ino,
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ctime_ns,
+                    )
+                    if self._poll_fingerprints.get(key) == skill_fingerprint:
+                        continue
+                    skill_record = await asyncio.to_thread(_file_to_record, path, self.name)
+                    if skill_record is not None:
+                        yield _apply_workspace_tags(skill_record, ws.tag, [])
+                        self._poll_fingerprints[key] = skill_fingerprint
+                except OSError as exc:
+                    logger.warning("plugin skill read failed for %s: %s", path, exc)
 
     async def watch(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         queue: asyncio.Queue[Path] = asyncio.Queue()
@@ -678,8 +767,21 @@ class OpenClawAdapter(Adapter):
         observer.start()
         self._observer = observer  # registered for watcher_alive() / health
         try:
+            interval = min(
+                (ws.layout.trajectory_poll_seconds for ws in self.workspaces), default=30
+            )
+            deadline = loop.time()
             while True:
-                changed = await queue.get()
+                if loop.time() >= deadline:
+                    async for record in self._poll_external():
+                        yield record
+                    deadline = loop.time() + interval
+                try:
+                    changed = await asyncio.wait_for(
+                        queue.get(), timeout=max(0.001, deadline - loop.time())
+                    )
+                except TimeoutError:
+                    continue
                 if not changed.is_file():
                     continue
                 async for record in self._records_for_changed_path(changed, paths):
@@ -711,7 +813,9 @@ class OpenClawAdapter(Adapter):
         for ws in self.workspaces:
             interesting, extra_tags = _classify_workspace_path(changed, ws)
             if interesting:
-                record = _file_to_record(changed, self.name)
+                record = _file_to_record(
+                    changed.resolve() if changed.name == "SKILL.md" else changed, self.name
+                )
                 if record is not None:
                     record = _apply_daily_scope(record, changed, ws)
                     yield _apply_workspace_tags(record, ws.tag, extra_tags)

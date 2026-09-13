@@ -22,6 +22,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from memstem.adapters.base import MemoryRecord
+from memstem.adapters.trajectory import merge_transcripts
 from memstem.core.dedup import (
     increment_seen_count,
     normalized_body_hash,
@@ -187,6 +188,24 @@ class Pipeline:
         re-embedding would just burn rate-limit quota. Body or signature
         changes (or the absence of vectors) still enqueue.
         """
+        session_existing = self._openclaw_session(record)
+        if session_existing is not None:
+            meta = dict(record.metadata)
+            old = session_existing.frontmatter
+            for key, prior, choose in (
+                ("created", old.created, min),
+                ("updated", old.updated, max),
+            ):
+                incoming = _parse_iso(meta.get(key)) or prior
+                meta[key] = choose(prior, incoming).isoformat()
+            record = record.model_copy(
+                update={
+                    "body": merge_transcripts(session_existing.body, record.body),
+                    "title": old.title or record.title,
+                    "metadata": meta,
+                }
+            )
+
         decision = noise_filter(record, boot_echo_hashes=self.boot_echo_hashes)
         if decision.action is NoiseAction.DROP:
             logger.info(
@@ -218,7 +237,11 @@ class Pipeline:
         # We check BEFORE assigning a fresh memory_id so a duplicate reuses
         # the canonical id instead of minting a competing one.
         body_dedup_hash = normalized_body_hash(record.body)
-        existing_id_for_ref = self._lookup_id_or_none(record.source, record.ref)
+        existing_id_for_ref = (
+            session_existing.id
+            if session_existing is not None
+            else self._lookup_id_or_none(record.source, record.ref)
+        )
         # Locked Index method, not a bare find_existing_memory_for_hash(index.db, ...):
         # this runs on the asyncio thread while embed workers share the connection.
         existing_id_for_hash = self.index.find_memory_id_for_body_hash(body_dedup_hash)
@@ -274,6 +297,30 @@ class Pipeline:
             self.index.enqueue_embed(str(memory_id))
         return memory
 
+    def _openclaw_session(self, record: MemoryRecord) -> Memory | None:
+        """Share the canonical session slot across SQLite, bridge and archives.
+
+        Read Markdown rather than relying on record_map so a reindex or changed
+        source path cannot mint a new identity or discard accumulated history.
+        """
+        if record.source != "openclaw" or record.metadata.get("type") != "session":
+            return None
+        sid = record.metadata.get("session_id")
+        if (
+            not isinstance(sid, str)
+            or not sid
+            or sid.startswith(".")
+            or any(c in sid for c in ("/", "\\", ":"))
+        ):
+            raise ValueError("OpenClaw session_id must be a safe filename")
+        try:
+            existing = self.vault.read(Path(f"sessions/{sid}.md"))
+        except MemoryNotFoundError:
+            return None
+        if existing.frontmatter.source != "openclaw" or existing.type != MemoryType.SESSION:
+            raise ValueError(f"OpenClaw session identity collides with another source: {sid}")
+        return existing
+
     def _lookup_id_or_none(self, source: str, ref: str) -> UUID | None:
         # Goes through `Index.lookup_record_mapping` so the read holds
         # `Index._lock`. A bare `self.index.db.execute(...)` here used
@@ -318,6 +365,12 @@ class Pipeline:
             "ref": record.ref,
             "ingested_at": datetime.now(tz=UTC).isoformat(),
         }
+        if "trajectory_sqlite" in meta:
+            provenance["trajectory_sqlite"] = meta["trajectory_sqlite"]
+        elif existing_fm is not None and existing_fm.provenance is not None:
+            prior = existing_fm.provenance.model_dump().get("trajectory_sqlite")
+            if prior is not None:
+                provenance["trajectory_sqlite"] = prior
         payload: dict[str, Any] = {
             "id": str(memory_id),
             "type": type_str,

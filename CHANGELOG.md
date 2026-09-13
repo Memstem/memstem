@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in native OpenClaw SQLite trajectory ingestion with WAL-safe reads, agent discovery, reset/retention-safe session history, and bridge/archive identity reuse. See ADR 0042 and the migration guide.
+- Configurable plugin skill roots and approved symlink destinations, with cycle protection and canonical file deduplication.
+
+### Fixed
+
+- CLI daemon discovery uses lightweight health identity and allows older daemons time to complete their diagnostic probe. Vault identity checks remain mandatory.
+- Query-log writes use a separate immediate transaction and bounded durable overflow queue during ingestion bursts, preserving telemetry without blocking independent CLI searches or promoting stale read snapshots.
+
 ### Changed
 
 - `vec_compact_interval_seconds` default 24h → 12h. The stage's threshold check is a single count query and only rebuilds past the 20% gate (ADR 0041), so checking twice a day is free when nothing is due and halves the longest a heavy day can leave a vault dirty. Prompted by a small-vault user whose heavy days add ~5 points of dead slots every three hours. Operators who set the key explicitly are unaffected.

@@ -51,7 +51,10 @@ from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+from memstem.core import retrieval_pending
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,50 @@ class LoggedHit:
     score: float
 
 
+@contextmanager
+def _log_writer(db: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Acquire a fresh write transaction, separate from retrieval snapshots.
+
+    Cross-process ingestion can hold the WAL writer longer than the general
+    index's five-second busy timeout. A dedicated writer briefly attempts
+    acquisition before any reads; contention spills to a durable local queue.
+    It cannot promote a stale search snapshot or commit the caller's transaction.
+    No vector extension is needed.
+    In-memory callers necessarily use their existing connection.
+    """
+    path = next((row[2] for row in db.execute("PRAGMA database_list") if row[1] == "main"), "")
+    if not path:
+        with db:
+            yield db
+        return
+    writer = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=rw", uri=True, timeout=0.25)
+    writer.row_factory = sqlite3.Row
+    try:
+        writer.execute("PRAGMA foreign_keys=ON")
+        writer.execute("BEGIN IMMEDIATE")
+        with writer:
+            replayed = retrieval_pending.replay(writer)
+            yield writer
+        retrieval_pending.remove_replayed(replayed)
+    finally:
+        writer.close()
+
+
+def _queue_if_busy(db: sqlite3.Connection, exc: sqlite3.Error, rows: list[tuple[Any, ...]]) -> bool:
+    # BUSY/LOCKED is recoverable contention, not a successful write. Persist the
+    # exact rows to a bounded local queue; errors/full queue still warn normally.
+    if getattr(exc, "sqlite_errorcode", 0) & 0xFF not in (
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    ):
+        return False
+    try:
+        return retrieval_pending.enqueue(db, rows)
+    except (OSError, sqlite3.Error) as failure:
+        logger.warning("query_log: could not queue pending rows: %s", failure)
+        return False
+
+
 def log_search_results(
     db: sqlite3.Connection,
     *,
@@ -153,20 +200,21 @@ def log_search_results(
                     len(rows),
                 )
                 return
-            with db:
-                db.executemany(
+            with _log_writer(db) as writer:
+                writer.executemany(
                     """
                     INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
                 )
-                _maybe_prune(db, max_rows=max_rows)
+                _maybe_prune(writer, max_rows=max_rows)
     except sqlite3.Error as exc:
         # Common reasons: schema-version drift, foreign-key cascade race
         # (memory_id deleted between search and log), or a corrupted file.
         # None of those should silently mute search.
-        logger.warning("query_log: failed to record search results: %s", exc)
+        if not _queue_if_busy(db, exc, rows):
+            logger.warning("query_log: failed to record search results: %s", exc)
 
 
 def log_get(
@@ -189,17 +237,18 @@ def log_get(
                     memory_id,
                 )
                 return
-            with db:
-                db.execute(
+            with _log_writer(db) as writer:
+                writer.execute(
                     """
                     INSERT INTO query_log (ts, kind, query, client, memory_id, rank, score)
                     VALUES (?, ?, NULL, ?, ?, NULL, NULL)
                     """,
                     (timestamp, "get", client, memory_id),
                 )
-                _maybe_prune(db, max_rows=max_rows)
+                _maybe_prune(writer, max_rows=max_rows)
     except sqlite3.Error as exc:
-        logger.warning("query_log: failed to record get for %s: %s", memory_id, exc)
+        if not _queue_if_busy(db, exc, [(timestamp, "get", None, client, memory_id, None, None)]):
+            logger.warning("query_log: failed to record get for %s: %s", memory_id, exc)
 
 
 def _maybe_prune(db: sqlite3.Connection, *, max_rows: int) -> None:

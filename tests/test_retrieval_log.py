@@ -368,3 +368,64 @@ class TestDefaults:
         # missing tables; count() is internal-debug only.
         with pytest.raises(sqlite3.OperationalError):
             count(db)
+
+
+def test_log_uses_fresh_write_transaction_after_concurrent_commit(
+    vault: Vault, index: Index, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An independent direct search may hold an old snapshot during ingestion.
+
+    BEGIN DEFERRED + INSERT on that same connection fails SQLITE_BUSY_SNAPSHOT;
+    telemetry must neither promote it nor commit/rollback the caller's reads.
+    """
+    memory = _make_memory(body="Concurrent log snapshot regression memory.", vault=vault)
+    index.upsert(memory)
+    index.db.execute("BEGIN")
+    index.db.execute("SELECT count(*) FROM memories").fetchone()
+    other = sqlite3.connect(index.db_path)
+    try:
+        other.execute("INSERT INTO hygiene_state VALUES ('concurrent-test','1')")
+        other.commit()
+        log_search_results(
+            index.db, query="snapshot", hits=[LoggedHit(memory_id=str(memory.id), rank=1, score=1)]
+        )
+        assert index.db.in_transaction  # caller's snapshot is not committed
+        index.db.rollback()
+        assert count(index.db) == 1
+        assert "locked" not in caplog.text
+    finally:
+        other.close()
+
+
+def test_busy_writer_queues_and_replays_without_losing_rows(
+    vault: Vault, index: Index, caplog: pytest.LogCaptureFixture
+) -> None:
+    from memstem.core.retrieval_pending import directory
+
+    memory = _make_memory(
+        body="Durable retrieval telemetry under concurrent ingestion.", vault=vault
+    )
+    index.upsert(memory)
+    blocker = sqlite3.connect(index.db_path)
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        log_search_results(
+            index.db,
+            query="queued-search",
+            hits=[LoggedHit(memory_id=str(memory.id), rank=1, score=0.7)],
+        )
+        log_get(index.db, memory_id=str(memory.id), client="cli")
+        root = directory(index.db)
+        assert root is not None and len(list(root.glob("*.json"))) == 2
+        assert count(index.db) == 0
+        assert "locked" not in caplog.text
+        blocker.rollback()
+        log_get(index.db, memory_id=str(memory.id), client="replay")
+        assert count(index.db) == 3
+        assert (
+            index.db.execute("SELECT query FROM query_log WHERE kind='search'").fetchone()[0]
+            == "queued-search"
+        )
+        assert list(root.glob("*.json")) == []
+    finally:
+        blocker.close()

@@ -465,3 +465,18 @@ class TestSearchDegradationFlag:
         results = r.json()
         assert len(results) == 1
         assert results[0]["embedder_degraded"] is False
+
+
+def test_lightweight_health_does_not_acquire_writer_lock(
+    client: TestClient, index: Index, vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden() -> dict[str, int]:
+        raise AssertionError("discovery must not inspect the embed queue")
+
+    monkeypatch.setattr(index, "queue_stats", forbidden)
+    response = client.get("/health?detail=false")
+    assert response.status_code == 200
+    assert response.json()["vault"] == str(vault.root)
+    assert "embed_queue" not in response.json()
+    # Full health still detects the diagnostic failure.
+    assert "embed_queue_unreadable" in client.get("/health").json()["problems"]
