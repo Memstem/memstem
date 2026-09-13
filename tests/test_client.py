@@ -536,3 +536,21 @@ class TestSearchDegradationFlag:
         finally:
             client.close()
         assert hits[0].embedder_degraded is False
+
+
+def test_discovery_uses_lightweight_health_with_legacy_headroom(tmp_path: Path) -> None:
+    from memstem.client import DEFAULT_HEALTH_TIMEOUT
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("detail") == "false"
+        assert request.extensions["timeout"]["read"] == DEFAULT_HEALTH_TIMEOUT
+        assert DEFAULT_HEALTH_TIMEOUT >= 2
+        return httpx.Response(
+            200, json={"version": "test", "vault": str(tmp_path), "embedder": True}
+        )
+
+    client = _client_with_responder(respond)
+    try:
+        assert client.health() is not None
+    finally:
+        client.close()

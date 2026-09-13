@@ -220,7 +220,7 @@ def build_app(
     log_client = "http" if hc.query_log_enabled else None
 
     @app.get("/health")
-    async def health() -> dict[str, Any]:
+    def health(detail: bool = True) -> dict[str, Any]:
         """Health probe: version, embed-queue state, watcher liveness, hygiene.
 
         ``status`` is computed, not hardcoded: it reports ``"degraded"`` when
@@ -241,6 +241,15 @@ def build_app(
         The ``hygiene`` block reports last-run timestamps per stage and any
         stages currently mid-cycle; ``loop_enabled`` reflects the config flag.
         """
+        # Discovery needs identity, not diagnostics behind the writer lock.
+        # Keep the default full health response for monitoring and old clients.
+        if not detail:
+            return {
+                "version": memstem.__version__,
+                "vault": str(vault.root),
+                "embedder": embedder is not None,
+            }
+
         from memstem.hygiene.state import snapshot as hygiene_snapshot
 
         problems: list[str] = []

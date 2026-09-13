@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
+import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 from memstem.adapters.base import MemoryRecord
@@ -223,6 +224,19 @@ def _cwd_line(cwd: str, text: str = "more work") -> dict[str, Any]:
 
 class TestProjectTagFromCwd:
     """Project tag comes from the cwd worked in, not the launch dir (ADR 0034)."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_fixture_launch_directory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # These fixture sessions describe a home-directory hub. A developer's
+        # real /home/ubuntu/package.json must not change their expected tags.
+        import memstem.adapters.claude_code as adapter
+
+        original = adapter._is_project_root
+        monkeypatch.setattr(
+            adapter,
+            "_is_project_root",
+            lambda path: False if path == "/home/ubuntu" else original(path),
+        )
 
     def test_prefers_worked_in_cwd_over_more_frequent_launch_dir(self, tmp_path: Path) -> None:
         # The launch dir is recorded on more entries than the project the

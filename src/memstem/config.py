@@ -464,6 +464,22 @@ class OpenClawLayout(BaseModel):
     """Directories whose ``**/SKILL.md`` descendants get ingested as
     skills. Empty list = no skill ingestion."""
 
+    plugin_skill_roots: list[Path] = Field(default_factory=list)
+    """Explicit plugin skill directories, absolute or relative to workspace.
+    Symlink destinations must fall within these or plugin_skill_allowed_roots.
+    No copies are made; canonical resolved paths identify skills."""
+
+    plugin_skill_allowed_roots: list[Path] = Field(default_factory=list)
+    """Additional approved destinations for plugin directory/file symlinks.
+    These authorize traversal but are not themselves discovery roots."""
+
+    trajectory_sqlite_roots: list[Path] = Field(default_factory=list)
+    """Opt-in OpenClaw state roots, absolute or relative to workspace.
+    Discover agents/*/agent/openclaw-agent.sqlite beneath each root."""
+
+    trajectory_poll_seconds: float = Field(default=30.0, ge=0.1)
+    """Native database and plugin discovery interval; independent of debounce."""
+
     session_dirs: list[str] = Field(default_factory=list)
     """Directories whose ``*.trajectory.jsonl`` descendants get ingested
     as session records. Empty by default — opt in by listing the

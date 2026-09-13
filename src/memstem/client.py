@@ -49,11 +49,10 @@ from memstem.config import Config
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_HEALTH_TIMEOUT = 0.25
-"""Probe timeout when discovering whether a daemon is reachable. Tight
-on purpose: a misconfigured or hung daemon must not make the CLI feel
-slower than the direct-DB fallback. 250 ms is comfortably above
-loopback HTTP latency and below the threshold where users notice."""
+DEFAULT_HEALTH_TIMEOUT = 5.0
+"""Bounded compatibility timeout for older daemons whose /health performs
+DB diagnostics. New daemons answer detail=false without acquiring DB locks."""
+
 
 DEFAULT_REQUEST_TIMEOUT = 30.0
 """Per-request timeout for actual search/get calls. Generous enough to
@@ -137,7 +136,7 @@ class DaemonClient:
         case for many users.
         """
         try:
-            resp = self._client.get("/health", timeout=timeout)
+            resp = self._client.get("/health", params={"detail": "false"}, timeout=timeout)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             logger.debug("daemon health probe failed: %s", exc)
