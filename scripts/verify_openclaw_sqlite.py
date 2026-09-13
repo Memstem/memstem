@@ -97,7 +97,9 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 assert any(r.memory.frontmatter.title == record.title for r in results), record.ref
             report = {
                 "databases": len(databases),
-                "sessions_compared": len(comparisons),
+                "native_sessions_seen": len(comparisons),
+                "bridge_pairs_compared": sum(bool(c["bridge"]) for c in comparisons),
+                "native_sessions_without_bridge": sum(not c["bridge"] for c in comparisons),
                 "canonical_identities_verified": identities,
                 "skills_discovered": len(skills),
                 "skills_indexed": index.db.execute(
@@ -106,6 +108,7 @@ async def verify(args: argparse.Namespace) -> dict[str, Any]:
                 "skills_all_searchable": True,
                 "comparisons": comparisons,
             }
+            assert report["bridge_pairs_compared"] > 0, "no native/bridge session pairs to verify"
             assert all(c.get("bridge_preserved", True) for c in comparisons)
             assert report["skills_indexed"] == len(skills), (
                 "skill identity collision or unexpected duplicate"
