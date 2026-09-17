@@ -13,6 +13,8 @@ from memstem.adapters.codex import _markdown_to_record
 from memstem.adapters.openclaw import _file_to_record
 from memstem.config import (
     AdaptersConfig,
+    ClaudeCodeAdapterConfig,
+    CodexAdapterConfig,
     Config,
     OpenClawAdapterConfig,
     OpenClawWorkspace,
@@ -118,3 +120,28 @@ class TestDoctorScan:
         bad = _scan_source_frontmatter(cfg)
         assert [p.name for p, _ in bad] == ["bad.md"]
         assert bad[0][1]
+
+    def test_scan_covers_only_what_adapters_ingest(self, tmp_path: Path) -> None:
+        from memstem.cli import _scan_source_frontmatter
+
+        # Claude Code: a broken .md under a project root is NOT ingested (only
+        # session JSONL + extra_files are), so it must not be reported; the
+        # broken extra file must be.
+        root = tmp_path / "projects"
+        _write(root / "p" / "memory" / "not-ingested.md", BAD)
+        extra = _write(tmp_path / "CLAUDE.md", BAD)
+        # Codex: <memories_root>/*.md (flat) and user SKILL.md files; .system skipped.
+        codex = tmp_path / "codex"
+        _write(codex / "memories" / "bad-mem.md", BAD)
+        _write(codex / "memories" / "nested" / "ignored.md", BAD)
+        _write(codex / "skills" / "s" / "SKILL.md", BAD)
+        _write(codex / "skills" / ".system" / "v" / "SKILL.md", BAD)
+        cfg = Config(
+            vault_path=tmp_path / "vault",
+            adapters=AdaptersConfig(
+                claude_code=ClaudeCodeAdapterConfig(project_roots=[root], extra_files=[extra]),
+                codex=CodexAdapterConfig(codex_home=codex),
+            ),
+        )
+        names = sorted(p.name for p, _ in _scan_source_frontmatter(cfg))
+        assert names == ["CLAUDE.md", "SKILL.md", "bad-mem.md"]
