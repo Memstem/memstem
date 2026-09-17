@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-17
+
+The vec_compact threshold check runs twice a day, source files the adapters skip for unparseable frontmatter are finally visible (`/health` `skipped_files`, `memstem doctor`), searches no longer queue behind ingestion bursts, and native OpenClaw SQLite trajectory ingestion arrives as an opt-in (ADR 0042).
+
 ### Added
 
 - Source files the adapters cannot ingest (frontmatter that does not parse, unreadable files) are now visible instead of only a startup WARNING: the daemon reports them as `skipped_files` on `/health` (count + paths + parse error; informational, never degrades status), and `memstem doctor` scans the configured source roots and lists every such file. A fixed file drops off the list on its next parse. Reported by a client whose memory file sat outside the index for sixteen days.
