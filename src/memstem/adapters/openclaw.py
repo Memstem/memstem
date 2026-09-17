@@ -41,6 +41,7 @@ from memstem.adapters.openclaw_sqlite import database_fingerprint, discover_data
 from memstem.adapters.plugin_skills import iter_plugin_skills
 from memstem.adapters.trajectory import merge_transcripts
 from memstem.config import OpenClawWorkspace
+from memstem.core.skipped import SKIPPED
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +73,16 @@ def _file_to_record(path: Path, source_name: str) -> MemoryRecord | None:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning("could not read %s: %s", path, exc)
+        SKIPPED.record(path, exc, source=source_name, kind="unreadable")
         return None
 
     try:
         post = fm.loads(text)
     except Exception as exc:
         logger.warning("frontmatter parse failed for %s: %s", path, exc)
+        SKIPPED.record(path, exc, source=source_name)
         return None
+    SKIPPED.clear(path)
 
     meta = dict(post.metadata)
     body = post.content

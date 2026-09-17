@@ -39,6 +39,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from memstem.adapters.base import Adapter, MemoryRecord
+from memstem.core.skipped import SKIPPED
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +171,15 @@ def _instructions_record(path: Path, source_name: str = "claude-code") -> Memory
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning("could not read %s: %s", path, exc)
+        SKIPPED.record(path, exc, source=source_name, kind="unreadable")
         return None
     try:
         post = fm.loads(text)
     except Exception as exc:
         logger.warning("frontmatter parse failed for %s: %s", path, exc)
+        SKIPPED.record(path, exc, source=source_name)
         return None
+    SKIPPED.clear(path)
 
     body = post.content
     meta = dict(post.metadata)
