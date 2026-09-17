@@ -1021,8 +1021,13 @@ def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
     """
     import frontmatter as fm
 
+    from memstem.adapters.codex import _iter_memory_files, _iter_skill_files
     from memstem.adapters.openclaw import _iter_workspace_files
 
+    # Exactly the markdown the adapters ingest — nothing more, or the check
+    # would flag files no adapter ever reads. Claude Code ingests session
+    # JSONL from its roots and only the listed extra_files as markdown;
+    # Codex ingests <memories_root>/*.md and user SKILL.md files.
     candidates: list[Path] = []
     oc = cfg.adapters.openclaw
     for ws in oc.agent_workspaces:
@@ -1031,21 +1036,17 @@ def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
         except OSError:
             continue
     candidates.extend(Path(p).expanduser() for p in oc.shared_files)
-    cc = cfg.adapters.claude_code
-    for root in cc.project_roots:
-        rp = Path(root).expanduser()
-        if rp.is_dir():
-            candidates.extend(rp.rglob("*.md"))
-    candidates.extend(Path(p).expanduser() for p in cc.extra_files)
+    candidates.extend(Path(p).expanduser() for p in cfg.adapters.claude_code.extra_files)
     cx = cfg.adapters.codex
     codex_home = Path(cx.codex_home).expanduser() if cx.codex_home else Path.home() / ".codex"
-    for root in (
-        cx.skills_root or codex_home / "skills",
-        cx.memories_root or codex_home / "memories",
-    ):
-        rp = Path(root).expanduser()
-        if rp.is_dir():
-            candidates.extend(p for p in rp.rglob("*.md") if ".system" not in p.parts)
+    if cx.ingest_skills:
+        candidates.extend(
+            _iter_skill_files(Path(cx.skills_root or codex_home / "skills").expanduser())
+        )
+    if cx.ingest_memories:
+        candidates.extend(
+            _iter_memory_files(Path(cx.memories_root or codex_home / "memories").expanduser())
+        )
 
     bad: list[tuple[Path, str]] = []
     seen: set[Path] = set()
