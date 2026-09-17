@@ -50,6 +50,7 @@ from memstem.core.index import Index
 from memstem.core.rerank import build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
+from memstem.core.skipped import SKIPPED
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 from memstem.servers.request_limits import clamp_limit, clamp_rerank_top_n
 
@@ -240,6 +241,12 @@ def build_app(
 
         The ``hygiene`` block reports last-run timestamps per stage and any
         stages currently mid-cycle; ``loop_enabled`` reflects the config flag.
+
+        ``skipped_files`` lists source files the adapters could not ingest
+        (frontmatter that does not parse, unreadable files) since this
+        process started: ``{count, files: [{path, source, kind, reason,
+        since, last_seen}, ...]}`` (first 20). Informational — it never
+        degrades ``status``.
         """
         # Discovery needs identity, not diagnostics behind the writer lock.
         # Keep the default full health response for monitoring and old clients.
@@ -279,6 +286,12 @@ def build_app(
             embed_block["error"] = f"{type(exc).__name__}: {exc}"
             problems.append("embed_queue_unreadable")
 
+        # Source files the adapters could not ingest (bad frontmatter,
+        # unreadable). Informational: one broken file must not flip the
+        # daemon to "degraded" (monitors treat that as the daemon being
+        # down) — but it must be visible, which it was not before 0.24.0.
+        skipped_block = {"count": SKIPPED.count(), "files": SKIPPED.snapshot(limit=20)}
+
         return {
             "status": "degraded" if problems else "ok",
             "problems": problems,
@@ -288,6 +301,7 @@ def build_app(
             "embed_queue": embed_block,
             "watchers": watchers_block,
             "hygiene": hygiene_block,
+            "skipped_files": skipped_block,
         }
 
     @app.get("/version")

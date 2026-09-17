@@ -994,7 +994,72 @@ def _doctor_run(cfg: Config) -> int:
         ):
             failures += 1
 
+    skipped = _scan_source_frontmatter(cfg)
+    if not _doctor_check(
+        "Source files with unparseable frontmatter",
+        not skipped,
+        "none" if not skipped else f"{len(skipped)} skipped — outside the index until fixed",
+    ):
+        failures += 1
+        for path, reason in skipped[:25]:
+            typer.echo(f"      {path}: {reason}")
+        if len(skipped) > 25:
+            typer.echo(f"      … and {len(skipped) - 25} more")
+
     return failures
+
+
+def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
+    """Every markdown source file the adapters would skip for bad frontmatter.
+
+    Walks the same roots the adapters ingest (OpenClaw workspaces and shared
+    files, Claude Code roots and extras, Codex skills/memories) and parses
+    each ``*.md`` with the adapters' own parser. A file with no frontmatter
+    is fine; only a frontmatter block that fails to parse is reported. Runs
+    in the CLI process, so it works with the daemon stopped — the daemon's
+    own view is ``/health`` ``skipped_files``.
+    """
+    import frontmatter as fm
+
+    from memstem.adapters.openclaw import _iter_workspace_files
+
+    candidates: list[Path] = []
+    oc = cfg.adapters.openclaw
+    for ws in oc.agent_workspaces:
+        try:
+            candidates.extend(p for p, _tags in _iter_workspace_files(ws))
+        except OSError:
+            continue
+    candidates.extend(Path(p).expanduser() for p in oc.shared_files)
+    cc = cfg.adapters.claude_code
+    for root in cc.project_roots:
+        rp = Path(root).expanduser()
+        if rp.is_dir():
+            candidates.extend(rp.rglob("*.md"))
+    candidates.extend(Path(p).expanduser() for p in cc.extra_files)
+    cx = cfg.adapters.codex
+    codex_home = Path(cx.codex_home).expanduser() if cx.codex_home else Path.home() / ".codex"
+    for root in (
+        cx.skills_root or codex_home / "skills",
+        cx.memories_root or codex_home / "memories",
+    ):
+        rp = Path(root).expanduser()
+        if rp.is_dir():
+            candidates.extend(p for p in rp.rglob("*.md") if ".system" not in p.parts)
+
+    bad: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            fm.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            bad.append((path, f"unreadable: {exc}"))
+        except Exception as exc:
+            bad.append((path, " ".join(str(exc).split())[:160]))
+    return bad
 
 
 doctor_app = typer.Typer(

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Source files the adapters cannot ingest (frontmatter that does not parse, unreadable files) are now visible instead of only a startup WARNING: the daemon reports them as `skipped_files` on `/health` (count + paths + parse error; informational, never degrades status), and `memstem doctor` scans the configured source roots and lists every such file. A fixed file drops off the list on its next parse. Reported by a client whose memory file sat outside the index for sixteen days.
 - Opt-in native OpenClaw SQLite trajectory ingestion with WAL-safe reads, agent discovery, reset/retention-safe session history, and bridge/archive identity reuse. See ADR 0042 and the migration guide.
 - Configurable plugin skill roots and approved symlink destinations, with cycle protection and canonical file deduplication.
 
