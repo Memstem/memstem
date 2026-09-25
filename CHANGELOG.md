@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-09-25
+
+Patch release: session distillation no longer re-summarises a session every cycle when a migrated duplicate distillation sits beside the canonical one.
+
 ### Fixed
 
 - Session distillation no longer loops when two distillation files link the same session. A record migrated in under its memory id, next to the canonical `<session-id>.md` written by a later refresh, left the staleness check reading whichever copy the vault walk returned last; an older copy with a redo marker re-queued the session every cycle, spending a summarizer call and a re-embed (one dead vector slot) each time, indefinitely. Staleness is now judged against the most recently updated copy, a refresh reuses the record at the canonical path, and after a rewrite the session's displaced hygiene-worker copies are removed from the vault and the index. Found on a client vault that re-distilled the same three June sessions every 10 minutes for a month.
