@@ -383,12 +383,21 @@ def find_distillations_by_session(vault: Vault) -> dict[str, Memory]:
     :func:`find_session_candidates` both to skip sessions that already
     have a *current* companion distillation and to detect stale ones
     (ADR 0037) via the provenance snapshot on the record.
+
+    When several distillations link the same session (a record migrated
+    from another vault under a different filename, or one left behind by
+    an older path scheme), the most recently ``updated`` one wins.
+    Judging staleness against an older duplicate re-queued the session
+    every cycle, rewrote the newer file and never converged.
     """
     covered: dict[str, Memory] = {}
     for memory in vault.walk(types=[MemoryType.DISTILLATION.value]):
         for link in memory.frontmatter.links:
             session_id = _session_id_from_link(link)
-            if session_id:
+            if not session_id:
+                continue
+            current = covered.get(session_id)
+            if current is None or memory.frontmatter.updated > current.frontmatter.updated:
                 covered[session_id] = memory
     return covered
 
@@ -920,18 +929,66 @@ def compute_distillation_plan(
     )
 
 
-def _existing_distillation_for_session(vault: Vault, session_id: str) -> Memory | None:
+def _session_distillations(vault: Vault, session_id: str) -> list[Memory]:
+    """Every distillation record that links ``session_id``."""
+    return [
+        memory
+        for memory in vault.walk(types=[MemoryType.DISTILLATION.value])
+        if any(_session_id_from_link(link) == session_id for link in memory.frontmatter.links)
+    ]
+
+
+def _existing_distillation_for_session(
+    vault: Vault, session_id: str, *, target_path: Path | None = None
+) -> Memory | None:
     """Return the existing distillation for ``session_id``, if any.
 
-    Used by ``--force`` re-runs to overwrite the prior record at the
-    same path while preserving its memory_id (so the index doesn't
-    accumulate orphaned rows).
+    Used by re-runs to overwrite the prior record while preserving its
+    memory_id (so the index doesn't accumulate orphaned rows). Prefers
+    the record already at ``target_path``, then the most recently
+    updated one.
     """
-    for memory in vault.walk(types=[MemoryType.DISTILLATION.value]):
-        for link in memory.frontmatter.links:
-            if _session_id_from_link(link) == session_id:
+    matches = _session_distillations(vault, session_id)
+    if target_path is not None:
+        for memory in matches:
+            if Path(memory.path) == target_path:
                 return memory
-    return None
+    if not matches:
+        return None
+    return max(matches, key=lambda m: m.frontmatter.updated)
+
+
+def _remove_displaced_distillations(
+    vault: Vault, index: Index, session_id: str, written: Memory
+) -> int:
+    """Delete this session's other distillation files after a rewrite.
+
+    ``materialize_distillation`` always writes to the canonical
+    ``_distillation_path``. A prior record at another path (migrated in
+    under its memory id, or an older layout) would otherwise survive as
+    a duplicate — often sharing the new record's memory id — and keep
+    feeding the staleness check. Only hygiene-worker session
+    distillations for this exact session (provenance ref
+    ``session-distillation:<id>``) are removed.
+    """
+    ref = f"{PROVENANCE_REF_PREFIX}{session_id}"
+    removed = 0
+    for memory in _session_distillations(vault, session_id):
+        if Path(memory.path) == Path(written.path):
+            continue
+        prov = memory.frontmatter.provenance
+        if prov is None or prov.ref != ref:
+            continue
+        vault.delete(memory.path)
+        if str(memory.id) != str(written.id):
+            index.delete(str(memory.id))
+        logger.info(
+            "hygiene[distill_sessions]: removed displaced duplicate %s for session %s",
+            memory.path,
+            session_id,
+        )
+        removed += 1
+    return removed
 
 
 def apply_distillations(
@@ -975,7 +1032,9 @@ def apply_distillations(
                 )
             continue
         try:
-            existing = _existing_distillation_for_session(vault, candidate.session_id)
+            existing = _existing_distillation_for_session(
+                vault, candidate.session_id, target_path=_distillation_path(candidate)
+            )
             memory_id = str(existing.id) if existing is not None else None
             memory = materialize_distillation(
                 candidate,
@@ -996,6 +1055,7 @@ def apply_distillations(
             # core/pipeline.py) does the same enqueue after upsert; we
             # mirror it here for hygiene-worker writes.
             index.enqueue_embed(str(memory.id))
+            _remove_displaced_distillations(vault, index, candidate.session_id, memory)
             if track_failures:
                 clear_distill_failure(index.db, candidate.session_id, lock=lock)
             result.written += 1
