@@ -434,6 +434,122 @@ class TestStaleRefresh:
         assert PROVENANCE_SOURCE_UPDATED in extra
 
 
+class TestDuplicateDistillations:
+    """Two distillation files linking one session (snape-server, 2026-09-25).
+
+    A record migrated in under its memory id (``distillations/codex/<memory-id>.md``)
+    carried a ``source_read_chars: -1`` redo marker while the redo wrote the
+    canonical ``<session-id>.md`` with the same memory id. Staleness was judged
+    against whichever file the walk returned last, so the session was re-distilled
+    every cycle forever.
+    """
+
+    def _dup_pair(
+        self, vault: Vault, index: Index, *, same_id: bool = True
+    ) -> tuple[Memory, Memory, Memory]:
+        session = _write_session(vault, session_id="s1", turns=12)
+        words = len((session.body or "").split())
+        canonical = _write_distillation(
+            vault,
+            linked_session_id="s1",
+            updated=datetime(2026, 9, 25, tzinfo=UTC),
+            source_word_count=words,
+            source_turn_count=12,
+            source_read_chars=len(session.body or ""),
+        )
+        vault.write(canonical)
+        index.upsert(canonical)
+        old = _write_distillation(
+            vault,
+            linked_session_id="s1",
+            updated=datetime(2026, 6, 2, tzinfo=UTC),
+            source_read_chars=-1,
+        )
+        old_id = canonical.id if same_id else old.id
+        old = Memory(
+            frontmatter=old.frontmatter.model_copy(update={"id": old_id}),
+            body=old.body,
+            path=Path(f"distillations/claude-code/zz-{old_id}.md"),
+        )
+        vault.write(old)
+        if not same_id:
+            index.upsert(old)
+        return session, canonical, old
+
+    def test_staleness_judged_against_newest_copy(self, vault: Vault, index: Index) -> None:
+        self._dup_pair(vault, index)
+        candidates, stats = find_session_candidates(vault, recency_days=None)
+        assert candidates == []
+        assert stats["skipped_already_distilled"] == 1
+
+    def test_rewrite_removes_displaced_copy_sharing_the_id(
+        self, vault: Vault, index: Index
+    ) -> None:
+        _, canonical, old = self._dup_pair(vault, index)
+        # Grow the session so the canonical copy is genuinely stale.
+        _write_session(vault, session_id="s1", turns=40, words_per_turn=40)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nrefreshed")
+        plan = compute_distillation_plan(vault, stub, recency_days=None)
+        result = apply_distillations(vault, index, plan, track_failures=False)
+        assert result.written == 1
+        remaining = list(vault.walk(types=[MemoryType.DISTILLATION.value]))
+        assert [str(m.path) for m in remaining] == ["distillations/claude-code/s1.md"]
+        assert str(remaining[0].id) == str(canonical.id)
+        row = index.db.execute(
+            "SELECT path FROM memories WHERE id = ?", (str(canonical.id),)
+        ).fetchone()
+        assert row["path"] == "distillations/claude-code/s1.md"
+        assert not (vault.root / old.path).exists()
+
+    def test_rewrite_removes_displaced_copy_with_its_own_id(
+        self, vault: Vault, index: Index
+    ) -> None:
+        _, canonical, old = self._dup_pair(vault, index, same_id=False)
+        _write_session(vault, session_id="s1", turns=40, words_per_turn=40)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nrefreshed")
+        plan = compute_distillation_plan(vault, stub, recency_days=None)
+        apply_distillations(vault, index, plan, track_failures=False)
+        assert not (vault.root / old.path).exists()
+        assert (
+            index.db.execute("SELECT 1 FROM memories WHERE id = ?", (str(old.id),)).fetchone()
+            is None
+        )
+        assert (
+            index.db.execute("SELECT 1 FROM memories WHERE id = ?", (str(canonical.id),)).fetchone()
+            is not None
+        )
+
+    def test_unrelated_distillation_linking_the_session_is_kept(
+        self, vault: Vault, index: Index
+    ) -> None:
+        _write_session(vault, session_id="s1", turns=12)
+        stale = _write_distillation(
+            vault,
+            linked_session_id="s1",
+            updated=datetime(2026, 9, 25, tzinfo=UTC),
+            source_word_count=1,
+            source_turn_count=1,
+        )
+        vault.write(stale)
+        other = _write_distillation(vault, linked_session_id="s1")
+        other.frontmatter.provenance.ref = "project-rollup:alpha"  # type: ignore[union-attr]
+        other = Memory(
+            frontmatter=other.frontmatter,
+            body=other.body,
+            path=Path("distillations/projects/alpha.md"),
+        )
+        vault.write(other)
+        stub = StubSummarizer()
+        stub.set_default("## Summary\n\nsession summary")
+        plan = compute_distillation_plan(vault, stub, recency_days=None)
+        assert len(plan.proposals) == 1
+        apply_distillations(vault, index, plan, track_failures=False)
+        assert (vault.root / "distillations/projects/alpha.md").exists()
+        assert (vault.root / "distillations/claude-code/s1.md").exists()
+
+
 class TestCapRaiseBackfill:
     """ADR 0038: raising max_input_chars re-queues harder-truncated summaries."""
 
