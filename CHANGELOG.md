@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-26
+
+Faster search and far less vector churn: MMR ~30x faster, optional AVX-accelerated sqlite-vec, per-chunk embedding reuse with in-place vector updates, and shadow-mode Jev reranking (off by default). Schema v15 (adds `vec_chunk_hashes`; migrates automatically).
+
 ### Performance
 
 - Re-embedding a record keeps the vectors of chunks whose text did not change (ADR 0045). A new `vec_chunk_hashes` table (schema v15) stores each chunk's sha256; when the record's embed signature still matches, unchanged chunks are left alone, moved chunks are copied, and only the rest go to the embedder. A growing session now re-embeds its last chunk and new ones instead of the whole transcript. Vector rows are updated in place (`UPDATE ... WHERE chunk_id`) rather than deleted and re-inserted, so a rewrite no longer leaves a dead vec0 slot per chunk (brads-server was accumulating ~2.6K dead slots/hour, each one read by every search until the nightly compaction).
