@@ -285,28 +285,6 @@ class TestProjectTagFromCwd:
         assert record is not None
         assert record.tags == ["home-ubuntu-projects-bar"]
 
-    def test_subagent_transcript_inherits_launch_dir(self, tmp_path: Path) -> None:
-        # Subagent/workflow transcripts nest below the encoded-cwd dir. The
-        # old parent-dir rule tagged these "subagents" — which does not start
-        # with "-", so they were emitted with no project tag at all.
-        path = _write_session(
-            tmp_path / "-home-ubuntu/subagents/agent-abc.jsonl",
-            cwd="/home/ubuntu",
-        )
-        record = _session_to_record(path)
-        assert record is not None
-        assert record.tags == ["home-ubuntu"]
-
-    def test_workflow_transcript_uses_worked_in_cwd(self, tmp_path: Path) -> None:
-        path = _write_session(
-            tmp_path / "-home-ubuntu/wf_2492d8d5/agent-1.jsonl",
-            cwd="/home/ubuntu",
-            extra_lines=[_cwd_line("/home/ubuntu/projects/foo")],
-        )
-        record = _session_to_record(path)
-        assert record is not None
-        assert record.tags == ["home-ubuntu-projects-foo"]
-
     def test_subdir_of_project_launch_dir_does_not_split(self, tmp_path: Path) -> None:
         # Launching inside a repo and cd-ing into src/ is the common layout for
         # everyone who does not use a hub directory. It must stay one project.
@@ -361,6 +339,61 @@ class TestProjectTagFromCwd:
         record = _session_to_record(path)
         assert record is not None
         assert record.tags == ["home-ubuntu-foo"]
+
+
+class TestSubagentTranscripts:
+    """ADR 0046: subagent/workflow transcripts carry the parent's sessionId
+    and used to overwrite the parent's session record; they are skipped."""
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "-home-ubuntu/abc12345/subagents/agent-a1.jsonl",
+            "-home-ubuntu/abc12345/subagents/workflows/wf_2492d8d5/agent-a2.jsonl",
+            "-home-ubuntu/wf_2492d8d5/agent-1.jsonl",
+        ],
+    )
+    def test_subagent_paths_are_skipped(self, tmp_path: Path, rel: str) -> None:
+        path = _write_session(tmp_path / rel, cwd="/home/ubuntu")
+        assert _session_to_record(path) is None
+
+    def test_sidechain_transcript_is_skipped_anywhere(self, tmp_path: Path) -> None:
+        path = _write_session(tmp_path / "-home-ubuntu/agent-x.jsonl")
+        lines = path.read_text().splitlines()
+        first = json.loads(lines[0])
+        first["isSidechain"] = True
+        path.write_text("\n".join([json.dumps(first), *lines[1:]]) + "\n")
+        assert _session_to_record(path) is None
+
+    def test_main_transcript_with_sidechain_false_is_kept(self, tmp_path: Path) -> None:
+        path = _write_session(tmp_path / "-home-ubuntu/abc12345.jsonl")
+        first, *rest = path.read_text().splitlines()
+        entry = json.loads(first)
+        entry["isSidechain"] = False
+        path.write_text("\n".join([json.dumps(entry), *rest]) + "\n")
+        assert _session_to_record(path) is not None
+
+    async def test_reconcile_emits_only_the_parent(self, tmp_path: Path) -> None:
+        sid = "abc12345-0000-0000-0000-000000000000"
+        _write_session(tmp_path / f"-home-ubuntu/{sid}.jsonl", session_id=sid)
+        _write_session(tmp_path / f"-home-ubuntu/{sid}/subagents/agent-a1.jsonl", session_id=sid)
+        records = await _drain(ClaudeCodeAdapter().reconcile([tmp_path]))
+        assert [r.ref for r in records] == [str(tmp_path / f"-home-ubuntu/{sid}.jsonl")]
+
+    def test_watcher_ignores_subagent_events(self, tmp_path: Path) -> None:
+        from memstem.adapters.claude_code import _EventHandler
+
+        loop = asyncio.new_event_loop()
+        try:
+            queue: asyncio.Queue[Path] = asyncio.Queue()
+            handler = _EventHandler(loop=loop, queue=queue)
+            handler._debounce_seconds = 0
+            handler._enqueue(str(tmp_path / "-home-ubuntu/s/subagents/agent-a1.jsonl"))
+            handler._enqueue(str(tmp_path / "-home-ubuntu/s.jsonl"))
+            loop.run_until_complete(asyncio.sleep(0))
+            assert queue.qsize() == 1
+        finally:
+            loop.close()
 
 
 class TestReconcile:

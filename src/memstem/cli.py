@@ -18,7 +18,7 @@ import yaml
 
 import memstem
 from memstem.adapters.base import Adapter, MemoryRecord
-from memstem.adapters.claude_code import ClaudeCodeAdapter
+from memstem.adapters.claude_code import ClaudeCodeAdapter, is_subagent_transcript
 from memstem.adapters.codex import CodexAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
 from memstem.client import (
@@ -1366,6 +1366,51 @@ def _reconcile_skip_unchanged(pipeline: Pipeline, record: MemoryRecord) -> bool:
     return index.find_memory_id_for_body_hash(normalized_body_hash(record.body)) == existing_id
 
 
+def _prune_subagent_records(vault: Vault, index: Index) -> int:
+    """Drop Claude Code subagent-transcript records (ADR 0046).
+
+    Before 0.25.1 the claude-code adapter ingested subagent transcripts,
+    which carry the parent's ``sessionId`` and so were written to the
+    parent's ``sessions/<id>.md``, displacing each other on every re-emit.
+    The adapter now skips them; this removes what earlier versions left:
+    every claude-code ``record_map`` row whose ref is a subagent transcript,
+    and the memory it points to when no other ref keeps it alive. A vault
+    file is deleted only when its own frontmatter says it is that memory
+    and came from a subagent transcript — a parent session that reclaimed
+    the path is never touched. Idempotent; returns memories removed.
+    """
+    mappings = index.all_source_mappings()
+    live_refs: dict[str, int] = {}
+    for source, ref, memory_id, _mtype in mappings:
+        if not (source == "claude-code" and is_subagent_transcript(ref)):
+            live_refs[memory_id] = live_refs.get(memory_id, 0) + 1
+    removed = 0
+    for source, ref, memory_id, mtype in mappings:
+        if source != "claude-code" or not is_subagent_transcript(ref):
+            continue
+        if mtype is not None and live_refs.get(memory_id, 0) == 0:
+            rel_path = index.get_path(memory_id)
+            if rel_path is not None:
+                try:
+                    memory = vault.read(rel_path)
+                    prov = memory.frontmatter.provenance
+                    prov_ref = prov.ref if prov is not None else None
+                    if (
+                        str(memory.id) == memory_id
+                        and prov_ref
+                        and is_subagent_transcript(prov_ref)
+                    ):
+                        vault.delete(rel_path)
+                except Exception as exc:  # missing/unreadable file: index rows still go
+                    logger.debug("subagent prune: vault read %s: %s", rel_path, exc)
+            index.delete(memory_id)
+            removed += 1
+        index.delete_record_mapping(source, ref)
+    if removed:
+        logger.info("subagent prune: removed %d subagent-transcript record(s)", removed)
+    return removed
+
+
 def _prune_deleted_vault_files(
     vault: Vault, index: Index, *, max_fraction: float | None = 0.5
 ) -> int:
@@ -1652,6 +1697,7 @@ async def _reconcile_all(
         await asyncio.sleep(0)
         for stream, label in streams:
             await _reconcile_into_pipeline(pipeline, stream, label)
+        await asyncio.to_thread(_prune_subagent_records, pipeline.vault, pipeline.index)
         # ADR 0026: tombstone authored memories whose source file was deleted.
         # Runs BEFORE the vault-delete prune so it acts on rows that still
         # exist; the prune then handles any vault copies removed on disk.
@@ -1692,6 +1738,7 @@ async def _periodic_reconcile(
         try:
             for stream, label in make_streams():
                 await _reconcile_into_pipeline(pipeline, stream, label)
+            await asyncio.to_thread(_prune_subagent_records, pipeline.vault, pipeline.index)
             if adapters_by_source:
                 await asyncio.to_thread(
                     _sweep_deleted_sources, pipeline.vault, pipeline.index, adapters_by_source

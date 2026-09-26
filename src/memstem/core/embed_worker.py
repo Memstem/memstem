@@ -308,7 +308,7 @@ class EmbedWorker:
         vectors.update(zip(misses, fresh, strict=True))
         try:
             updated, inserted, deleted = self.index.apply_vectors(
-                memory_id, hashes, vectors, plan.unchanged
+                memory_id, hashes, vectors, plan.unchanged, body_hash=body_hash(body)
             )
         except StaleVectorPlanError as exc:
             # The rows moved under us (compaction swap, another writer):

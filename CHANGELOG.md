@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code subagent and workflow-agent transcripts are no longer ingested (ADR 0046). They carry the parent's `sessionId`, so they were written to the parent's `sessions/<id>.md`. Each re-emit displaced the other record, deleting its vectors and overwriting its markdown, so the survivor re-embedded from scratch on every reconcile. The parent transcript keeps each subagent's final report. Records left by earlier versions are removed after each reconcile. A parent that has reclaimed its path is never touched.
+- Per-chunk embedding reuse no longer trusts chunk hashes after vectors were rewritten by code that doesn't maintain them (for example after a rollback to 0.24.x). Hashes are tied to the body they describe, so no manual `vec_chunk_hashes` cleanup is needed before re-upgrading.
+
 ## [0.25.0] - 2026-09-26
 
 Faster search and far less vector churn: MMR ~30x faster, optional AVX-accelerated sqlite-vec, per-chunk embedding reuse with in-place vector updates, and shadow-mode Jev reranking (off by default). Schema v15 (adds `vec_chunk_hashes`; migrates automatically).
