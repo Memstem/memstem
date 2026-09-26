@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-09-26
+
+Patch release: Claude Code subagent transcripts no longer overwrite their parent session (the main remaining source of re-embed churn), and chunk-hash reuse is safe across a rollback.
+
 ### Fixed
 
 - Claude Code subagent and workflow-agent transcripts are no longer ingested (ADR 0046). They carry the parent's `sessionId`, so they were written to the parent's `sessions/<id>.md`. Each re-emit displaced the other record, deleting its vectors and overwriting its markdown, so the survivor re-embedded from scratch on every reconcile. The parent transcript keeps each subagent's final report. Records left by earlier versions are removed after each reconcile. A parent that has reclaimed its path is never touched.
