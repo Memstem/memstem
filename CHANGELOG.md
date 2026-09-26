@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- MMR diversification is ~30x faster: cosine similarity uses `math.sumprod` (C, Python 3.12+; pure-Python fallback on 3.11) with per-candidate norms computed once, and the greedy loop updates each candidate's redundancy against only the newest pick instead of re-scanning every pick. Same selection rule; on 25 recent real queries the order was identical in all 25 and MMR time fell from 644 ms to 22 ms per search (~0.6–1.1 s of a ~4 s search on a 4096-dim vault).
+
 ### Changed
 
 - Jev shadow mode no longer runs a second, wider search per query: the candidate pool is the served hits plus the next-best candidates the search already materialized, and the background job waits until no search is in flight. The first version slowed back-to-back served searches (median 5.5 s vs 4.2–4.8 s in an 8-search burst). The ledger column `pool_search_ms` is replaced by `wait_ms`.
