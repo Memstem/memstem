@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 
 from memstem.adapters.base import MemoryRecord
 from memstem.config import OpenClawWorkspace
 
 logger = logging.getLogger(__name__)
+
+SessionSignature = tuple[int, int, int, int]
+"""(row count, first seq, last seq, total event bytes) for one session."""
 
 
 def state_roots(ws: OpenClawWorkspace) -> list[Path]:
@@ -46,7 +50,25 @@ def database_fingerprint(path: Path) -> tuple[tuple[int, int, int, int], ...]:
     return tuple(parts)
 
 
-def read_database(path: Path, ws: OpenClawWorkspace) -> list[MemoryRecord]:
+def read_database(
+    path: Path,
+    ws: OpenClawWorkspace,
+    *,
+    known: Mapping[str, SessionSignature] | None = None,
+    signatures_out: dict[str, SessionSignature] | None = None,
+) -> list[MemoryRecord]:
+    """Replay sessions from one OpenClaw SQLite database.
+
+    ``known`` maps session ids to the signature seen on the previous
+    poll; a session whose (row count, seq range, byte size) is unchanged
+    is skipped without being parsed or emitted. The database file's
+    fingerprint moves on every write, so without this each poll of an
+    active agent re-emitted every session it had ever stored — hundreds
+    of unchanged transcripts rewritten per pass. ``signatures_out`` is
+    filled with the current signature of every session scanned so the
+    caller can advance its memory only after the records are consumed.
+    ``known=None`` (reconcile) replays everything.
+    """
     # Local import avoids the adapter/parser import cycle.
     from memstem.adapters.openclaw import _parse_trajectory_lines
 
@@ -80,6 +102,11 @@ def read_database(path: Path, ws: OpenClawWorkspace) -> list[MemoryRecord]:
                     last,
                     count,
                 )
+            signature: SessionSignature = (count, first, last, size or 0)
+            if signatures_out is not None:
+                signatures_out[sid] = signature
+            if known is not None and known.get(sid) == signature:
+                continue
             cap = ws.layout.max_trajectory_bytes
             if cap and size > cap:
                 logger.warning(

@@ -18,6 +18,7 @@ import pytest
 
 from memstem.adapters.base import MemoryRecord
 from memstem.cli import (
+    _drain_into_pipeline,
     _periodic_reconcile,
     _reconcile_all,
     _reconcile_into_pipeline,
@@ -296,3 +297,94 @@ async def test_periodic_reconcile_disabled_returns_immediately(vault: Vault, ind
         raise AssertionError("must not be called when disabled")
 
     await asyncio.wait_for(_periodic_reconcile(pipeline, make_streams, 0), timeout=1)
+
+
+async def test_live_drain_keeps_loop_responsive_when_process_is_slow(
+    vault: Vault, index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live watcher drain must not block the event loop either.
+
+    2026-09-26: an OpenClaw SQLite poll re-emitted ~250 sessions through the
+    live drain, which called ``Pipeline.process`` inline; the loop was held
+    ~35s per pass and the HTTP server could not accept /search at all. Same
+    shape as the reconcile test above, for ``_drain_into_pipeline``.
+    """
+    import time
+
+    pipeline = Pipeline(vault, index)
+    records = [_record(f"/live/{i}.md", f"body number {i}") for i in range(10)]
+
+    def _slow_process(_rec: MemoryRecord) -> None:
+        time.sleep(0.05)
+
+    monkeypatch.setattr(pipeline, "process", _slow_process)
+
+    done = asyncio.Event()
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while not done.is_set():
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    hb = asyncio.create_task(heartbeat())
+    try:
+        await _drain_into_pipeline(pipeline, _stream(records))
+    finally:
+        done.set()
+        await hb
+    assert ticks >= 20
+
+
+async def test_live_drains_share_one_serial_lock(
+    vault: Vault, index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off-loop drains stay serialized across watchers, as they were on the loop."""
+    import threading
+    import time
+
+    pipeline = Pipeline(vault, index)
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+    processed: list[str] = []
+
+    def _process(rec: MemoryRecord) -> None:
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.01)
+        processed.append(rec.ref)
+        with guard:
+            active -= 1
+
+    monkeypatch.setattr(pipeline, "process", _process)
+    shared = asyncio.Lock()
+    a = [_record(f"/a/{i}.md", f"a {i}") for i in range(5)]
+    b = [_record(f"/b/{i}.md", f"b {i}") for i in range(5)]
+    await asyncio.gather(
+        _drain_into_pipeline(pipeline, _stream(a), shared),
+        _drain_into_pipeline(pipeline, _stream(b), shared),
+    )
+    assert peak == 1
+    assert [r for r in processed if r.startswith("/a/")] == [r.ref for r in a]
+    assert len(processed) == 10
+
+
+async def test_live_drain_survives_a_failing_record(
+    vault: Vault, index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = Pipeline(vault, index)
+    seen: list[str] = []
+
+    def _process(rec: MemoryRecord) -> None:
+        if rec.ref.endswith("1.md"):
+            raise RuntimeError("boom")
+        seen.append(rec.ref)
+
+    monkeypatch.setattr(pipeline, "process", _process)
+    records = [_record(f"/f/{i}.md", f"f {i}") for i in range(3)]
+    await _drain_into_pipeline(pipeline, _stream(records))
+    assert seen == ["/f/0.md", "/f/2.md"]
