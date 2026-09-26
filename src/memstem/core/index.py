@@ -18,7 +18,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -30,7 +30,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 _VEC_DIMS_RE = re.compile(r"FLOAT\[(\d+)\]", re.IGNORECASE)
 
@@ -423,12 +423,53 @@ MIGRATIONS: dict[int, str] = {
         -- gated on PRAGMA table_info.
         SELECT 1;
     """,
+    15: """
+        -- ADR 0045: sha256 of each embedded chunk, so a re-embed can keep
+        -- the vectors of chunks whose text did not change and update the
+        -- rest in place. Advisory: a hash whose vector row is gone counts
+        -- as a miss.
+        CREATE TABLE IF NOT EXISTS vec_chunk_hashes (
+            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            chunk_hash TEXT NOT NULL,
+            PRIMARY KEY (memory_id, chunk_index)
+        ) WITHOUT ROWID;
+    """,
 }
 
 
 def extract_wikilinks(body: str) -> list[str]:
     """Return the list of `[[wikilink]]` targets in body order, preserving duplicates."""
     return [match.strip() for match in WIKILINK_RE.findall(body)]
+
+
+class StaleVectorPlanError(RuntimeError):
+    """A memory's vector rows changed between planning a reuse and writing
+    it (ADR 0045). Retryable: replan from the current rows."""
+
+
+@dataclass(frozen=True)
+class VectorReusePlan:
+    """What a re-embed can keep (ADR 0045).
+
+    ``unchanged``: new chunk indexes whose existing row already holds this
+    chunk's vector. ``copied``: new chunk index -> vector bytes of an
+    existing row with the same chunk hash at a different index. Every
+    other index must be embedded.
+    """
+
+    unchanged: frozenset[int] = frozenset()
+    copied: dict[int, bytes] = field(default_factory=dict)
+
+    def misses(self, n_chunks: int) -> list[int]:
+        return [i for i in range(n_chunks) if i not in self.unchanged and i not in self.copied]
+
+
+def _chunk_index_of(chunk_id: str) -> int | None:
+    try:
+        return int(chunk_id.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def _serialize_vector(embedding: Iterable[float]) -> bytes:
@@ -798,6 +839,7 @@ class Index:
             # needs_reembed) — clear them so every record counts as
             # never-embedded.
             self.db.execute("DELETE FROM embed_state")
+            self.db.execute("DELETE FROM vec_chunk_hashes")
         self.db.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
@@ -850,7 +892,7 @@ class Index:
                 self.db.execute("DELETE FROM tags WHERE memory_id = ?", (old_id,))
                 self.db.execute("DELETE FROM links WHERE memory_id = ?", (old_id,))
                 self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (old_id,))
-                self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (old_id,))
+                self._delete_vectors(old_id)
                 self.db.execute("DELETE FROM memories WHERE id = ?", (old_id,))
 
             self.db.execute("DELETE FROM tags WHERE memory_id = ?", (memory_id,))
@@ -925,7 +967,12 @@ class Index:
         chunks: list[str],
         embeddings: list[list[float]],
     ) -> None:
-        """Replace the vector rows for `memory_id` with one row per chunk."""
+        """Replace the vector rows for `memory_id` with one row per chunk.
+
+        A full rewrite with no chunk hashes: clears the record's
+        ``vec_chunk_hashes`` so a later re-embed cannot reuse vectors it
+        knows nothing about. The embed worker uses :meth:`apply_vectors`.
+        """
         if len(chunks) != len(embeddings):
             raise ValueError("chunks and embeddings must be the same length")
         for vec in embeddings:
@@ -933,23 +980,211 @@ class Index:
                 raise ValueError(f"embedding dim {len(vec)} != index dim {self.dimensions}")
 
         with self._lock, self.db:
-            self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
-            for i, (chunk, vec) in enumerate(zip(chunks, embeddings, strict=True)):
-                chunk_id = f"{memory_id}:{i}"
-                self.db.execute(
-                    """
-                    INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (chunk_id, memory_id, i, _serialize_vector(vec)),
+            self._delete_vectors(memory_id)
+            self.db.executemany(
+                """
+                INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (f"{memory_id}:{i}", memory_id, i, _serialize_vector(vec))
+                    for i, vec in enumerate(embeddings)
+                ],
+            )
+
+    def _vec_chunk_ids(self, memory_id: str, db: sqlite3.Connection | None = None) -> list[str]:
+        """Chunk ids of ``memory_id``'s vector rows, without scanning vec0.
+
+        ``WHERE memory_id = ?`` on vec0 filters a metadata column by
+        reading the whole table (1.4 s on a 280K-slot index); the
+        ``_rowids`` shadow table has a unique index on the ``chunk_id``
+        string, and every chunk id is ``"<memory_id>:<index>"`` — so a
+        ``[id + ":", id + ";")`` range finds them in microseconds (ADR 0045).
+        """
+        conn = db if db is not None else self.db
+        return [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM memories_vec_rowids WHERE id >= ? AND id < ?",
+                (f"{memory_id}:", f"{memory_id};"),
+            )
+        ]
+
+    def _delete_vectors(self, memory_id: str) -> None:
+        """Delete ``memory_id``'s vector rows and chunk hashes by primary key.
+
+        Caller holds :attr:`_lock` and owns the transaction.
+        """
+        self.db.executemany(
+            "DELETE FROM memories_vec WHERE chunk_id = ?",
+            [(c,) for c in self._vec_chunk_ids(memory_id)],
+        )
+        self.db.execute("DELETE FROM vec_chunk_hashes WHERE memory_id = ?", (memory_id,))
+
+    def chunk_hashes(self, memory_id: str) -> dict[int, str]:
+        """Stored ``chunk_index -> chunk_hash`` for ``memory_id`` (ADR 0045)."""
+        with self._lock:
+            return {
+                int(r[0]): str(r[1])
+                for r in self.db.execute(
+                    "SELECT chunk_index, chunk_hash FROM vec_chunk_hashes WHERE memory_id = ?",
+                    (memory_id,),
                 )
-                # silence unused-var warning while keeping `chunk` available for
-                # future hygiene-worker hooks (skill extraction reads chunks)
-                _ = chunk
+            }
+
+    def plan_vector_reuse(
+        self, memory_id: str, hashes: list[str], embed_signature: str
+    ) -> VectorReusePlan:
+        """Which of the new chunks (by hash) already have a vector (ADR 0045).
+
+        Reuse needs the record's ``embed_state.embed_signature`` to equal
+        ``embed_signature`` — vectors from another model are never kept —
+        and each reused hash's row to still exist. Moved chunks' vectors
+        are read by primary key on a reader connection when one is
+        available, so a large record does not hold the writer lock.
+        """
+        with self._lock:
+            row = self.db.execute(
+                "SELECT embed_signature FROM embed_state WHERE memory_id = ?", (memory_id,)
+            ).fetchone()
+            if row is None or row[0] != embed_signature:
+                return VectorReusePlan()
+            stored = {
+                int(r[0]): str(r[1])
+                for r in self.db.execute(
+                    "SELECT chunk_index, chunk_hash FROM vec_chunk_hashes WHERE memory_id = ?",
+                    (memory_id,),
+                )
+            }
+            existing = {
+                idx
+                for c in self._vec_chunk_ids(memory_id)
+                if (idx := _chunk_index_of(c)) is not None
+            }
+        if not stored:
+            return VectorReusePlan()
+        by_hash: dict[str, int] = {}
+        for idx, h in sorted(stored.items()):
+            if idx in existing:
+                by_hash.setdefault(h, idx)
+        unchanged: set[int] = set()
+        to_copy: dict[int, int] = {}
+        for i, h in enumerate(hashes):
+            if stored.get(i) == h and i in existing:
+                unchanged.add(i)
+            elif h in by_hash:
+                to_copy[i] = by_hash[h]
+        copied: dict[int, bytes] = {}
+        if to_copy:
+
+            def _read(conn: sqlite3.Connection) -> None:
+                for i, src in to_copy.items():
+                    got = conn.execute(
+                        "SELECT embedding FROM memories_vec WHERE chunk_id = ?",
+                        (f"{memory_id}:{src}",),
+                    ).fetchone()
+                    if got is not None:
+                        copied[i] = bytes(got[0])
+
+            with self.reader() as rdb:
+                if rdb is not None:
+                    _read(rdb)
+                else:
+                    with self._lock:
+                        _read(self.db)
+        return VectorReusePlan(unchanged=frozenset(unchanged), copied=copied)
+
+    def apply_vectors(
+        self,
+        memory_id: str,
+        hashes: list[str],
+        vectors: dict[int, list[float] | bytes],
+        unchanged: frozenset[int] | set[int] = frozenset(),
+    ) -> tuple[int, int, int]:
+        """Write a re-embed in place (ADR 0045); returns (updated, inserted, deleted).
+
+        For each new chunk index: left alone if it is in ``unchanged`` (its
+        row and stored hash must still match — else :class:`StaleVectorPlanError`),
+        otherwise ``vectors[i]`` updates the existing row in place (vec0
+        reuses the slot) or is inserted. Rows past the new chunk count are
+        deleted. The record's chunk hashes are replaced by ``hashes``.
+        """
+        n = len(hashes)
+        missing = [i for i in range(n) if i not in unchanged and i not in vectors]
+        if missing:
+            raise ValueError(f"no vector for chunk(s) {missing[:5]} of {memory_id}")
+        blobs: dict[int, bytes] = {}
+        for i, vec in vectors.items():
+            if isinstance(vec, bytes):
+                if len(vec) != 4 * self.dimensions:
+                    raise ValueError(f"vector blob {len(vec)} B != index dim {self.dimensions}")
+                blobs[i] = vec
+            else:
+                if len(vec) != self.dimensions:
+                    raise ValueError(f"embedding dim {len(vec)} != index dim {self.dimensions}")
+                blobs[i] = _serialize_vector(vec)
+        updated = inserted = 0
+        with self._lock, self.db:
+            if (
+                self.db.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                is None
+            ):
+                # Deleted mid-embed: write nothing (the hash rows' FK would
+                # reject them); record_embed_state's FK path cleans up.
+                orphans = self._vec_chunk_ids(memory_id)
+                self.db.executemany(
+                    "DELETE FROM memories_vec WHERE chunk_id = ?", [(c,) for c in orphans]
+                )
+                return 0, 0, len(orphans)
+            existing: dict[int, str] = {}
+            stray: list[str] = []
+            for c in self._vec_chunk_ids(memory_id):
+                idx = _chunk_index_of(c)
+                if idx is None:
+                    stray.append(c)
+                else:
+                    existing[idx] = c
+            if unchanged:
+                stored = {
+                    int(r[0]): str(r[1])
+                    for r in self.db.execute(
+                        "SELECT chunk_index, chunk_hash FROM vec_chunk_hashes WHERE memory_id = ?",
+                        (memory_id,),
+                    )
+                }
+                for i in unchanged:
+                    if i not in existing or stored.get(i) != hashes[i]:
+                        raise StaleVectorPlanError(f"{memory_id}: chunk {i} changed since planning")
+            for i in range(n):
+                if i in unchanged:
+                    continue
+                if i in existing:
+                    self.db.execute(
+                        "UPDATE memories_vec SET embedding = ? WHERE chunk_id = ?",
+                        (blobs[i], existing[i]),
+                    )
+                    updated += 1
+                else:
+                    self.db.execute(
+                        """
+                        INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (f"{memory_id}:{i}", memory_id, i, blobs[i]),
+                    )
+                    inserted += 1
+            drop = [c for idx, c in existing.items() if idx >= n] + stray
+            self.db.executemany("DELETE FROM memories_vec WHERE chunk_id = ?", [(c,) for c in drop])
+            self.db.execute("DELETE FROM vec_chunk_hashes WHERE memory_id = ?", (memory_id,))
+            self.db.executemany(
+                "INSERT INTO vec_chunk_hashes(memory_id, chunk_index, chunk_hash) VALUES (?, ?, ?)",
+                [(memory_id, i, h) for i, h in enumerate(hashes)],
+            )
+        return updated, inserted, len(drop)
 
     def delete(self, memory_id: str) -> None:
         with self._lock, self.db:
-            self.db.execute("DELETE FROM memories_vec WHERE memory_id = ?", (memory_id,))
+            self._delete_vectors(memory_id)
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (memory_id,))
@@ -1365,10 +1600,7 @@ class Index:
             except sqlite3.DatabaseError as exc:
                 if not _is_foreign_key_violation(exc):
                     raise
-                self.db.execute(
-                    "DELETE FROM memories_vec WHERE memory_id = ?",
-                    (memory_id,),
-                )
+                self._delete_vectors(memory_id)
                 logger.info(
                     "embed_state INSERT skipped for %s: parent memory was "
                     "deleted during embedding (path displacement or removal). "
