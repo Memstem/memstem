@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Re-embedding a record keeps the vectors of chunks whose text did not change (ADR 0045). A new `vec_chunk_hashes` table (schema v15) stores each chunk's sha256; when the record's embed signature still matches, unchanged chunks are left alone, moved chunks are copied, and only the rest go to the embedder. A growing session now re-embeds its last chunk and new ones instead of the whole transcript. Vector rows are updated in place (`UPDATE ... WHERE chunk_id`) rather than deleted and re-inserted, so a rewrite no longer leaves a dead vec0 slot per chunk (brads-server was accumulating ~2.6K dead slots/hour, each one read by every search until the nightly compaction).
+- A memory's vector rows are found through the vec0 `_rowids` shadow table's unique index instead of `DELETE FROM memories_vec WHERE memory_id = ?`, which scanned the whole vector table (1.4 s on a 280K-slot index) under the writer lock on every re-embed and record delete.
 - MMR diversification is ~30x faster: cosine similarity uses `math.sumprod` (C, Python 3.12+; pure-Python fallback on 3.11) with per-candidate norms computed once, and the greedy loop updates each candidate's redundancy against only the newest pick instead of re-scanning every pick. Same selection rule; on 25 recent real queries the order was identical in all 25 and MMR time fell from 644 ms to 22 ms per search (~0.6–1.1 s of a ~4 s search on a 4096-dim vault).
 
 ### Changed

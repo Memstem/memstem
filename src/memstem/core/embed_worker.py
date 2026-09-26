@@ -18,6 +18,7 @@ embed`` process — never embed the same record twice in flight.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import Any
@@ -28,7 +29,7 @@ from memstem.core.embeddings import (
     TransientEmbeddingError,
     chunk_text,
 )
-from memstem.core.index import Index, body_hash
+from memstem.core.index import Index, StaleVectorPlanError, body_hash
 from memstem.core.media import extract_image_refs, image_file_to_data_url
 from memstem.core.storage import InvalidFrontmatterError, MemoryNotFoundError, Vault
 
@@ -247,13 +248,32 @@ class EmbedWorker:
             self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
             return True, False
 
+        # Text chunks first, then any image media-chunks (ADR 0025); both
+        # land in the same vector space, ordered text-then-image so
+        # chunk_index 0 stays the first text chunk (MMR reads it).
+        hashes = [_chunk_hash(c) for c in text_chunks] + [
+            _chunk_hash(u, image=True) for u in image_urls
+        ]
+        n_text = len(text_chunks)
+        # ADR 0045: chunks whose text is unchanged keep their vectors; only
+        # the misses go to the embedder (a growing session re-embeds its
+        # tail, not the whole transcript).
+        plan = self.index.plan_vector_reuse(memory_id, hashes, self.embedding_signature)
+        misses = plan.misses(len(hashes))
+        text_misses = [i for i in misses if i < n_text]
+        image_misses = [i for i in misses if i >= n_text]
         try:
-            # Text chunks first, then any image media-chunks (ADR 0025); both
-            # land in the same vector space, ordered text-then-image so
-            # chunk_index 0 stays the first text chunk (MMR reads it).
-            vectors = self.embedder.embed_batch(text_chunks) if text_chunks else []
-            if image_urls:
-                vectors = vectors + self.embedder.embed_images(image_urls)
+            fresh: list[list[float]] = []
+            if text_misses:
+                fresh = self.embedder.embed_batch([text_chunks[i] for i in text_misses])
+            if image_misses:
+                fresh = fresh + self.embedder.embed_images(
+                    [image_urls[i - n_text] for i in image_misses]
+                )
+            if len(fresh) != len(misses):
+                raise EmbeddingError(
+                    f"embedder returned {len(fresh)} vectors for {len(misses)} chunks"
+                )
         except TransientEmbeddingError as exc:
             # Network blip / 5xx / read timeout. The next tick can try
             # the same record again without burning a retry slot — a
@@ -284,12 +304,18 @@ class EmbedWorker:
             self.index.mark_embed_error(memory_id, repr(exc), max_retries=self.max_retries)
             return False, False
 
+        vectors: dict[int, list[float] | bytes] = dict(plan.copied)
+        vectors.update(zip(misses, fresh, strict=True))
         try:
-            # upsert_vectors only length-matches chunks↔vectors (the vec
-            # table stores no chunk text), so image media-chunks get
-            # lightweight labels; their embedding is what matters.
-            all_chunks = text_chunks + [f"<image:{i}>" for i in range(len(image_urls))]
-            self.index.upsert_vectors(memory_id, all_chunks, vectors)
+            updated, inserted, deleted = self.index.apply_vectors(
+                memory_id, hashes, vectors, plan.unchanged
+            )
+        except StaleVectorPlanError as exc:
+            # The rows moved under us (compaction swap, another writer):
+            # replan next tick; not the record's fault, no retry spent.
+            logger.info("embed worker %d: %s; will replan", self.worker_id, exc)
+            self.index.release_embed_claim(memory_id)
+            return False, False
         except ValueError as exc:
             logger.warning(
                 "embed worker %d: vector upsert rejected for %s: %s",
@@ -300,6 +326,20 @@ class EmbedWorker:
             self.index.mark_embed_error(memory_id, str(exc), max_retries=self.max_retries)
             return False, False
 
+        reused = len(hashes) - len(misses)
+        if reused:
+            logger.info(
+                "embed worker %d: %s embedded %d/%d chunks (reused %d; "
+                "rows updated %d, inserted %d, deleted %d)",
+                self.worker_id,
+                memory_id,
+                len(misses),
+                len(hashes),
+                reused,
+                updated,
+                inserted,
+                deleted,
+            )
         self.index.record_embed_state(memory_id, body_hash(body), self.embedding_signature)
         self.index.dequeue_embed_if_unchanged(memory_id, claim_token)
         return True, False
@@ -348,6 +388,11 @@ class EmbedWorker:
                     exc,
                 )
         return urls
+
+
+def _chunk_hash(chunk: str, *, image: bool = False) -> str:
+    """Content hash of one embedding input (ADR 0045); images by data URL."""
+    return hashlib.sha256((("img:" + chunk) if image else chunk).encode("utf-8")).hexdigest()
 
 
 class _RecordMissingError(Exception):
