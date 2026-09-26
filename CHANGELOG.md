@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional AVX-accelerated sqlite-vec (`memstem vec-accel build` / `memstem vec-accel status`, config `sqlite_vec_path: auto | <path>`). The PyPI `sqlite-vec` wheels are built without SIMD on Linux; `build` compiles the tag matching the installed package with `-mavx -DSQLITE_VEC_ENABLE_AVX` (needs gcc; source and header downloads are sha256-pinned), exports only the extension entry points so the bundled build loaded in the same process cannot hijack its hot paths, verifies it against the bundled build and installs it atomically under `~/.local/share/memstem/sqlite-vec/`. On load, the platform (Linux x86_64), CPU AVX flag, version match and a numeric/KNN self-test must all pass, otherwise the bundled build is used with a warning. `/health` gains a `sqlite_vec` block (version, build flags, extension). On a 280K-slot x 4096-dim index the KNN scan fell from 2.45 s to 1.65 s with an identical top-50.
 - Shadow-mode Jev reranking (ADR 0044), off by default. With `search.jev_shadow.enabled: true`, each HTTP/MCP search is re-scored by Jev (`typesafe/jev-1.13` via OpenRouter) in a background thread after its results are returned, and the order Jev would have served is logged to `_meta/jev-shadow.db` with timings and cost. Served results never change. Includes a shared daily budget, redaction of passages before they leave the host, watchdog/credential-query skips, and `scripts/jev_shadow_report.py`.
 
 ## [0.24.2] - 2026-09-26

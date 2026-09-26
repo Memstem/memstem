@@ -629,6 +629,10 @@ class Config(BaseModel):
 
     vault_path: Path
     index_path: Path | None = None  # defaults to <vault>/_meta/index.db
+    #: Accelerated sqlite-vec build: ``auto`` loads the one
+    #: ``memstem vec-accel build`` installed (if present and verified),
+    #: a path loads that file, unset loads the bundled wheel's build.
+    sqlite_vec_path: str | None = None
     embedding: EmbeddingConfig = EmbeddingConfig()
     search: SearchConfig = SearchConfig()
     hygiene: HygieneConfig = HygieneConfig()

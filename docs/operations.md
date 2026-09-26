@@ -442,3 +442,32 @@ disable the policy entirely and recover the pre-0.10 behaviour.
 Per-call overrides are also available via the HTTP `/search`
 body (`type_bias` field) and the Python `Search.search` keyword
 argument.
+
+## Accelerated sqlite-vec (AVX)
+
+Vector search is a brute-force scan over every slot in `memories_vec`,
+and the `sqlite-vec` wheels on PyPI compute its L2 distances without
+SIMD on Linux (upstream only enables AVX for macOS x86_64 builds). An
+AVX build of the same version is ~1.5x faster at the scan with the same
+results (280K slots x 4096 dims: 2.45 s -> 1.65 s, identical top-50).
+
+```bash
+memstem vec-accel build     # needs gcc; downloads the matching tag, compiles, verifies, installs
+memstem vec-accel status    # what the index will load, and why
+```
+
+Then add `sqlite_vec_path: auto` at the top level of
+`_meta/config.yaml` (edit the text — don't round-trip it through a YAML
+loader, which strips comments) and restart the daemon. `/health` shows
+the result under `sqlite_vec` (`build_flags: avx`, `extension: <path>`).
+
+`auto` loads `~/.local/share/memstem/sqlite-vec/vec0-<version>-avx.so`
+(`$XDG_DATA_HOME` respected) if present; an explicit path loads that
+file. Before loading, MemStem requires Linux x86_64, an `avx` CPU flag,
+a version equal to the installed `sqlite-vec` package, an AVX build
+flag, distances matching the bundled build, and a working vec0 KNN
+query. Anything else logs a warning and loads the bundled build, so a
+`pip install -U sqlite-vec` (version mismatch) degrades to stock speed
+rather than failing — re-run `memstem vec-accel build` after upgrading.
+
+Rollback: remove `sqlite_vec_path` (or delete the `.so`) and restart.

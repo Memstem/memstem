@@ -309,6 +309,7 @@ def build_app(
             "watchers": watchers_block,
             "hygiene": hygiene_block,
             "skipped_files": skipped_block,
+            "sqlite_vec": index.sqlite_vec_info,
         }
 
     @app.get("/version")
