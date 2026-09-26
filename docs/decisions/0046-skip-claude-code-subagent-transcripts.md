@@ -62,3 +62,23 @@ reconcile rewrites `sessions/<id>.md` from its own transcript.
   prunes old transcripts), its vault file may still hold a subagent's
   transcript, and the cleanup removes it. That session's own text was
   already lost in the vault by the time of this change.
+
+## Addendum (2026-09-26, 0.25.2): Codex subagent threads
+
+Codex has the same collision. Each spawned agent's thread is its own
+rollout, whose **first** `session_meta` carries the thread's own `id`,
+`thread_source: "subagent"` and `parent_thread_id`. The rollout then
+replays the parent's history, including the parent's `session_meta`. The
+adapter kept the *last* `session_meta` id, so the thread was filed under
+the parent's `sessions/<id>.md`. On brads-server: 603 subagent rollouts
+(427 MB) out of 2,785; 394 of them owned a live memory; every restart
+re-processed ~800 Codex records, and one restart dropped ~9K vectors.
+
+The Codex adapter now takes the rollout's identity (`id`, `cwd`, CLI
+version, provider) from the first `session_meta` only, and skips rollouts
+whose first `session_meta` says `thread_source: "subagent"`. User forks
+keep their own id and are still ingested. `_prune_subagent_records` also
+covers Codex refs (`is_subagent_rollout` reads up to the first
+`session_meta`; a missing or unreadable file is never treated as a
+subagent). A vault file is deleted only when its frontmatter names that
+memory and that exact ref.

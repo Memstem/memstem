@@ -19,6 +19,7 @@ from memstem.adapters.codex import (
     _parse_session_file,
     _session_to_record,
     _slugify_cwd,
+    is_subagent_rollout,
 )
 
 
@@ -471,3 +472,45 @@ class TestWatch:
             pass
 
         assert emitted == []
+
+
+class TestSubagentRollouts:
+    """ADR 0046: a Codex subagent/forked rollout replays its parent's
+    session_meta after its own; only the first one describes the file."""
+
+    PARENT = "01a07d98-f49b-7f13-8139-57d41cd8dfd3"
+    CHILD = "01a07d99-701f-7e21-8e69-1ef43a94dffe"
+
+    def _child_rollout(self, path: Path, thread_source: str) -> Path:
+        own = _session_meta_line(session_id=self.CHILD, cwd="/tmp/council")
+        own["payload"].update({"thread_source": thread_source, "parent_thread_id": self.PARENT})
+        parent = _session_meta_line(session_id=self.PARENT, cwd="/home/ubuntu")
+        return _write_session(
+            path,
+            [
+                own,
+                parent,
+                _message_line("user", "verify the verdict"),
+                _message_line("assistant", "checked", block_type="output_text"),
+            ],
+        )
+
+    def test_first_session_meta_wins(self, tmp_path: Path) -> None:
+        path = self._child_rollout(tmp_path / "rollout-fork.jsonl", "user")
+        parsed = _parse_session_file(path)
+        assert parsed is not None
+        assert parsed["session_id"] == self.CHILD
+        assert parsed["cwd"] == "/tmp/council"
+        record = _session_to_record(path)
+        assert record is not None
+        assert record.metadata["session_id"] == self.CHILD
+
+    def test_subagent_rollout_is_skipped(self, tmp_path: Path) -> None:
+        path = self._child_rollout(tmp_path / "rollout-sub.jsonl", "subagent")
+        assert _session_to_record(path) is None
+        assert is_subagent_rollout(path)
+
+    def test_user_rollout_is_not_a_subagent(self, tmp_path: Path) -> None:
+        path = _basic_session(tmp_path / "rollout-user.jsonl")
+        assert not is_subagent_rollout(path)
+        assert not is_subagent_rollout(tmp_path / "missing.jsonl")
