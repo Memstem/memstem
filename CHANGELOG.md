@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2] - 2026-09-26
+
+Patch release: live ingestion no longer blocks search, and native OpenClaw SQLite polling replays only the sessions that changed.
+
 ### Fixed
 
 - Live ingestion no longer blocks search. The watcher drain called `Pipeline.process` (synchronous markdown writes + index upserts) directly on the event loop, so a burst of records held the loop and the HTTP/MCP server could not accept a `/search` until it finished — the same stall #142 fixed for the startup reconcile. Each live record now runs in a worker thread; one shared lock keeps records processed one at a time across watchers, as before.
