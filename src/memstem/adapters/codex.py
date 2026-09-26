@@ -131,6 +131,8 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
     first_timestamp: str | None = None
     last_timestamp: str | None = None
     title: str | None = None
+    thread_source: str | None = None
+    seen_meta = False
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -155,6 +157,13 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
             continue
 
         if entry_type == "session_meta":
+            # Only the FIRST session_meta describes this rollout. A subagent
+            # (or forked) thread replays its parent's history afterwards,
+            # parent session_meta included; taking the last one filed the
+            # thread under the parent's sessions/<id>.md (ADR 0046).
+            if seen_meta:
+                continue
+            seen_meta = True
             sid = payload.get("id")
             if isinstance(sid, str):
                 session_id = sid
@@ -167,6 +176,9 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
             mp = payload.get("model_provider")
             if isinstance(mp, str):
                 model_provider = mp
+            ts_src = payload.get("thread_source")
+            if isinstance(ts_src, str):
+                thread_source = ts_src
             continue
 
         if entry_type != "response_item":
@@ -202,6 +214,7 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
 
     return {
         "session_id": session_id,
+        "thread_source": thread_source,
         "title": title,
         "body": "\n\n".join(turns),
         "first_timestamp": first_timestamp,
@@ -213,9 +226,35 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
     }
 
 
+def is_subagent_rollout(path: Path | str) -> bool:
+    """True when a rollout's first ``session_meta`` says ``thread_source: subagent``.
+
+    Codex writes each spawned agent's thread as its own rollout (ADR 0046).
+    Reads only up to the first ``session_meta`` line; unreadable or missing
+    files are not subagents (never pruned on a guess).
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                if '"session_meta"' not in raw[:300]:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except json.JSONDecodeError:
+                    return False
+                payload = entry.get("payload") if isinstance(entry, dict) else None
+                if entry.get("type") == "session_meta" and isinstance(payload, dict):
+                    return payload.get("thread_source") == "subagent"
+    except OSError:
+        return False
+    return False
+
+
 def _session_to_record(path: Path, source_name: str = "codex") -> MemoryRecord | None:
     parsed = _parse_session_file(path)
-    if parsed is None:
+    if parsed is None or parsed.get("thread_source") == "subagent":
+        # Subagent threads are skipped like Claude Code's (ADR 0046): the
+        # parent rollout holds each subagent's result.
         return None
     body = parsed["body"]
     if not isinstance(body, str) or not body.strip():

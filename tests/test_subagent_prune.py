@@ -81,3 +81,42 @@ def test_non_subagent_records_are_ignored(vault: Vault, index: Index) -> None:
     assert memory is not None
     assert _prune_subagent_records(vault, index) == 0
     assert index.get_path(str(memory.id)) is not None
+
+
+def test_codex_subagent_rollout_record_is_removed(
+    tmp_path: Path, vault: Vault, index: Index
+) -> None:
+    import json
+
+    rollout = tmp_path / "rollout-sub.jsonl"
+    rollout.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"id": "child", "thread_source": "subagent"},
+            }
+        )
+        + "\n"
+    )
+    pipe = Pipeline(vault, index)
+    record = _session(str(rollout), "codex subagent").model_copy(update={"source": "codex"})
+    memory = pipe.process(record)
+    assert memory is not None
+    assert _prune_subagent_records(vault, index) == 1
+    assert index.get_path(str(memory.id)) is None
+    assert not (vault.root / memory.path).exists()
+
+
+def test_codex_user_rollout_is_kept(tmp_path: Path, vault: Vault, index: Index) -> None:
+    import json
+
+    rollout = tmp_path / "rollout-user.jsonl"
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "p", "thread_source": "user"}}) + "\n"
+    )
+    pipe = Pipeline(vault, index)
+    record = _session(str(rollout), "codex user").model_copy(update={"source": "codex"})
+    memory = pipe.process(record)
+    assert memory is not None
+    assert _prune_subagent_records(vault, index) == 0
+    assert index.get_path(str(memory.id)) is not None

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex subagent threads no longer overwrite their parent session (ADR 0046 addendum). A spawned agent's rollout replays its parent's `session_meta` after its own, and the adapter kept the last one, so the thread was filed under the parent's `sessions/<id>.md` and the two displaced each other on every reconcile. The rollout's identity now comes from its first `session_meta`, and threads with `thread_source: "subagent"` are skipped like Claude Code subagents. User forks keep their own id. Leftover Codex subagent records are removed after each reconcile.
+
 ## [0.25.1] - 2026-09-26
 
 Patch release: Claude Code subagent transcripts no longer overwrite their parent session (the main remaining source of re-embed churn), and chunk-hash reuse is safe across a rollback.
