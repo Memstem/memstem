@@ -36,6 +36,7 @@ from memstem.core.dedup import normalized_body_hash, record_body_hash
 from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, coerce
 from memstem.core.index import Index
+from memstem.core.jev_shadow import JevShadow
 from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
@@ -136,6 +137,7 @@ class _Resources:
         "_build_embedder",
         "_build_index",
         "_build_reranker",
+        "_build_shadow",
         "_build_vault",
         "_embedder",
         "_embedder_resolved",
@@ -154,8 +156,10 @@ class _Resources:
         build_index: Callable[[], Index],
         build_embedder: Callable[[], Embedder | None],
         build_reranker: Callable[[], Reranker | None] = lambda: None,
+        build_shadow: Callable[[], JevShadow | None] = lambda: None,
     ) -> None:
         self._build_vault = build_vault
+        self._build_shadow = build_shadow
         self._build_index = build_index
         self._build_embedder = build_embedder
         self._build_reranker = build_reranker
@@ -206,6 +210,7 @@ class _Resources:
         build_index: Callable[[], Index],
         build_embedder: Callable[[], Embedder | None],
         build_reranker: Callable[[], Reranker | None] = lambda: None,
+        build_shadow: Callable[[], JevShadow | None] = lambda: None,
     ) -> _Resources:
         """Defer construction until first access. The CLI's ``mcp`` command
         uses this so the MCP handshake is fast even with a multi-hundred-MB
@@ -216,6 +221,7 @@ class _Resources:
             build_index=build_index,
             build_embedder=build_embedder,
             build_reranker=build_reranker,
+            build_shadow=build_shadow,
         )
 
     @property
@@ -262,6 +268,7 @@ class _Resources:
                         index=self.index,
                         embedder=self.embedder,
                         reranker=self.reranker,
+                        shadow=self._build_shadow(),
                     )
         return self._search
 
@@ -426,6 +433,7 @@ def build_server(
                 mmr_lambda=sc.mmr_lambda,
                 rerank_top_n=default_rerank_top_n,
                 log_client=log_client,
+                shadow_client="mcp",
                 log_max_rows=hc.query_log_max_rows,
             )
             return [

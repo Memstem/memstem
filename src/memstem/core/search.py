@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from memstem.core.embeddings import Embedder
 from memstem.core.hyde import HydeExpander, NoOpExpander
 from memstem.core.index import FtsHit, Index, VecHit
+from memstem.core.jev_shadow import JevShadow
 from memstem.core.mmr import mmr_rerank
 from memstem.core.rerank import (
     DEFAULT_RERANK_TOP_N,
@@ -193,6 +194,7 @@ class Search:
         embedder: Embedder | None = None,
         reranker: Reranker | None = None,
         hyde: HydeExpander | None = None,
+        shadow: JevShadow | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
@@ -206,6 +208,9 @@ class Search:
         # ``use_hyde=True`` without a configured expander is a no-op
         # rather than a crash. ADR 0018.
         self.hyde = hyde if hyde is not None else NoOpExpander()
+        # Shadow-mode Jev reranking (ADR 0044): scores a wider pool in the
+        # background after results are served; never alters them.
+        self.shadow = shadow
 
     def query_bm25(
         self,
@@ -368,6 +373,7 @@ class Search:
         use_hyde: bool = False,
         log_client: str | None = None,
         log_max_rows: int = DEFAULT_QUERY_LOG_MAX_ROWS,
+        shadow_client: str | None = None,
     ) -> SearchOutcome:
         """Like :meth:`search`, but returns a :class:`SearchOutcome` (ADR 0032).
 
@@ -383,7 +389,87 @@ class Search:
         and log *writes* (HyDE, rerank, query log) stay on the shared
         locked connection. The in-flight counter around the whole call is
         the signal bulk ingest uses to yield.
+
+        ``shadow_client`` (ADR 0044) names the caller ("http"/"mcp") when a
+        :attr:`shadow` is configured: after the outcome is computed, a job
+        re-running this query with the shadow pool size is queued for Jev
+        scoring. The served outcome is returned unchanged either way.
         """
+        outcome = self._search_once(
+            query,
+            limit=limit,
+            types=types,
+            rrf_k=rrf_k,
+            bm25_weight=bm25_weight,
+            vector_weight=vector_weight,
+            importance_weight=importance_weight,
+            type_bias=type_bias,
+            include_expired=include_expired,
+            include_deprecated=include_deprecated,
+            include_deleted=include_deleted,
+            mmr_lambda=mmr_lambda,
+            rerank_top_n=rerank_top_n,
+            use_hyde=use_hyde,
+            log_client=log_client,
+            log_max_rows=log_max_rows,
+        )
+        if self.shadow is not None and shadow_client is not None:
+            pool_size = self.shadow.settings.pool_size
+
+            def run_pool() -> SearchOutcome:
+                return self._search_once(
+                    query,
+                    limit=pool_size,
+                    types=types,
+                    rrf_k=rrf_k,
+                    bm25_weight=bm25_weight,
+                    vector_weight=vector_weight,
+                    importance_weight=importance_weight,
+                    type_bias=type_bias,
+                    include_expired=include_expired,
+                    include_deprecated=include_deprecated,
+                    include_deleted=include_deleted,
+                    mmr_lambda=mmr_lambda,
+                    rerank_top_n=rerank_top_n,
+                    use_hyde=use_hyde,
+                    log_client=None,
+                    log_max_rows=log_max_rows,
+                )
+
+            try:
+                self.shadow.submit(
+                    client=shadow_client,
+                    query=query,
+                    limit=limit,
+                    types=types,
+                    served=outcome.results,
+                    degraded=outcome.degraded,
+                    run_pool=run_pool,
+                )
+            except Exception as exc:  # shadow must never affect served results
+                logger.warning("jev shadow: submit raised %s: %s", type(exc).__name__, exc)
+        return outcome
+
+    def _search_once(
+        self,
+        query: str,
+        *,
+        limit: int,
+        types: list[str] | None,
+        rrf_k: int,
+        bm25_weight: float,
+        vector_weight: float,
+        importance_weight: float,
+        type_bias: dict[str, float] | None,
+        include_expired: bool,
+        include_deprecated: bool,
+        include_deleted: bool,
+        mmr_lambda: float | None,
+        rerank_top_n: int | None,
+        use_hyde: bool,
+        log_client: str | None,
+        log_max_rows: int,
+    ) -> SearchOutcome:
         self.index.search_started()
         try:
             with self.index.reader() as rdb:

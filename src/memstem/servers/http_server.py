@@ -47,6 +47,7 @@ from memstem.adapters.base import Adapter
 from memstem.config import HttpServerConfig, HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.index import Index
+from memstem.core.jev_shadow import build_jev_shadow
 from memstem.core.rerank import build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
@@ -214,7 +215,13 @@ def build_app(
         base_url=sc.reranker.base_url,
         api_key_env=sc.reranker.api_key_env,
     )
-    search = Search(vault=vault, index=index, embedder=embedder, reranker=reranker)
+    search = Search(
+        vault=vault,
+        index=index,
+        embedder=embedder,
+        reranker=reranker,
+        shadow=build_jev_shadow(sc.jev_shadow, vault.root),
+    )
     default_rerank_top_n = effective_rerank_top_n(
         sc.rerank_top_n, reranker_enabled=sc.reranker.enabled
     )
@@ -347,6 +354,7 @@ def build_app(
                     else default_rerank_top_n
                 ),
                 log_client=log_client,
+                shadow_client="http",
                 log_max_rows=hc.query_log_max_rows,
             )
             return [
