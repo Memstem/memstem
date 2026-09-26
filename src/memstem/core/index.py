@@ -23,8 +23,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Self
 
-import sqlite_vec
-
+from memstem.core import vec_accel
 from memstem.core.dedup import find_existing_memory_for_hash
 from memstem.core.frontmatter import Frontmatter
 from memstem.core.storage import Memory
@@ -469,8 +468,13 @@ class Index:
         db_path: Path | str,
         dimensions: int = 768,
         on_dimension_mismatch: Literal["fail", "rebuild"] = "fail",
+        vec_extension: Path | None = None,
     ) -> None:
         self.db_path = Path(db_path)
+        #: Accelerated sqlite-vec build to load (``vec_accel.resolve``);
+        #: None loads the bundled extension.
+        self.vec_extension = vec_extension
+        self._vec_info: dict[str, str] | None = None
         self.dimensions = dimensions
         self.on_dimension_mismatch = on_dimension_mismatch
         self._db: sqlite3.Connection | None = None
@@ -509,9 +513,21 @@ class Index:
         # ever target the same row in the same instant.
         db = sqlite3.connect(self.db_path, check_same_thread=False)
         db.row_factory = sqlite3.Row
-        db.enable_load_extension(True)
-        sqlite_vec.load(db)
-        db.enable_load_extension(False)
+        accelerated = vec_accel.load(db, self.vec_extension)
+        version, debug = db.execute("SELECT vec_version(), vec_debug()").fetchone()
+        flags = next(
+            (
+                ln.split(":", 1)[1].strip()
+                for ln in debug.splitlines()
+                if ln.startswith("Build flags")
+            ),
+            "",
+        )
+        self._vec_info = {
+            "version": version,
+            "build_flags": flags,
+            "extension": str(self.vec_extension) if accelerated else "bundled",
+        }
         db.execute("PRAGMA foreign_keys = ON")
         # Concurrency hardening: WAL mode lets readers run alongside a
         # writer (instead of blocking), and busy_timeout makes both
@@ -523,6 +539,13 @@ class Index:
         db.execute("PRAGMA busy_timeout = 5000")
         self._db = db
         self._migrate()
+
+    @property
+    def sqlite_vec_info(self) -> dict[str, str] | None:
+        """sqlite-vec loaded on the writer connection: version, build flags,
+        and ``extension`` (the accelerated build's path, or ``"bundled"``).
+        None before :meth:`connect`."""
+        return self._vec_info
 
     def close(self) -> None:
         if self._db is not None:
@@ -545,9 +568,7 @@ class Index:
         """
         db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, check_same_thread=False)
         db.row_factory = sqlite3.Row
-        db.enable_load_extension(True)
-        sqlite_vec.load(db)
-        db.enable_load_extension(False)
+        vec_accel.load(db, self.vec_extension)
         db.execute("PRAGMA busy_timeout = 5000")
         db.execute("PRAGMA query_only = ON")
         return db

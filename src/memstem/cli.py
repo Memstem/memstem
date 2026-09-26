@@ -39,6 +39,7 @@ from memstem.config import (
     OpenClawLayout,
     OpenClawWorkspace,
 )
+from memstem.core import vec_accel
 from memstem.core.dedup import normalized_body_hash
 from memstem.core.embed_worker import drain_once, run_workers
 from memstem.core.embeddings import (
@@ -112,6 +113,13 @@ hygiene_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(hygiene_app)
+
+vec_accel_app = typer.Typer(
+    name="vec-accel",
+    help="Build and inspect the optional AVX-accelerated sqlite-vec extension.",
+    no_args_is_help=True,
+)
+app.add_typer(vec_accel_app)
 
 
 @contextmanager
@@ -207,6 +215,7 @@ def _open_index(
         db_path,
         dimensions=config.embedding.dimensions,
         on_dimension_mismatch=on_dimension_mismatch,
+        vec_extension=vec_accel.resolve(config.sqlite_vec_path).path,
     )
     idx.connect()
     idx.verify_embedding_signature(_embedding_signature(config))
@@ -2248,6 +2257,62 @@ def vec_compact(
             typer.echo(f"vacuum done: {before / 1e9:.1f} GB -> {after / 1e9:.1f} GB")
     finally:
         index.close()
+
+
+@vec_accel_app.command("build")
+def vec_accel_build(
+    dest: str | None = typer.Option(
+        None, help="Install path (default: the path `sqlite_vec_path: auto` looks for)"
+    ),
+    allow_unpinned: bool = typer.Option(
+        False,
+        "--allow-unpinned",
+        help="Build a sqlite-vec version with no pinned source hash (skips hash checks).",
+    ),
+) -> None:
+    """Compile sqlite-vec with AVX for this host and install it.
+
+    Downloads the source tag matching the installed ``sqlite-vec``
+    package, compiles it with ``-mavx -DSQLITE_VEC_ENABLE_AVX`` (needs
+    gcc), verifies it against the bundled build and installs it
+    atomically. Set ``sqlite_vec_path: auto`` in config.yaml and restart
+    the daemon to use it.
+    """
+    try:
+        path = vec_accel.build(
+            Path(dest).expanduser() if dest else None, allow_unpinned=allow_unpinned
+        )
+    except vec_accel.VecAccelError as exc:
+        typer.echo(f"vec-accel build failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"installed verified AVX build: {path}")
+    if dest is None:
+        typer.echo("enable with `sqlite_vec_path: auto` in config.yaml, then restart the daemon")
+    else:
+        typer.echo(f"enable with `sqlite_vec_path: {path}` in config.yaml, then restart the daemon")
+
+
+@vec_accel_app.command("status")
+def vec_accel_status(
+    vault: str | None = typer.Option(None, help="Vault path override"),
+) -> None:
+    """Show which sqlite-vec build the index would load, and why."""
+    setting: str | None = None
+    try:
+        setting = _load_config(_resolve_vault_path(vault)).sqlite_vec_path
+        source = "config.yaml"
+    except Exception as exc:  # no vault is fine for a status check
+        source = f"no vault config ({type(exc).__name__})"
+    default = vec_accel.default_path()
+    typer.echo(f"sqlite-vec package: v{vec_accel.installed_version()}")
+    typer.echo(
+        f"platform: {'supported' if vec_accel.platform_supported() else 'unsupported'}; "
+        f"cpu avx: {'yes' if vec_accel.cpu_has_avx() else 'no'}"
+    )
+    typer.echo(f"default build path: {default} ({'present' if default.is_file() else 'absent'})")
+    typer.echo(f"sqlite_vec_path: {setting!r} (from {source})")
+    res = vec_accel.resolve(setting)
+    typer.echo(f"loads: {res.path or 'bundled'} — {res.reason}")
 
 
 @app.command()
