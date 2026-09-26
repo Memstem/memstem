@@ -65,7 +65,7 @@ def main() -> None:
         "errors": dict(Counter((r["error"] or "").split(":")[0] for r in rows if r["error"])),
         "degraded_runs": sum(r["degraded"] for r in rows),
         "latency": {
-            "pool_search": fmt_ms([r["pool_search_ms"] for r in rows if r["pool_search_ms"]]),
+            "idle_wait": fmt_ms([r["wait_ms"] for r in rows if r["wait_ms"] is not None]),
             "prep": fmt_ms([r["prep_ms"] for r in rows if r["prep_ms"]]),
             "jev_api_ok": fmt_ms([r["api_ms"] for r in ok if r["api_ms"]]),
             "prep_plus_api_ok": fmt_ms([r["prep_ms"] + r["api_ms"] for r in ok if r["api_ms"]]),

@@ -248,29 +248,34 @@ class TestJevShadowRun:
     def _job_args(self) -> dict[str, Any]:
         served = [_Hit(_memory(f"served {i}", f"plain body {i}")) for i in range(3)]
         winner = _Hit(_memory("pool winner", "this is the winner body"))
-        pool = _Outcome([served[1], winner, served[0]])
-        return {"served": served, "winner": winner, "pool": pool}
+        # The search's materialized candidates: served hits plus next-best.
+        candidates = [served[0], served[1], winner, served[2]]
+        return {"served": served, "winner": winner, "candidates": candidates}
+
+    def _submit(self, shadow: JevShadow, a: dict[str, Any], **overrides: Any) -> bool:
+        kwargs: dict[str, Any] = {
+            "client": "mcp",
+            "query": "which is the winner",
+            "limit": 3,
+            "served": a["served"],
+            "candidates": a["candidates"],
+            "degraded": False,
+        }
+        kwargs.update(overrides)
+        return shadow.submit(**kwargs)
 
     def test_success_records_would_be_order(self, tmp_path: Path) -> None:
         seen: list[dict[str, Any]] = []
         shadow = _shadow(tmp_path, _ok_handler(seen))
         a = self._job_args()
-        assert shadow.submit(
-            client="mcp",
-            query="which is the winner",
-            limit=3,
-            types=None,
-            served=a["served"],
-            degraded=False,
-            run_pool=lambda: a["pool"],
-        )
+        assert self._submit(shadow, a)
         shadow.drain()
         (row,) = _rows(shadow)
         assert row["status"] == "ok"
         pool_ids = json.loads(row["pool_ids"])
-        # Pilot pool shape: wider search first, then served hits it missed.
-        assert pool_ids[:3] == [str(h.memory.id) for h in a["pool"].results]
-        assert pool_ids[3] == str(a["served"][2].memory.id)
+        # Pool = served hits in served order, then the next-best candidates.
+        assert pool_ids[:3] == [str(h.memory.id) for h in a["served"]]
+        assert pool_ids[3] == str(a["winner"].memory.id)
         assert json.loads(row["jev_order"])[0] == str(a["winner"].memory.id)
         assert json.loads(row["served_ids"]) == [str(h.memory.id) for h in a["served"]]
         assert row["cost_usd"] == pytest.approx(0.0004)
@@ -279,16 +284,30 @@ class TestJevShadowRun:
         assert row["prep_ms"] is not None and row["api_ms"] is not None
         assert stat.S_IMODE(shadow.store.path.stat().st_mode) == 0o600
 
+    def test_pool_capped_at_pool_size(self, tmp_path: Path) -> None:
+        shadow = _shadow(tmp_path, _ok_handler([]), pool_size=5)
+        served = [_Hit(_memory(f"s{i}", "body")) for i in range(3)]
+        extra = [_Hit(_memory(f"e{i}", "body")) for i in range(10)]
+        row = shadow.run(_job({"served": served, "candidates": served + extra}))
+        assert row["n_candidates"] == 5
+
+    def test_waits_for_in_flight_searches(self, tmp_path: Path) -> None:
+        shadow = _shadow(tmp_path, _ok_handler([]), idle_wait_seconds=5.0)
+        calls = iter([2, 1, 0])
+        row = shadow.run(_job(self._job_args(), busy=lambda: next(calls, 0)))
+        assert row["status"] == "ok" and row["wait_ms"] >= 90
+
+    def test_idle_wait_is_bounded(self, tmp_path: Path) -> None:
+        shadow = _shadow(tmp_path, _ok_handler([]), idle_wait_seconds=0.2)
+        row = shadow.run(_job(self._job_args(), busy=lambda: 1))
+        assert row["status"] == "ok" and 150 <= row["wait_ms"] < 2000
+
     def test_timeout_records_error_and_reserve(self, tmp_path: Path) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("slow", request=request)
 
         shadow = _shadow(tmp_path, handler)
-        a = self._job_args()
-        shadow.submit(
-            client="http", query="q words", limit=5, types=None,
-            served=a["served"], degraded=False, run_pool=lambda: a["pool"],
-        )  # fmt: skip
+        self._submit(shadow, self._job_args())
         shadow.drain()
         (row,) = _rows(shadow)
         assert row["status"] == "error" and "ReadTimeout" in row["error"]
@@ -297,8 +316,7 @@ class TestJevShadowRun:
 
     def test_invalid_response_is_error(self, tmp_path: Path) -> None:
         shadow = _shadow(tmp_path, lambda r: httpx.Response(200, json={"answers": {}}))
-        a = self._job_args()
-        row = shadow.run(_job(a))
+        row = shadow.run(_job(self._job_args()))
         assert row["status"] == "error" and "ValueError" in row["error"]
 
     def test_budget_exhausted_skips_call(self, tmp_path: Path) -> None:
@@ -307,14 +325,9 @@ class TestJevShadowRun:
         row = shadow.run(_job(self._job_args()))
         assert row["status"] == "budget_skipped" and not seen
 
-    def test_pool_search_failure_recorded(self, tmp_path: Path) -> None:
+    def test_empty_served_not_queued(self, tmp_path: Path) -> None:
         shadow = _shadow(tmp_path, _ok_handler([]))
-
-        def boom() -> Any:
-            raise RuntimeError("index busy")
-
-        row = shadow.run(_job(self._job_args(), run_pool=boom))
-        assert row["status"] == "error" and "index busy" in row["error"]
+        assert not self._submit(shadow, self._job_args(), served=[])
 
     @pytest.mark.parametrize(
         ("query", "limit", "types"),
@@ -328,27 +341,18 @@ class TestJevShadowRun:
     )
     def test_filters(self, tmp_path: Path, query: str, limit: int, types: Any) -> None:
         shadow = _shadow(tmp_path, _ok_handler([]))
-        a = self._job_args()
-        assert not shadow.submit(
-            client="mcp", query=query, limit=limit, types=types,
-            served=a["served"], degraded=False, run_pool=lambda: a["pool"],
-        )  # fmt: skip
+        assert not shadow.wants(query, limit, types)
+
+    def test_sampling(self, tmp_path: Path) -> None:
+        assert not _shadow(tmp_path, _ok_handler([]), sample_rate=0.0).wants("q words", 10, None)
+        assert _shadow(tmp_path, _ok_handler([])).wants("q words", 10, None)
 
     def test_full_queue_drops_without_blocking(self, tmp_path: Path) -> None:
         shadow = _shadow(tmp_path, _ok_handler([]), queue_size=1)
-        a = self._job_args()
         shadow._worker = _AliveThread()  # type: ignore[assignment]  # worker never drains
-        kwargs: dict[str, Any] = {
-            "client": "mcp",
-            "query": "some query",
-            "limit": 5,
-            "types": None,
-            "served": a["served"],
-            "degraded": False,
-            "run_pool": lambda: a["pool"],
-        }
-        assert shadow.submit(**kwargs)
-        assert not shadow.submit(**kwargs)
+        a = self._job_args()
+        assert self._submit(shadow, a)
+        assert not self._submit(shadow, a)
         assert shadow.dropped == 1
 
 
@@ -357,11 +361,17 @@ class _AliveThread:
         return True
 
 
-def _job(a: dict[str, Any], run_pool: Any = None) -> Any:
+def _job(a: dict[str, Any], busy: Any = None) -> Any:
     from memstem.core.jev_shadow import _Job
 
     return _Job(
-        "mcp", "which is the winner", 3, a["served"], False, run_pool or (lambda: a["pool"])
+        "mcp",
+        "which is the winner",
+        3,
+        a["served"],
+        a["candidates"],
+        False,
+        busy or (lambda: 0),
     )
 
 
@@ -423,16 +433,40 @@ class TestSearchIntegration:
         self, vault: Vault, index: Index, tmp_path: Path
     ) -> None:
         self._seed(vault, index)
-        plain = Search(vault=vault, index=index).search_with_status("shadow rerank", limit=5)
+        # rerank_top_n with the NoOp reranker widens materialization to 20
+        # without reordering, standing in for MMR's overfetch here.
+        params: dict[str, Any] = {"limit": 5, "rerank_top_n": 20}
+        plain = Search(vault=vault, index=index).search_with_status("shadow rerank", **params)
         shadow = _shadow(tmp_path, _ok_handler([]))
         search = Search(vault=vault, index=index, shadow=shadow)
-        served = search.search_with_status("shadow rerank", limit=5, shadow_client="mcp")
+        served = search.search_with_status("shadow rerank", shadow_client="mcp", **params)
         assert [r.memory.id for r in served.results] == [r.memory.id for r in plain.results]
         shadow.drain()
         (row,) = _rows(shadow)
         assert row["status"] == "ok" and row["client"] == "mcp"
-        assert len(json.loads(row["pool_ids"])) == 20
-        assert row["n_candidates"] == 20
+        pool_ids = json.loads(row["pool_ids"])
+        assert len(pool_ids) == 20
+        assert pool_ids[:5] == [str(r.memory.id) for r in served.results]
+        assert row["wait_ms"] is not None
+
+    def test_without_overfetch_pool_is_served_only(
+        self, vault: Vault, index: Index, tmp_path: Path
+    ) -> None:
+        self._seed(vault, index)
+        shadow = _shadow(tmp_path, _ok_handler([]))
+        search = Search(vault=vault, index=index, shadow=shadow)
+        search.search_with_status("shadow rerank", limit=5, shadow_client="http")
+        shadow.drain()
+        (row,) = _rows(shadow)
+        assert row["n_candidates"] == 5
+
+    def test_filtered_query_not_logged(self, vault: Vault, index: Index, tmp_path: Path) -> None:
+        self._seed(vault, index)
+        shadow = _shadow(tmp_path, _ok_handler([]))
+        search = Search(vault=vault, index=index, shadow=shadow)
+        search.search_with_status("shadow rerank", limit=1, shadow_client="http")
+        shadow.drain()
+        assert _rows(shadow) == []
 
     def test_no_shadow_client_no_job(self, vault: Vault, index: Index, tmp_path: Path) -> None:
         self._seed(vault, index)

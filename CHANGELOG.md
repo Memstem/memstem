@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Jev shadow mode no longer runs a second, wider search per query: the candidate pool is the served hits plus the next-best candidates the search already materialized, and the background job waits until no search is in flight. The first version slowed back-to-back served searches (median 5.5 s vs 4.2–4.8 s in an 8-search burst). The ledger column `pool_search_ms` is replaced by `wait_ms`.
+
 ### Added
 
 - Shadow-mode Jev reranking (ADR 0044), off by default. With `search.jev_shadow.enabled: true`, each HTTP/MCP search is re-scored by Jev (`typesafe/jev-1.13` via OpenRouter) in a background thread after its results are returned, and the order Jev would have served is logged to `_meta/jev-shadow.db` with timings and cost. Served results never change. Includes a shared daily budget, redaction of passages before they leave the host, watchdog/credential-query skips, and `scripts/jev_shadow_report.py`.
