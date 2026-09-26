@@ -37,7 +37,12 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from memstem.adapters.base import Adapter, MemoryRecord
-from memstem.adapters.openclaw_sqlite import database_fingerprint, discover_databases, read_database
+from memstem.adapters.openclaw_sqlite import (
+    SessionSignature,
+    database_fingerprint,
+    discover_databases,
+    read_database,
+)
 from memstem.adapters.plugin_skills import iter_plugin_skills
 from memstem.adapters.trajectory import merge_transcripts
 from memstem.config import OpenClawWorkspace
@@ -662,6 +667,7 @@ class OpenClawAdapter(Adapter):
         self.workspaces = list(workspaces) if workspaces else []
         self.shared_files = list(shared_files) if shared_files else []
         self._poll_fingerprints: dict[tuple[str, Path], object] = {}
+        self._session_signatures: dict[tuple[str, Path], dict[str, SessionSignature]] = {}
 
     @property
     def _has_workspace_config(self) -> bool:
@@ -731,9 +737,16 @@ class OpenClawAdapter(Adapter):
                     fingerprint = database_fingerprint(db)
                     if not force and self._poll_fingerprints.get(key) == fingerprint:
                         continue
-                    records = await asyncio.to_thread(read_database, db, ws)
+                    # Forced (reconcile) passes replay every session; live polls
+                    # emit only sessions whose signature moved since the last pass.
+                    known = None if force else self._session_signatures.get(key)
+                    current: dict[str, SessionSignature] = {}
+                    records = await asyncio.to_thread(
+                        read_database, db, ws, known=known, signatures_out=current
+                    )
                     for record in records:
                         yield record
+                    self._session_signatures[key] = current
                     self._poll_fingerprints[key] = fingerprint
                 except (OSError, sqlite3.Error) as exc:
                     logger.warning("OpenClaw SQLite read failed for %s: %s", db, exc)

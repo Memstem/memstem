@@ -230,3 +230,38 @@ def test_compacted_snapshots_retain_earlier_conversation() -> None:
         text in parsed["body"] for text in ("first decision", "second decision", "new window")
     )
     assert parsed["body"].count("first decision") == 1
+
+
+async def test_live_poll_emits_only_changed_sessions(tmp_path: Path) -> None:
+    """An active agent moves the database fingerprint on every write; a live
+    poll must replay only the sessions that grew, not every stored session
+    (2026-09-26: Ari's 250 unchanged sessions were rewritten each pass)."""
+    _path, db = database(tmp_path)
+    try:
+        put(db, 0, "First session opening message with enough words.", sid="alpha")
+        put(db, 0, "Second session opening message with enough words.", sid="beta")
+        adapter = OpenClawAdapter([workspace(tmp_path)])
+        first = [r async for r in adapter._poll_external()]
+        assert sorted(r.metadata["session_id"] for r in first) == ["alpha", "beta"]
+        put(db, 1, "Only beta receives a new message in this turn.", sid="beta")
+        second = [r async for r in adapter._poll_external()]
+        assert [r.metadata["session_id"] for r in second] == ["beta"]
+        # A forced (reconcile) pass still replays everything.
+        forced = [r async for r in adapter._poll_external(force=True)]
+        assert sorted(r.metadata["session_id"] for r in forced) == ["alpha", "beta"]
+    finally:
+        db.close()
+
+
+def test_read_database_signatures_skip_known(tmp_path: Path) -> None:
+    path, db = database(tmp_path)
+    try:
+        put(db, 0, "A session that has not changed since the last poll.", sid="same")
+        seen: dict[str, tuple[int, int, int, int]] = {}
+        assert len(read_database(path, workspace(tmp_path), signatures_out=seen)) == 1
+        assert set(seen) == {"same"}
+        again: dict[str, tuple[int, int, int, int]] = {}
+        assert read_database(path, workspace(tmp_path), known=seen, signatures_out=again) == []
+        assert again == seen
+    finally:
+        db.close()

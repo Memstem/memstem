@@ -1226,10 +1226,27 @@ def doctor_embedder(
 async def _drain_into_pipeline(
     pipeline: Pipeline,
     stream: AsyncGenerator[MemoryRecord, None],
+    serial: asyncio.Lock | None = None,
 ) -> None:
+    """Feed a live watcher stream into the pipeline, off the event loop.
+
+    ``Pipeline.process`` does synchronous markdown writes and index
+    upserts. Called inline, a burst of records (an OpenClaw SQLite poll
+    re-emitting hundreds of sessions, a large Claude Code transcript)
+    held the event loop for tens of seconds, so the HTTP/MCP server could
+    not even accept a /search request — the same stall issue #142 fixed
+    for the startup reconcile. Each record now runs in a worker thread.
+
+    ``serial`` is shared by every live drain so records are still
+    processed one at a time across watchers, exactly as they were when
+    the event loop serialized them; ``Index._lock`` keeps the shared
+    SQLite connection safe against the embed and search workers.
+    """
+    lock = serial if serial is not None else asyncio.Lock()
     async for record in stream:
         try:
-            pipeline.process(record)
+            async with lock:
+                await asyncio.to_thread(pipeline.process, record)
         except Exception as exc:
             logger.warning("pipeline failed for %s/%s: %s", record.source, record.ref, exc)
 
@@ -1804,12 +1821,21 @@ async def _run_daemon(
             streams.append((codex_adapter.reconcile([]), "codex"))
         return streams
 
+    live_ingest = asyncio.Lock()
     tasks: list[asyncio.Task[Any]] = [
-        asyncio.create_task(_drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths))),
-        asyncio.create_task(_drain_into_pipeline(pipeline, claude_adapter.watch(claude_paths))),
+        asyncio.create_task(
+            _drain_into_pipeline(pipeline, openclaw_adapter.watch(openclaw_paths), live_ingest)
+        ),
+        asyncio.create_task(
+            _drain_into_pipeline(pipeline, claude_adapter.watch(claude_paths), live_ingest)
+        ),
     ]
     if codex_adapter is not None:
-        tasks.append(asyncio.create_task(_drain_into_pipeline(pipeline, codex_adapter.watch([]))))
+        tasks.append(
+            asyncio.create_task(
+                _drain_into_pipeline(pipeline, codex_adapter.watch([]), live_ingest)
+            )
+        )
     if embedder is not None:
         tasks.append(
             asyncio.create_task(

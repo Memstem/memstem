@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Live ingestion no longer blocks search. The watcher drain called `Pipeline.process` (synchronous markdown writes + index upserts) directly on the event loop, so a burst of records held the loop and the HTTP/MCP server could not accept a `/search` until it finished — the same stall #142 fixed for the startup reconcile. Each live record now runs in a worker thread; one shared lock keeps records processed one at a time across watchers, as before.
+- Native OpenClaw SQLite polling emits only sessions that changed. The database fingerprint moves on every agent write, and each poll re-emitted every stored session — on a busy agent, ~250 unchanged transcripts rewritten about once a minute, ~35 s per pass. Polls now remember each session's (row count, seq range, byte size) and replay only sessions whose signature moved; reconcile still replays everything.
+
 ## [0.24.1] - 2026-09-25
 
 Patch release: session distillation no longer re-summarises a session every cycle when a migrated duplicate distillation sits beside the canonical one.
