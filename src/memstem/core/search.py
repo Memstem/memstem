@@ -391,10 +391,17 @@ class Search:
         the signal bulk ingest uses to yield.
 
         ``shadow_client`` (ADR 0044) names the caller ("http"/"mcp") when a
-        :attr:`shadow` is configured: after the outcome is computed, a job
-        re-running this query with the shadow pool size is queued for Jev
-        scoring. The served outcome is returned unchanged either way.
+        :attr:`shadow` is configured: the served hits plus the next-best
+        candidates this same search already materialized (pre-MMR, RRF
+        order) are queued for Jev scoring. No second search runs, and the
+        served outcome is returned unchanged either way.
         """
+        wants_shadow = (
+            self.shadow is not None
+            and shadow_client is not None
+            and self.shadow.wants(query, limit, types)
+        )
+        pool: list[Result] | None = [] if wants_shadow else None
         outcome = self._search_once(
             query,
             limit=limit,
@@ -412,39 +419,18 @@ class Search:
             use_hyde=use_hyde,
             log_client=log_client,
             log_max_rows=log_max_rows,
+            pool_out=pool,
         )
-        if self.shadow is not None and shadow_client is not None:
-            pool_size = self.shadow.settings.pool_size
-
-            def run_pool() -> SearchOutcome:
-                return self._search_once(
-                    query,
-                    limit=pool_size,
-                    types=types,
-                    rrf_k=rrf_k,
-                    bm25_weight=bm25_weight,
-                    vector_weight=vector_weight,
-                    importance_weight=importance_weight,
-                    type_bias=type_bias,
-                    include_expired=include_expired,
-                    include_deprecated=include_deprecated,
-                    include_deleted=include_deleted,
-                    mmr_lambda=mmr_lambda,
-                    rerank_top_n=rerank_top_n,
-                    use_hyde=use_hyde,
-                    log_client=None,
-                    log_max_rows=log_max_rows,
-                )
-
+        if self.shadow is not None and shadow_client is not None and pool is not None:
             try:
                 self.shadow.submit(
                     client=shadow_client,
                     query=query,
                     limit=limit,
-                    types=types,
                     served=outcome.results,
+                    candidates=pool,
                     degraded=outcome.degraded,
-                    run_pool=run_pool,
+                    busy=lambda: self.index.searches_in_flight,
                 )
             except Exception as exc:  # shadow must never affect served results
                 logger.warning("jev shadow: submit raised %s: %s", type(exc).__name__, exc)
@@ -469,6 +455,7 @@ class Search:
         use_hyde: bool,
         log_client: str | None,
         log_max_rows: int,
+        pool_out: list[Result] | None = None,
     ) -> SearchOutcome:
         self.index.search_started()
         try:
@@ -491,6 +478,7 @@ class Search:
                     log_client=log_client,
                     log_max_rows=log_max_rows,
                     rdb=rdb,
+                    pool_out=pool_out,
                 )
         finally:
             self.index.search_finished()
@@ -515,6 +503,7 @@ class Search:
         log_client: str | None,
         log_max_rows: int,
         rdb: sqlite3.Connection | None,
+        pool_out: list[Result] | None = None,
     ) -> SearchOutcome:
         """The retrieval pipeline behind :meth:`search_with_status`.
 
@@ -575,6 +564,10 @@ class Search:
         )
         if rerank_top_n is not None and rerank_top_n > 0 and results:
             results = self._apply_rerank(query, results, top_n=rerank_top_n)
+        if pool_out is not None:
+            # ADR 0044: the shadow reranker's candidate pool is what this
+            # search already materialized, before MMR diversifies/truncates.
+            pool_out.extend(results)
         if mmr_lambda is not None and query_embedding is not None:
             results = mmr_rerank(
                 results,

@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS shadow_runs (
     n_candidates INTEGER,
     excerpt_budget INTEGER,
     request_bytes INTEGER,
-    pool_search_ms REAL,
+    wait_ms REAL,
     prep_ms REAL,
     api_ms REAL,
     cost_usd REAL NOT NULL DEFAULT 0,
@@ -374,6 +374,8 @@ class ShadowSettings:
     skip_types: list[str] = field(default_factory=lambda: ["__watchdog__"])
     skip_sensitive_queries: bool = True
     queue_size: int = 8
+    idle_wait_seconds: float = 15.0
+    """How long a job waits for in-process searches to finish before prep."""
 
 
 @dataclass
@@ -382,8 +384,9 @@ class _Job:
     query: str
     limit: int
     served: list[Any]
+    candidates: list[Any]
     degraded: bool
-    run_pool: Callable[[], Any]
+    busy: Callable[[], int] = lambda: 0
 
 
 def _body_hash(body: str) -> str:
@@ -426,17 +429,24 @@ class JevShadow:
         client: str,
         query: str,
         limit: int,
-        types: Sequence[str] | None,
         served: Sequence[Any],
+        candidates: Sequence[Any],
         degraded: bool,
-        run_pool: Callable[[], Any],
+        busy: Callable[[], int] = lambda: 0,
     ) -> bool:
-        """Queue a job; never blocks and never raises into the search path."""
+        """Queue a job; never blocks and never raises into the search path.
+
+        Callers check :meth:`wants` first (it samples). ``candidates`` are the
+        search's own materialized hits in rank order; ``busy`` reports how
+        many searches are in flight so the worker can yield to them.
+        """
         try:
-            if not served or not self.wants(query, limit, types):
+            if not served:
                 return False
             self._ensure_worker()
-            self._queue.put_nowait(_Job(client, query, limit, list(served), degraded, run_pool))
+            self._queue.put_nowait(
+                _Job(client, query, limit, list(served), list(candidates), degraded, busy)
+            )
             return True
         except queue.Full:
             self.dropped += 1
@@ -486,13 +496,17 @@ class JevShadow:
             "model": s.model,
         }
         try:
+            # Yield to searches in this process: prep holds the GIL briefly.
             started = time.perf_counter()
-            outcome = job.run_pool()
-            row["pool_search_ms"] = (time.perf_counter() - started) * 1000
-            row["degraded"] = int(job.degraded or bool(getattr(outcome, "degraded", False)))
-            # Pool = wider search then any served hit it missed (pilot order).
+            deadline = time.monotonic() + s.idle_wait_seconds
+            while job.busy() > 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            row["wait_ms"] = (time.perf_counter() - started) * 1000
+            # Pool = served hits, then the search's next-best candidates.
             pool: dict[str, Any] = {}
-            for r in list(outcome.results) + job.served:
+            for r in job.served + job.candidates:
+                if len(pool) >= s.pool_size:
+                    break
                 pool.setdefault(str(r.memory.id), r)
             pool_ids = list(pool)
             row["pool_ids"] = json.dumps(pool_ids)

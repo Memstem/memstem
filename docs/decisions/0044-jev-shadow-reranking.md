@@ -43,13 +43,17 @@ Add an opt-in shadow mode (`search.jev_shadow`, off by default):
    a job is queued to one background daemon thread per process. The served
    result list is never modified; queue-full, filter or setup failures drop
    the job silently, and `Search` guards the submit call.
-2. The worker re-runs the query with `pool_size` (20), appends any served hit
-   the wider search missed (the pilot's pool shape), selects passages, and
-   sends one batched decisions request (2 s timeout, 30 KB cap, 1,600-char
-   starting excerpt budget shrinking by 3/4 to fit) — the pilot's settings.
+2. The pool is the served hits followed by the next-best candidates the
+   same search already materialized before MMR truncation (up to
+   `pool_size`, 20), so **no second search runs**. With MMR on, a limit-10
+   search materializes 50 candidates; without overfetch (MMR off or embedder
+   degraded) the pool is just the served hits. The worker waits (≤ 15 s) until
+   no search is in flight in its process, then selects passages and sends one
+   batched decisions request (2 s timeout, 30 KB cap, 1,600-char starting
+   excerpt budget shrinking by 3/4 to fit) — the pilot's settings.
 3. Each run is appended to `<vault>/_meta/jev-shadow.db` (SQLite WAL, 0600):
    query, served IDs, pool IDs, Jev order and scores, body hashes, timings
-   (pool search, preparation, API), status and cost. The ledger is shared by
+   (idle wait, preparation, API), status and cost. The ledger is shared by
    the daemon and all `memstem mcp` processes; `daily_budget_usd` (0.50) is
    enforced against it, with a 0.002 USD reserve for unknown-cost calls.
 4. Skipped: watchdog probes (`types` containing `__watchdog__`), searches with
@@ -77,8 +81,13 @@ Add an opt-in shadow mode (`search.jev_shadow`, off by default):
 
 ## Consequences
 
-- One extra search (pool) per eligible query and about $0.0004 of Jev spend;
-  at current volume (~55 real searches/day) under $1/month.
+- About $0.0004 of Jev spend per eligible search; at current volume (~55
+  real searches/day) under $1/month. No extra retrieval work.
+- The pool differs from the pilot's (a separate limit-20 MMR search): it is
+  what a served reranker would actually see. The first version re-ran that
+  limit-20 search in the background; an A/B burst test (8 back-to-back
+  searches) measured served median 5.5 s with it vs 4.2–4.8 s without, so
+  it was replaced before the trial started.
 - Query text and redacted passages from real searches go to OpenRouter and
   TypeSafe. Embeddings and hygiene already send memory text to OpenRouter;
   this adds one provider.
