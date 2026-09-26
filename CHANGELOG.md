@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Offline Jev reranking evaluation: frozen candidate sets, evidence-backed blinded labels, grouped development/test splits, paired bootstrap comparisons, latency/cost/fallback reporting, and conservative rollout gates. Includes fictional smoke fixtures and failure-injection tests; does not enable or change production reranking.
+
 ## [0.24.2] - 2026-09-26
 
 Patch release: live ingestion no longer blocks search, and native OpenClaw SQLite polling replays only the sessions that changed.
