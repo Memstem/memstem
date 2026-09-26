@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+import random
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -234,3 +237,57 @@ def test_default_constants() -> None:
     """Sanity-check the public defaults haven't drifted."""
     assert 0.0 < DEFAULT_MMR_LAMBDA < 1.0
     assert DEFAULT_MMR_K >= 1
+
+
+# ─── fast path equivalence ──────────────────────────────────────────
+
+
+def _reference_mmr(
+    candidates: list[int],
+    query: list[float],
+    lookup: Callable[[int], list[float]],
+    lambda_: float,
+    k: int,
+) -> list[int]:
+    """The original O(n·k²) greedy loop with generator-sum cosine."""
+
+    def cos(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return 0.0 if na == 0.0 or nb == 0.0 else dot / (na * nb)
+
+    picked: list[int] = []
+    remaining = list(candidates)
+    while remaining and len(picked) < k:
+        best, best_score = remaining[0], float("-inf")
+        for c in remaining:
+            red = max((cos(lookup(c), lookup(p)) for p in picked), default=0.0)
+            score = lambda_ * cos(query, lookup(c)) - (1 - lambda_) * red
+            if score > best_score:
+                best, best_score = c, score
+        picked.append(best)
+        remaining.remove(best)
+    return picked
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_matches_reference_greedy_mmr(seed: int) -> None:
+    rng = random.Random(seed)
+    dims = 64
+    vectors = {i: [rng.gauss(0, 1) for _ in range(dims)] for i in range(40)}
+    # Near-duplicates make redundancy decisive.
+    for i in range(0, 40, 5):
+        vectors[i + 1] = [x + rng.gauss(0, 0.05) for x in vectors[i]]
+    query = [rng.gauss(0, 1) for _ in range(dims)]
+    candidates = list(range(40))
+    for lam in (0.3, 0.5, 0.7):
+        expected = _reference_mmr(candidates, query, vectors.__getitem__, lam, 10)
+        assert mmr_rerank(candidates, query, vectors.__getitem__, lambda_=lam, k=10) == expected
+
+
+def test_fallback_dot_matches_sumprod() -> None:
+    from memstem.core import mmr
+
+    a, b = [1.5, -2.0, 3.25], [0.5, 4.0, -1.0]
+    assert mmr._dot_fallback(a, b) == pytest.approx(0.75 - 8.0 - 3.25)

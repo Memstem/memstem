@@ -25,6 +25,7 @@ the index layer.
 from __future__ import annotations
 
 import math
+import operator
 from collections.abc import Callable, Sequence
 from typing import TypeVar
 
@@ -43,6 +44,16 @@ cycle against ``core.search.Result``; callers pass any item type and
 an embedding-lookup callable that knows how to fetch its embedding."""
 
 
+def _dot_fallback(a: Sequence[float], b: Sequence[float]) -> float:
+    return float(sum(map(operator.mul, a, b)))
+
+
+# ``math.sumprod`` (Python 3.12+) runs the dot product in C: ~20x faster
+# than a generator sum on 4096-dim embeddings, which made MMR ~1 s of a
+# ~4 s search. Python 3.11 keeps the pure-Python path.
+_dot: Callable[[Sequence[float], Sequence[float]], float] = getattr(math, "sumprod", _dot_fallback)
+
+
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     """Return cosine similarity in ``[-1, 1]``; ``0.0`` for any degenerate input.
 
@@ -52,12 +63,11 @@ def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     """
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(ai * bi for ai, bi in zip(a, b, strict=True))
-    na = math.sqrt(sum(ai * ai for ai in a))
-    nb = math.sqrt(sum(bi * bi for bi in b))
+    na = math.sqrt(_dot(a, a))
+    nb = math.sqrt(_dot(b, b))
     if na == 0.0 or nb == 0.0:
         return 0.0
-    return dot / (na * nb)
+    return _dot(a, b) / (na * nb)
 
 
 def mmr_rerank(
@@ -123,28 +133,34 @@ def mmr_rerank(
     # `id()` is a hash-equivalent key that doesn't require T to be
     # hashable (Result and Memory dataclasses aren't, by default).
     embeddings: dict[int, list[float]] = {}
+    norms: dict[int, float] = {}
     query_sim: dict[int, float] = {}
     for c in with_emb:
         idx = next(i for i, x in enumerate(candidates) if x is c)
         emb = embeddings_by_index[idx]
         embeddings[id(c)] = emb
+        norms[id(c)] = math.sqrt(_dot(emb, emb))
         query_sim[id(c)] = cosine_similarity(query_embedding, emb)
 
-    # Greedy MMR selection.
+    def pair_sim(a: T, b: T) -> float:
+        # cosine_similarity with the per-candidate norms computed once.
+        na, nb = norms[id(a)], norms[id(b)]
+        if na == 0.0 or nb == 0.0:
+            return 0.0
+        return _dot(embeddings[id(a)], embeddings[id(b)]) / (na * nb)
+
+    # Greedy MMR selection. ``redundancy[c]`` is max sim(c, picked), kept
+    # up to date with only the newest pick: O(n·k) similarities, not O(n·k²).
     picked: list[T] = []
     remaining: list[T] = list(with_emb)
+    redundancy: dict[int, float] = {id(c): float("-inf") for c in remaining}
     while remaining and len(picked) < k:
         best: T | None = None
         best_score = float("-inf")
         for c in remaining:
             relevance = query_sim[id(c)]
-            if not picked:
-                redundancy = 0.0
-            else:
-                redundancy = max(
-                    cosine_similarity(embeddings[id(c)], embeddings[id(p)]) for p in picked
-                )
-            mmr_score = lambda_clamped * relevance - (1.0 - lambda_clamped) * redundancy
+            penalty = redundancy[id(c)] if picked else 0.0
+            mmr_score = lambda_clamped * relevance - (1.0 - lambda_clamped) * penalty
             if mmr_score > best_score:
                 best_score = mmr_score
                 best = c
@@ -153,6 +169,10 @@ def mmr_rerank(
         assert best is not None
         picked.append(best)
         remaining.remove(best)
+        for c in remaining:
+            sim = pair_sim(c, best)
+            if sim > redundancy[id(c)]:
+                redundancy[id(c)] = sim
 
     # No-embedding candidates fill the remaining slots in original order.
     return (picked + without_emb)[:k]
