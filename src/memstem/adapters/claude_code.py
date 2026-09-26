@@ -94,6 +94,21 @@ def _encode_cwd(cwd: str) -> str:
     return cwd.replace("/", "-")
 
 
+def is_subagent_transcript(path: Path | str) -> bool:
+    """True for a subagent / workflow-agent transcript (ADR 0046).
+
+    Claude Code writes each subagent's transcript under
+    ``<session>/subagents/`` (workflow agents under
+    ``<session>/subagents/workflows/<wf>/``). Their entries carry the
+    *parent's* ``sessionId``, so ingesting them mapped every subagent onto
+    the parent's ``sessions/<id>.md`` and each re-emit displaced the other
+    record — deleting its vectors and overwriting its markdown. The parent
+    transcript already holds each subagent's final report, so they are
+    skipped. The older workflow layout (``<encoded-cwd>/wf_<id>/``) too.
+    """
+    return any(part == "subagents" or part.startswith("wf_") for part in Path(path).parts)
+
+
 def _bucket_dir(path: Path) -> str:
     """Return the encoded-launch-cwd directory for a session file.
 
@@ -219,6 +234,7 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
     session_id: str | None = None
     first_timestamp: str | None = None
     last_timestamp: str | None = None
+    sidechain: bool | None = None
     cwd_counts: dict[str, int] = {}
     cwd_last: dict[str, int] = {}
 
@@ -246,6 +262,8 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
         sid = entry.get("sessionId")
         if isinstance(sid, str) and session_id is None:
             session_id = sid
+        if sidechain is None and isinstance(entry.get("isSidechain"), bool):
+            sidechain = entry["isSidechain"]
 
         entry_type = entry.get("type")
         if entry_type == "ai-title":
@@ -273,6 +291,7 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
 
     return {
         "session_id": session_id,
+        "sidechain": bool(sidechain),
         "title": title,
         "body": "\n\n".join(turns),
         "first_timestamp": first_timestamp,
@@ -284,8 +303,10 @@ def _parse_session_file(path: Path) -> dict[str, Any] | None:
 
 
 def _session_to_record(path: Path, source_name: str = "claude-code") -> MemoryRecord | None:
+    if is_subagent_transcript(path):
+        return None
     parsed = _parse_session_file(path)
-    if parsed is None:
+    if parsed is None or parsed["sidechain"]:
         return None
     body = parsed["body"]
     if not isinstance(body, str) or not body.strip():
@@ -323,7 +344,7 @@ def _iter_jsonl_files(root: Path) -> Iterator[Path]:
             yield root
         return
     for path in sorted(root.rglob("*.jsonl")):
-        if path.is_file():
+        if path.is_file() and not is_subagent_transcript(path.relative_to(root)):
             yield path
 
 
@@ -352,7 +373,7 @@ class _EventHandler(FileSystemEventHandler):
 
     def _enqueue(self, src: str) -> None:
         path = Path(src)
-        if path.suffix not in self._suffixes:
+        if path.suffix not in self._suffixes or is_subagent_transcript(path):
             return
         if self._debounce_seconds <= 0:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, path)

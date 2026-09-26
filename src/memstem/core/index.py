@@ -465,6 +465,14 @@ class VectorReusePlan:
         return [i for i in range(n_chunks) if i not in self.unchanged and i not in self.copied]
 
 
+#: ``vec_chunk_hashes`` row (chunk_index -1) recording which body the chunk
+#: hashes describe — ``"body:" + embed_state.body_hash`` at write time.
+#: Code that rewrites vectors without maintaining the hashes (0.24.x after a
+#: rollback) updates ``embed_state`` but not this row, so reuse switches
+#: itself off instead of trusting stale hashes (ADR 0045 addendum).
+_HASHES_OWNER_INDEX = -1
+
+
 def _chunk_index_of(chunk_id: str) -> int | None:
     try:
         return int(chunk_id.rsplit(":", 1)[1])
@@ -1027,7 +1035,8 @@ class Index:
             return {
                 int(r[0]): str(r[1])
                 for r in self.db.execute(
-                    "SELECT chunk_index, chunk_hash FROM vec_chunk_hashes WHERE memory_id = ?",
+                    "SELECT chunk_index, chunk_hash FROM vec_chunk_hashes "
+                    "WHERE memory_id = ? AND chunk_index >= 0",
                     (memory_id,),
                 )
             }
@@ -1045,7 +1054,8 @@ class Index:
         """
         with self._lock:
             row = self.db.execute(
-                "SELECT embed_signature FROM embed_state WHERE memory_id = ?", (memory_id,)
+                "SELECT embed_signature, body_hash FROM embed_state WHERE memory_id = ?",
+                (memory_id,),
             ).fetchone()
             if row is None or row[0] != embed_signature:
                 return VectorReusePlan()
@@ -1061,7 +1071,7 @@ class Index:
                 for c in self._vec_chunk_ids(memory_id)
                 if (idx := _chunk_index_of(c)) is not None
             }
-        if not stored:
+        if stored.pop(_HASHES_OWNER_INDEX, None) != f"body:{row[1]}" or not stored:
             return VectorReusePlan()
         by_hash: dict[str, int] = {}
         for idx, h in sorted(stored.items()):
@@ -1100,6 +1110,7 @@ class Index:
         hashes: list[str],
         vectors: dict[int, list[float] | bytes],
         unchanged: frozenset[int] | set[int] = frozenset(),
+        body_hash: str | None = None,
     ) -> tuple[int, int, int]:
         """Write a re-embed in place (ADR 0045); returns (updated, inserted, deleted).
 
@@ -1107,7 +1118,9 @@ class Index:
         row and stored hash must still match — else :class:`StaleVectorPlanError`),
         otherwise ``vectors[i]`` updates the existing row in place (vec0
         reuses the slot) or is inserted. Rows past the new chunk count are
-        deleted. The record's chunk hashes are replaced by ``hashes``.
+        deleted. The record's chunk hashes are replaced by ``hashes``, tagged
+        with ``body_hash`` (the body :meth:`record_embed_state` will record);
+        without it the hashes are never reused.
         """
         n = len(hashes)
         missing = [i for i in range(n) if i not in unchanged and i not in vectors]
@@ -1176,9 +1189,12 @@ class Index:
             drop = [c for idx, c in existing.items() if idx >= n] + stray
             self.db.executemany("DELETE FROM memories_vec WHERE chunk_id = ?", [(c,) for c in drop])
             self.db.execute("DELETE FROM vec_chunk_hashes WHERE memory_id = ?", (memory_id,))
+            rows = [(memory_id, i, h) for i, h in enumerate(hashes)]
+            if body_hash is not None:
+                rows.append((memory_id, _HASHES_OWNER_INDEX, f"body:{body_hash}"))
             self.db.executemany(
                 "INSERT INTO vec_chunk_hashes(memory_id, chunk_index, chunk_hash) VALUES (?, ?, ?)",
-                [(memory_id, i, h) for i, h in enumerate(hashes)],
+                rows,
             )
         return updated, inserted, len(drop)
 

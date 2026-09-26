@@ -324,3 +324,34 @@ def test_compaction_keeps_hashes_valid(vault: Vault, index: Index) -> None:
     h.write(paras)
     assert h.embed() == [paras[3].strip()]
     h.assert_vectors_match(paras)
+
+
+def test_hashes_are_not_trusted_after_vectors_change_behind_them(
+    vault: Vault, index: Index
+) -> None:
+    # A rollback to 0.24.x rewrites vectors and embed_state without touching
+    # vec_chunk_hashes; on re-upgrade those hashes must not be reused.
+    h = _Harness(vault, index)
+    paras = [_para(f"p{i}") for i in range(3)]
+    h.write(paras)
+    h.embed()
+    hashes = list(index.chunk_hashes(h.memory_id).values())
+    assert index.plan_vector_reuse(h.memory_id, hashes, h.signature).unchanged
+    index.record_embed_state(h.memory_id, "some-other-body", h.signature)
+    assert index.plan_vector_reuse(h.memory_id, hashes, h.signature) == VectorReusePlan()
+
+
+def test_hashes_without_owner_marker_are_not_reused(vault: Vault, index: Index) -> None:
+    # 0.25.0 wrote hashes without the owner row: one full re-embed, then reuse.
+    h = _Harness(vault, index)
+    paras = [_para(f"p{i}") for i in range(2)]
+    h.write(paras)
+    h.embed()
+    with index.lock, index.db:
+        index.db.execute("DELETE FROM vec_chunk_hashes WHERE chunk_index < 0")
+    paras.append(_para("p2"))
+    h.write(paras)
+    assert len(h.embed()) == 3
+    paras.append(_para("p3"))
+    h.write(paras)
+    assert h.embed() == [paras[3].strip()]

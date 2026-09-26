@@ -79,3 +79,14 @@ every re-embed and every record delete.
 - A dimension change (`memstem reindex`) clears the hashes along with
   `embed_state`.
 - One extra small table: roughly 100 bytes per chunk (~25 MB at 280K chunks).
+
+## Addendum (2026-09-26, 0.25.1): hashes are tied to the body they describe
+
+0.25.0 needed a manual `DELETE FROM vec_chunk_hashes` before re-upgrading
+after a rollback. 0.24.x rewrites vectors and `embed_state` but leaves the
+hashes in place, so they would describe vectors that no longer exist.
+`apply_vectors` now also writes a row at `chunk_index = -1` holding
+`"body:" + <body hash>`, and `plan_vector_reuse` reuses nothing unless that
+row equals the record's current `embed_state.body_hash`. Hashes written by
+0.25.0 have no such row, so each of those records embeds in full once, then
+reuses normally.
