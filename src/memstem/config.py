@@ -187,6 +187,38 @@ class RerankerConfig(BaseModel):
     value but still require one to be present."""
 
 
+class JevShadowConfig(BaseModel):
+    """Shadow-mode Jev reranking (ADR 0044).
+
+    When enabled, each HTTP/MCP search is re-scored by Jev in a background
+    thread *after* its results are returned, and the would-be order is
+    logged to ``_meta/jev-shadow.db``. Served results never change. The
+    defaults reproduce the 2026-09-26 offline pilot (ADR 0043).
+    """
+
+    enabled: bool = False
+    model: str = "typesafe/jev-1.13"
+    endpoint: str = "https://openrouter.ai/api/alpha/decisions"
+    api_key_env: str = "OPENROUTER_API_KEY"
+    """Env var holding the OpenRouter key; falls back to
+    ``secrets.yaml[openrouter]`` (``memstem auth``) for MCP processes that
+    don't inherit the daemon's environment."""
+    pool_size: int = Field(default=20, ge=5, le=40)
+    """Wider search re-run in the background; served hits it missed are
+    appended, so Jev sees the same pool shape as the pilot."""
+    excerpt_chars: int = Field(default=1600, ge=100)
+    request_byte_limit: int = Field(default=30_000, ge=1_000)
+    timeout_seconds: float = Field(default=2.0, gt=0)
+    daily_budget_usd: float = Field(default=0.50, ge=0)
+    """Hard cap on Jev spend per UTC day across all processes."""
+    sample_rate: float = Field(default=1.0, ge=0, le=1)
+    min_limit: int = Field(default=3, ge=1)
+    """Skip searches asking for fewer hits (liveness probes, lookups)."""
+    skip_types: list[str] = Field(default_factory=lambda: ["__watchdog__"])
+    skip_sensitive_queries: bool = True
+    """Don't send candidates for credential-retrieval queries off-host."""
+
+
 class SearchConfig(BaseModel):
     """Hybrid search configuration."""
 
@@ -238,6 +270,9 @@ class SearchConfig(BaseModel):
     """Reranker backend (ADR 0017). Only consulted when
     ``reranker.enabled`` is ``True``; otherwise the search path stays on
     the NoOp passthrough regardless of ``rerank_top_n``."""
+
+    jev_shadow: JevShadowConfig = Field(default_factory=JevShadowConfig)
+    """Shadow-mode Jev reranking (ADR 0044). Never changes served results."""
 
 
 class HygieneConfig(BaseModel):

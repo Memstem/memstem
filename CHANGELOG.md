@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Shadow-mode Jev reranking (ADR 0044), off by default. With `search.jev_shadow.enabled: true`, each HTTP/MCP search is re-scored by Jev (`typesafe/jev-1.13` via OpenRouter) in a background thread after its results are returned, and the order Jev would have served is logged to `_meta/jev-shadow.db` with timings and cost. Served results never change. Includes a shared daily budget, redaction of passages before they leave the host, watchdog/credential-query skips, and `scripts/jev_shadow_report.py`.
+
 ## [0.24.2] - 2026-09-26
 
 Patch release: live ingestion no longer blocks search, and native OpenClaw SQLite polling replays only the sessions that changed.

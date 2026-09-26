@@ -47,6 +47,7 @@ from memstem.core.embeddings import (
     embed_for,
 )
 from memstem.core.index import Index
+from memstem.core.jev_shadow import build_jev_shadow
 from memstem.core.pipeline import Pipeline
 from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.search import Search
@@ -877,6 +878,7 @@ def mcp(
         build_index=lambda: _open_index(cfg),
         build_embedder=lambda: _maybe_embedder(cfg),
         build_reranker=lambda: _maybe_reranker(cfg),
+        build_shadow=lambda: build_jev_shadow(cfg.search.jev_shadow, cfg.vault_path),
     )
     server = build_server(
         resources=resources,
