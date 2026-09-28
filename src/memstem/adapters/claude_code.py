@@ -416,11 +416,17 @@ class ClaudeCodeAdapter(Adapter):
     async def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         for root in paths:
             for path in _iter_jsonl_files(root):
-                record = _session_to_record(path, self.name)
+                # A transcript can be many MB; parsing it is blocking file
+                # I/O + CPU (json.loads per line). Run it in a worker thread
+                # so a long reconcile doesn't pin the loop and stall
+                # /search for the duration of one file's parse (issue #142
+                # follow-up — the per-record pipeline write was already
+                # offloaded, but this read+parse still ran inline).
+                record = await asyncio.to_thread(_session_to_record, path, self.name)
                 if record is not None:
                     yield record
         for extra in self.extra_files:
-            instr = _instructions_record(extra, self.name)
+            instr = await asyncio.to_thread(_instructions_record, extra, self.name)
             if instr is not None:
                 yield instr
 
@@ -450,13 +456,14 @@ class ClaudeCodeAdapter(Adapter):
                 resolved = changed.resolve()
 
                 if resolved.suffix == ".jsonl":
-                    record = _session_to_record(resolved, self.name)
+                    # Off the loop for the same reason as reconcile() above.
+                    record = await asyncio.to_thread(_session_to_record, resolved, self.name)
                     if record is not None:
                         yield record
                     continue
 
                 if resolved in self.extra_files:
-                    instr = _instructions_record(resolved, self.name)
+                    instr = await asyncio.to_thread(_instructions_record, resolved, self.name)
                     if instr is not None:
                         yield instr
         finally:

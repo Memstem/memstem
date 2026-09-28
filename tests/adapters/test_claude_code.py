@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
+import memstem.adapters.claude_code as claude_code_adapter
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.claude_code import (
     ClaudeCodeAdapter,
@@ -551,3 +553,86 @@ class TestExtraFiles:
             pass
         await watcher.aclose()
         assert adapter.watcher_alive() is None
+
+
+class TestParsesOffEventLoop:
+    """A transcript can be many MB; parsing it inline on the event loop
+    blocked the daemon's HTTP/MCP server for the duration of the parse (a
+    single reconcile parse was observed holding the loop for 18.5s, per a
+    py-spy capture on brads-server). reconcile() and watch() now run the
+    per-file parse in a worker thread via ``asyncio.to_thread`` — these
+    tests assert the parse function actually executes off the loop's
+    thread, not just that records still come out correctly (already
+    covered by TestReconcile/TestWatch above).
+    """
+
+    async def test_reconcile_session_parse_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = claude_code_adapter._session_to_record
+
+        def spy(path: Path, source_name: str = "claude-code") -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(claude_code_adapter, "_session_to_record", spy)
+
+        _write_session(tmp_path / "proj/session.jsonl")
+        records = await _drain(ClaudeCodeAdapter().reconcile([tmp_path]))
+
+        assert len(records) == 1
+        assert seen and all(t is not loop_thread for t in seen)
+
+    async def test_reconcile_instructions_parse_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = claude_code_adapter._instructions_record
+
+        def spy(path: Path, source_name: str = "claude-code") -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(claude_code_adapter, "_instructions_record", spy)
+
+        extra = tmp_path / ".claude" / "CLAUDE.md"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text("# Rules\nbody", encoding="utf-8")
+        adapter = ClaudeCodeAdapter(extra_files=[extra])
+        records = await _drain(adapter.reconcile([]))
+
+        assert len(records) == 1
+        assert seen and all(t is not loop_thread for t in seen)
+
+    async def test_watch_session_parse_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_CLAUDE_CODE_WATCH_DEBOUNCE_SECONDS", "0")
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = claude_code_adapter._session_to_record
+
+        def spy(path: Path, source_name: str = "claude-code") -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(claude_code_adapter, "_session_to_record", spy)
+
+        adapter = ClaudeCodeAdapter()
+        watcher = adapter.watch([tmp_path])
+
+        async def grab_first() -> MemoryRecord:
+            return await watcher.__anext__()
+
+        task = asyncio.create_task(grab_first())
+        await asyncio.sleep(0.1)
+        _write_session(tmp_path / "proj/new.jsonl")
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await watcher.aclose()
+
+        assert seen and all(t is not loop_thread for t in seen)
