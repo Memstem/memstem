@@ -460,19 +460,23 @@ class CodexAdapter(Adapter):
 
         if self.sessions_root is not None:
             for path in _iter_session_files(self.sessions_root):
-                record = _session_to_record(path, self.name)
+                # A rollout can be many MB; parsing it is blocking file I/O
+                # + CPU. Run it in a worker thread so it doesn't stall
+                # /search for the duration of one file's parse (same class
+                # of stall as issue #142, on the reconcile read path).
+                record = await asyncio.to_thread(_session_to_record, path, self.name)
                 if record is not None:
                     yield record
 
         if self.skills_root is not None:
             for path in _iter_skill_files(self.skills_root):
-                record = _markdown_to_record(path, "skill", self.name)
+                record = await asyncio.to_thread(_markdown_to_record, path, "skill", self.name)
                 if record is not None:
                     yield record
 
         if self.memories_root is not None:
             for path in _iter_memory_files(self.memories_root):
-                record = _markdown_to_record(path, "memory", self.name)
+                record = await asyncio.to_thread(_markdown_to_record, path, "memory", self.name)
                 if record is not None:
                     yield record
 
@@ -505,7 +509,7 @@ class CodexAdapter(Adapter):
                     continue
                 resolved = changed.resolve()
 
-                record = self._dispatch(resolved)
+                record = await self._dispatch(resolved)
                 if record is not None:
                     yield record
         finally:
@@ -513,14 +517,18 @@ class CodexAdapter(Adapter):
             observer.stop()
             observer.join()
 
-    def _dispatch(self, path: Path) -> MemoryRecord | None:
-        """Pick the right parser based on which root the path lives under."""
+    async def _dispatch(self, path: Path) -> MemoryRecord | None:
+        """Pick the right parser based on which root the path lives under.
+
+        The parse itself is blocking file I/O + CPU, so it runs in a worker
+        thread (see reconcile() above) rather than inline on the event loop.
+        """
         if (
             self.sessions_root is not None
             and _is_under(path, self.sessions_root)
             and path.suffix == ".jsonl"
         ):
-            return _session_to_record(path, self.name)
+            return await asyncio.to_thread(_session_to_record, path, self.name)
 
         if (
             self.skills_root is not None
@@ -528,14 +536,14 @@ class CodexAdapter(Adapter):
             and path.name == "SKILL.md"
             and _is_user_skill_path(path, self.skills_root)
         ):
-            return _markdown_to_record(path, "skill", self.name)
+            return await asyncio.to_thread(_markdown_to_record, path, "skill", self.name)
 
         if (
             self.memories_root is not None
             and path.parent == self.memories_root
             and path.suffix == ".md"
         ):
-            return _markdown_to_record(path, "memory", self.name)
+            return await asyncio.to_thread(_markdown_to_record, path, "memory", self.name)
 
         return None
 

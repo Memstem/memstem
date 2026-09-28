@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
 from _pytest.monkeypatch import MonkeyPatch
 
+import memstem.adapters.codex as codex_adapter
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.codex import (
     CodexAdapter,
@@ -514,3 +516,63 @@ class TestSubagentRollouts:
         path = _basic_session(tmp_path / "rollout-user.jsonl")
         assert not is_subagent_rollout(path)
         assert not is_subagent_rollout(tmp_path / "missing.jsonl")
+
+
+class TestParsesOffEventLoop:
+    """A rollout can be many MB; parsing it inline on the event loop blocks
+    the daemon's HTTP/MCP server for the duration of the parse (the same
+    class of stall claude_code's adapter had — see its TestParsesOffEventLoop).
+    reconcile() and watch() now run the per-file parse in a worker thread
+    via ``asyncio.to_thread``.
+    """
+
+    async def test_reconcile_session_parse_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = codex_adapter._session_to_record
+
+        def spy(path: Path, source_name: str = "codex") -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(codex_adapter, "_session_to_record", spy)
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _basic_session(sessions / "rollout.jsonl")
+        adapter = CodexAdapter(sessions_root=sessions)
+        records = await _drain(adapter.reconcile([]))
+
+        assert len(records) == 1
+        assert seen and all(t is not loop_thread for t in seen)
+
+    async def test_watch_session_parse_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_CODEX_WATCH_DEBOUNCE_SECONDS", "0")
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = codex_adapter._session_to_record
+
+        def spy(path: Path, source_name: str = "codex") -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(codex_adapter, "_session_to_record", spy)
+
+        sessions = tmp_path / "sessions" / "2026" / "05" / "16"
+        sessions.mkdir(parents=True)
+        adapter = CodexAdapter(sessions_root=tmp_path / "sessions")
+
+        async def collect_one() -> MemoryRecord:
+            async for rec in adapter.watch([]):
+                return rec
+            raise RuntimeError("watch returned without yielding")
+
+        task = asyncio.create_task(collect_one())
+        await asyncio.sleep(0.2)
+        _basic_session(sessions / "rollout-new.jsonl")
+        await asyncio.wait_for(task, timeout=5.0)
+
+        assert seen and all(t is not loop_thread for t in seen)

@@ -707,14 +707,17 @@ class OpenClawAdapter(Adapter):
                     if path in seen:
                         continue
                     seen.add(path)
-                ws_record = _file_to_record(path, self.name)
+                # Reading + frontmatter-parsing a file is blocking; offload
+                # like _poll_external already does, so a big reconcile pass
+                # doesn't stall /search on one file's read (issue #142).
+                ws_record = await asyncio.to_thread(_file_to_record, path, self.name)
                 if ws_record is None:
                     continue
                 ws_record = _apply_daily_scope(ws_record, path, ws)
                 yield _apply_workspace_tags(ws_record, ws.tag, extra_tags)
             for traj_path in _iter_workspace_trajectories(ws):
-                traj_record = _trajectory_to_record(
-                    traj_path, self.name, max_bytes=ws.layout.max_trajectory_bytes
+                traj_record = await asyncio.to_thread(
+                    _trajectory_to_record, traj_path, self.name, ws.layout.max_trajectory_bytes
                 )
                 if traj_record is None:
                     continue
@@ -724,7 +727,7 @@ class OpenClawAdapter(Adapter):
         for shared in self.shared_files:
             if not shared.is_file():
                 continue
-            shared_record = _file_to_record(shared, self.name)
+            shared_record = await asyncio.to_thread(_file_to_record, shared, self.name)
             if shared_record is None:
                 continue
             yield _apply_shared_tag(shared_record)
@@ -821,8 +824,11 @@ class OpenClawAdapter(Adapter):
     async def _records_for_changed_path(
         self, changed: Path, fallback_paths: list[Path]
     ) -> AsyncGenerator[MemoryRecord, None]:
+        # Every branch below reads + parses one file, which is blocking I/O;
+        # offloaded to a worker thread for the same reason as
+        # _reconcile_workspaces above.
         if not self._has_workspace_config:
-            record = _file_to_record(changed, self.name)
+            record = await asyncio.to_thread(_file_to_record, changed, self.name)
             if record is not None:
                 yield record
             return
@@ -830,16 +836,18 @@ class OpenClawAdapter(Adapter):
         for ws in self.workspaces:
             interesting, extra_tags = _classify_workspace_path(changed, ws)
             if interesting:
-                record = _file_to_record(
-                    changed.resolve() if changed.name == "SKILL.md" else changed, self.name
+                record = await asyncio.to_thread(
+                    _file_to_record,
+                    changed.resolve() if changed.name == "SKILL.md" else changed,
+                    self.name,
                 )
                 if record is not None:
                     record = _apply_daily_scope(record, changed, ws)
                     yield _apply_workspace_tags(record, ws.tag, extra_tags)
                 return
             if _classify_trajectory_path(changed, ws):
-                traj_record = _trajectory_to_record(
-                    changed, self.name, max_bytes=ws.layout.max_trajectory_bytes
+                traj_record = await asyncio.to_thread(
+                    _trajectory_to_record, changed, self.name, ws.layout.max_trajectory_bytes
                 )
                 if traj_record is not None:
                     yield _apply_workspace_tags(traj_record, ws.tag, [])
@@ -848,7 +856,7 @@ class OpenClawAdapter(Adapter):
         for shared in self.shared_files:
             try:
                 if changed.resolve() == shared.resolve():
-                    record = _file_to_record(changed, self.name)
+                    record = await asyncio.to_thread(_file_to_record, changed, self.name)
                     if record is not None:
                         yield _apply_shared_tag(record)
                     return

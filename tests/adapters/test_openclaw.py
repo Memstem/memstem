@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import memstem.adapters.openclaw as openclaw_adapter
 from memstem.adapters.base import MemoryRecord
 from memstem.adapters.openclaw import (
     OpenClawAdapter,
@@ -968,3 +970,66 @@ class TestTrajectorySizeCap:
         from memstem.config import OpenClawLayout
 
         assert OpenClawLayout().max_trajectory_bytes == 64 * 1024 * 1024
+
+
+class TestParsesOffEventLoop:
+    """Reading + frontmatter-parsing a file is blocking; a big workspace
+    scan running it inline on the event loop would stall the daemon's
+    HTTP/MCP server the same way claude_code's transcript parse did (see
+    that adapter's TestParsesOffEventLoop). reconcile() and watch() now
+    run each file's read in a worker thread via ``asyncio.to_thread``.
+    """
+
+    async def test_reconcile_file_to_record_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = openclaw_adapter._file_to_record
+
+        def spy(path: Path, source_name: str) -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(openclaw_adapter, "_file_to_record", spy)
+
+        ari_root = tmp_path / "ari"
+        _write(ari_root / "MEMORY.md", "# Core")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        records = await _drain(adapter.reconcile([]))
+
+        assert len(records) == 1
+        assert seen and all(t is not loop_thread for t in seen)
+
+    async def test_watch_file_to_record_runs_in_worker_thread(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_WATCH_DEBOUNCE_SECONDS", "0")
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+        original = openclaw_adapter._file_to_record
+
+        def spy(path: Path, source_name: str) -> MemoryRecord | None:
+            seen.append(threading.current_thread())
+            return original(path, source_name)
+
+        monkeypatch.setattr(openclaw_adapter, "_file_to_record", spy)
+
+        ari_root = tmp_path / "ari"
+        ari_root.mkdir()
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        watcher = adapter.watch([])
+
+        async def grab_first() -> MemoryRecord:
+            return await watcher.__anext__()
+
+        task = asyncio.create_task(grab_first())
+        await asyncio.sleep(0.1)
+        _write(ari_root / "MEMORY.md", "# Core\n\nbody")
+        try:
+            record = await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await watcher.aclose()
+
+        assert record.ref.endswith("MEMORY.md")
+        assert seen and all(t is not loop_thread for t in seen)

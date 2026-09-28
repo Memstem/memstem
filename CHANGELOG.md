@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reconcile no longer blocks `/search` while parsing a transcript. The Claude Code, Codex, and OpenClaw adapters' `reconcile()` and `watch()` async generators read and JSON/frontmatter-parsed each file inline on the event loop; a py-spy capture on brads-server caught one such parse holding the loop (and `/search`) for 18.5s. `_reconcile_into_pipeline` already offloaded the per-record pipeline write via `asyncio.to_thread` (issue #142 / 0.24.2), but the read+parse feeding it did not. Each adapter's per-file parse now runs in a worker thread the same way.
+
 ## [0.25.2] - 2026-09-26
 
 Patch release: Codex subagent threads no longer overwrite their parent session (same class of churn 0.25.1 fixed for Claude Code).
