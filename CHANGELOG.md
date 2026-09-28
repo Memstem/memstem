@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.3] - 2026-09-28
+
+Patch release: adapter file parsing moved off the event loop, so a reconcile pass no longer stalls `/search` (or delays `/health` after a restart).
+
 ### Fixed
 
 - Reconcile no longer blocks `/search` while parsing a transcript. The Claude Code, Codex, and OpenClaw adapters' `reconcile()` and `watch()` async generators read and JSON/frontmatter-parsed each file inline on the event loop; a py-spy capture on brads-server caught one such parse holding the loop (and `/search`) for 18.5s. `_reconcile_into_pipeline` already offloaded the per-record pipeline write via `asyncio.to_thread` (issue #142 / 0.24.2), but the read+parse feeding it did not. Each adapter's per-file parse now runs in a worker thread the same way.
