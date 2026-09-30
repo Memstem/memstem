@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-30
+
+Minor release: Jev reranking can be served (opt-in, ADR 0047) after a 60-query blind-labelled shadow evaluation; timeout and score-validation changes cut the shadow fallback rate.
+
 ### Added
 
 - Jev reranking can now be served, not just shadowed (ADR 0047). `search.jev_shadow.serve: true` runs the Jev call inside the search and returns its order (top `limit` of the served hits plus the search's next-best candidates); any failure, timeout, budget stop or filtered query returns the normal order unchanged. Runs are logged to `_meta/jev-shadow.db` with a new `mode` column (`shadow`/`served`, migrated in place), so `scripts/jev_shadow_report.py` keeps working. Decided on a 60-query blind-labelled sample of the shadow ledger: nDCG@10 0.49 → 0.82, better on 54, worse on 3, no harmful top result.
