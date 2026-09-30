@@ -22,7 +22,7 @@ import logging
 import re
 import sqlite3
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from memstem.core.embeddings import Embedder
@@ -422,6 +422,19 @@ class Search:
             pool_out=pool,
         )
         if self.shadow is not None and shadow_client is not None and pool is not None:
+            if self.shadow.settings.serve:
+                # ADR 0047: inline rerank; None (any failure) keeps the normal order.
+                reordered = self.shadow.serve(
+                    client=shadow_client,
+                    query=query,
+                    limit=limit,
+                    served=outcome.results,
+                    candidates=pool,
+                    degraded=outcome.degraded,
+                )
+                if reordered is not None:
+                    outcome = replace(outcome, results=reordered)
+                return outcome
             try:
                 self.shadow.submit(
                     client=shadow_client,

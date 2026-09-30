@@ -55,11 +55,26 @@ def main() -> None:
         k = min(3, len(served))
         overlap3.append(len(set(jev[:k]) & set(served[:k])) / k if k else 0.0)
 
+    served_rows = [r for r in rows if r.get("mode") == "served"]
     summary = {
         "ledger": str(path),
         "since": args.since,
         "runs": len(rows),
         "days": sorted({r["day"] for r in rows}),
+        "mode": dict(Counter(r.get("mode") or "shadow" for r in rows)),
+        "served_mode": {
+            # ADR 0047: rows where Jev's order actually reached the caller.
+            "runs": len(served_rows),
+            "status": dict(Counter(r["status"] for r in served_rows)),
+            "fallback_pct": (
+                round(100 * sum(r["status"] != "ok" for r in served_rows) / len(served_rows), 2)
+                if served_rows
+                else None
+            ),
+            "added_latency_prep_plus_api": fmt_ms(
+                [(r["prep_ms"] or 0) + (r["api_ms"] or 0) for r in served_rows if r["prep_ms"]]
+            ),
+        },
         "status": dict(Counter(r["status"] for r in rows)),
         "clients": dict(Counter(r["client"] for r in rows)),
         "errors": dict(Counter((r["error"] or "").split(":")[0] for r in rows if r["error"])),

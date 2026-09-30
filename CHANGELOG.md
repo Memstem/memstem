@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Jev reranking can now be served, not just shadowed (ADR 0047). `search.jev_shadow.serve: true` runs the Jev call inside the search and returns its order (top `limit` of the served hits plus the search's next-best candidates); any failure, timeout, budget stop or filtered query returns the normal order unchanged. Runs are logged to `_meta/jev-shadow.db` with a new `mode` column (`shadow`/`served`, migrated in place), so `scripts/jev_shadow_report.py` keeps working. Decided on a 60-query blind-labelled sample of the shadow ledger: nDCG@10 0.49 → 0.82, better on 54, worse on 3, no harmful top result.
+
+### Changed
+
+- Jev `timeout_seconds` default 2.0 → 3.0, and a score that disagrees with its probability distribution is used (logged at debug) instead of failing the batch. Together these were 8 of 348 shadow runs (2.3%).
+
 ## [0.25.3] - 2026-09-28
 
 Patch release: adapter file parsing moved off the event loop, so a reconcile pass no longer stalls `/search` (or delays `/health` after a restart).

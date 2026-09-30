@@ -193,7 +193,7 @@ class TestParseScores:
         [
             lambda r: r["answers"].pop("d1"),
             lambda r: r["answers"]["d0"].update(score=True),
-            lambda r: r["answers"]["d0"].update(score=2.5),
+            lambda r: r["answers"]["d0"].update(score=3.5),
             lambda r: r["answers"]["d0"].update(type="classify"),
             lambda r: r["answers"]["d0"]["probabilities"].pop("3"),
             lambda r: r["answers"]["d0"].update(confidence=1.5),
@@ -207,6 +207,49 @@ class TestParseScores:
 
     def test_rerank_order_ties_keep_pool_order(self) -> None:
         assert rerank_order(["a", "b", "c"], {"a": 0.5, "b": 1.0, "c": 0.5}) == ["b", "a", "c"]
+
+    def test_score_probability_disagreement_is_tolerated(self) -> None:
+        # ADR 0047: a valid in-range score whose probabilities point elsewhere
+        # is used rather than failing the whole batch.
+        response = {"answers": {"d0": _answer(3.0), "d1": _answer(1.5)}}
+        response["answers"]["d0"]["score"] = 2.5
+        assert parse_scores(response, ["a", "b"])["a"] == pytest.approx(2.5 / 3)
+
+
+class TestShadowStoreMigration:
+    def test_adds_mode_column_to_old_ledger(self, tmp_path: Path) -> None:
+        path = tmp_path / "_meta" / "jev-shadow.db"
+        path.parent.mkdir()
+        db = sqlite3.connect(path)
+        db.executescript(
+            "CREATE TABLE shadow_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+            " day TEXT NOT NULL, client TEXT NOT NULL, query TEXT NOT NULL,"
+            " served_limit INTEGER NOT NULL, status TEXT NOT NULL, served_ids TEXT NOT NULL,"
+            " cost_usd REAL NOT NULL DEFAULT 0, cost_known INTEGER NOT NULL DEFAULT 1);"
+            "INSERT INTO shadow_runs (ts, day, client, query, served_limit, status, served_ids)"
+            " VALUES ('t', '2026-09-26', 'mcp', 'q', 10, 'ok', '[]');"
+        )
+        db.commit()
+        db.close()
+        store = ShadowStore(path)
+        db = sqlite3.connect(store.path)
+        assert db.execute("SELECT mode FROM shadow_runs").fetchone() == ("shadow",)
+        store.record(
+            {
+                "ts": "t",
+                "day": "d",
+                "client": "http",
+                "query": "q",
+                "served_limit": 5,
+                "status": "ok",
+                "served_ids": "[]",
+                "mode": "served",
+            }
+        )
+        assert [r[0] for r in db.execute("SELECT mode FROM shadow_runs ORDER BY id")] == [
+            "shadow",
+            "served",
+        ]
 
 
 def _transport(handler: Any) -> httpx.Client:
@@ -356,6 +399,56 @@ class TestJevShadowRun:
         assert shadow.dropped == 1
 
 
+class TestJevServe:
+    """ADR 0047: inline rerank returns Jev's order, or None on any failure."""
+
+    def _args(self) -> dict[str, Any]:
+        served = [_Hit(_memory(f"served {i}", f"plain body {i}")) for i in range(3)]
+        winner = _Hit(_memory("pool winner", "this is the winner body"))
+        return {
+            "client": "http",
+            "query": "which is the winner",
+            "limit": 3,
+            "served": served,
+            "candidates": [served[0], served[1], winner, served[2]],
+            "degraded": False,
+        }
+
+    def test_returns_jev_order_truncated_to_limit(self, tmp_path: Path) -> None:
+        shadow = _shadow(tmp_path, _ok_handler([]), serve=True)
+        a = self._args()
+        out = shadow.serve(**a)
+        assert out is not None and len(out) == 3
+        assert out[0].memory.frontmatter.title == "pool winner"
+        assert [r.memory.id for r in out[1:]] == [r.memory.id for r in a["served"][:2]]
+        (row,) = _rows(shadow)
+        assert row["mode"] == "served" and row["status"] == "ok"
+        assert json.loads(row["served_ids"]) == [str(r.memory.id) for r in a["served"]]
+        assert row["wait_ms"] == 0 or row["wait_ms"] < 50
+
+    def test_timeout_returns_none_and_logs(self, tmp_path: Path) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("slow")
+
+        shadow = _shadow(tmp_path, handler, serve=True)
+        assert shadow.serve(**self._args()) is None
+        (row,) = _rows(shadow)
+        assert row["mode"] == "served" and row["status"] == "error"
+        assert row["error"].startswith("ReadTimeout")
+
+    def test_budget_stop_returns_none(self, tmp_path: Path) -> None:
+        shadow = _shadow(tmp_path, _ok_handler([]), serve=True, daily_budget_usd=0.0)
+        assert shadow.serve(**self._args()) is None
+        (row,) = _rows(shadow)
+        assert row["status"] == "budget_skipped"
+
+    def test_empty_served_returns_none(self, tmp_path: Path) -> None:
+        shadow = _shadow(tmp_path, _ok_handler([]), serve=True)
+        a = self._args()
+        a["served"] = []
+        assert shadow.serve(**a) is None and _rows(shadow) == []
+
+
 class _AliveThread:
     def is_alive(self) -> bool:
         return True
@@ -475,6 +568,47 @@ class TestSearchIntegration:
         search.search_with_status("shadow rerank", limit=5)
         shadow.drain()
         assert _rows(shadow) == []
+
+    def test_serve_mode_returns_jev_order(self, vault: Vault, index: Index, tmp_path: Path) -> None:
+        self._seed(vault, index)
+        params: dict[str, Any] = {"limit": 5, "rerank_top_n": 20}
+        plain = Search(vault=vault, index=index).search_with_status("shadow rerank", **params)
+        # Jev "prefers" the hit the normal order served fourth; it must come first.
+        favourite = plain.results[3].memory.body
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            docs = json.loads(request.content)["state"]["documents"]
+            answers = {k: _answer(3.0 if d["body"] == favourite else 0.0) for k, d in docs.items()}
+            return httpx.Response(200, json={"answers": answers, "usage": {"cost": 0.0004}})
+
+        shadow = _shadow(tmp_path, handler, serve=True)
+        search = Search(vault=vault, index=index, shadow=shadow)
+        out = search.search_with_status("shadow rerank", shadow_client="http", **params)
+        assert len(out.results) == 5
+        assert out.results[0].memory.id == plain.results[3].memory.id
+        assert [r.memory.id for r in out.results[1:4]] == [r.memory.id for r in plain.results[:3]]
+        assert out.degraded == plain.degraded
+        (row,) = _rows(shadow)
+        assert row["mode"] == "served" and row["status"] == "ok"
+        assert json.loads(row["served_ids"]) == [str(r.memory.id) for r in plain.results]
+        assert json.loads(row["jev_order"])[:5] == [str(r.memory.id) for r in out.results]
+
+    def test_serve_mode_failure_keeps_normal_order(
+        self, vault: Vault, index: Index, tmp_path: Path
+    ) -> None:
+        self._seed(vault, index)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "down"})
+
+        params: dict[str, Any] = {"limit": 5, "rerank_top_n": 20}
+        plain = Search(vault=vault, index=index).search_with_status("shadow rerank", **params)
+        shadow = _shadow(tmp_path, handler, serve=True)
+        search = Search(vault=vault, index=index, shadow=shadow)
+        out = search.search_with_status("shadow rerank", shadow_client="mcp", **params)
+        assert [r.memory.id for r in out.results] == [r.memory.id for r in plain.results]
+        (row,) = _rows(shadow)
+        assert row["mode"] == "served" and row["status"] == "error"
 
     def test_shadow_error_never_reaches_caller(
         self, vault: Vault, index: Index, tmp_path: Path

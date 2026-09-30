@@ -197,6 +197,12 @@ class JevShadowConfig(BaseModel):
     """
 
     enabled: bool = False
+    serve: bool = False
+    """ADR 0047: when true, the Jev call runs *inside* the search and its
+    order is what the caller receives (top ``limit`` of the pool). Any
+    failure, timeout, filter or budget stop returns the normal order
+    unchanged. Every run is still logged to the ledger with ``mode``
+    ``served``; ``enabled`` must also be true."""
     model: str = "typesafe/jev-1.13"
     endpoint: str = "https://openrouter.ai/api/alpha/decisions"
     api_key_env: str = "OPENROUTER_API_KEY"
@@ -208,7 +214,8 @@ class JevShadowConfig(BaseModel):
     appended, so Jev sees the same pool shape as the pilot."""
     excerpt_chars: int = Field(default=1600, ge=100)
     request_byte_limit: int = Field(default=30_000, ge=1_000)
-    timeout_seconds: float = Field(default=2.0, gt=0)
+    timeout_seconds: float = Field(default=3.0, gt=0)
+    """Was 2.0 during the shadow trial; 4 of 348 runs hit it (ADR 0047)."""
     daily_budget_usd: float = Field(default=0.50, ge=0)
     """Hard cap on Jev spend per UTC day across all processes."""
     sample_rate: float = Field(default=1.0, ge=0, le=1)
