@@ -17,6 +17,13 @@ pilot's preparation step slow on multi-megabyte session transcripts.
 Rows go to ``<vault>/_meta/jev-shadow.db`` (SQLite, WAL), shared by the
 daemon and every ``memstem mcp`` process; the daily budget is enforced
 against that shared ledger.
+
+Serve mode (ADR 0047, ``serve: true``) runs the same preparation and Jev
+call synchronously inside the search and returns Jev's order (top
+``limit`` of the pool) to the caller. The row is logged with ``mode``
+``served``; ``served_ids`` still holds the normal order, so the report's
+"would change" figures keep their meaning. Any failure returns the normal
+order unchanged.
 """
 
 from __future__ import annotations
@@ -290,7 +297,10 @@ def parse_scores(response: dict[str, Any], mapping: Sequence[str]) -> dict[str, 
         expected = sum(int(k) * v for k, v in probabilities.items())
         assert isinstance(score, int | float)
         if abs(expected - score) > 0.03:
-            raise ValueError("score disagrees with probability distribution")
+            # ADR 0047: 4 of 348 shadow runs tripped this; the score is
+            # still a valid number in range, so it is used and the drift is
+            # logged instead of discarding the whole batch.
+            logger.debug("jev: score %.3f differs from expectation %.3f", score, expected)
         scores[cid] = score / 3
     return scores
 
@@ -325,10 +335,13 @@ CREATE TABLE IF NOT EXISTS shadow_runs (
     api_ms REAL,
     cost_usd REAL NOT NULL DEFAULT 0,
     cost_known INTEGER NOT NULL DEFAULT 1,
-    model TEXT
+    model TEXT,
+    mode TEXT NOT NULL DEFAULT 'shadow'
 );
 CREATE INDEX IF NOT EXISTS shadow_runs_day ON shadow_runs(day);
 """
+_ADDED_COLUMNS = {"mode": "TEXT NOT NULL DEFAULT 'shadow'"}
+"""Columns added after the first release, applied to existing ledgers."""
 
 
 class ShadowStore:
@@ -339,6 +352,10 @@ class ShadowStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.executescript(_SCHEMA)
+            present = {row[1] for row in db.execute("PRAGMA table_info(shadow_runs)")}
+            for name, definition in _ADDED_COLUMNS.items():
+                if name not in present:
+                    db.execute(f"ALTER TABLE shadow_runs ADD COLUMN {name} {definition}")
         path.chmod(0o600)
 
     def _connect(self) -> sqlite3.Connection:
@@ -367,8 +384,10 @@ class ShadowSettings:
     pool_size: int = 20
     excerpt_chars: int = 1600
     request_byte_limit: int = 30000
-    timeout_seconds: float = 2.0
+    timeout_seconds: float = 3.0
     daily_budget_usd: float = 0.50
+    serve: bool = False
+    """ADR 0047: rerank inline and return Jev's order (see :meth:`JevShadow.serve`)."""
     sample_rate: float = 1.0
     min_limit: int = 3
     skip_types: list[str] = field(default_factory=lambda: ["__watchdog__"])
@@ -387,6 +406,7 @@ class _Job:
     candidates: list[Any]
     degraded: bool
     busy: Callable[[], int] = lambda: 0
+    mode: str = "shadow"
 
 
 def _body_hash(body: str) -> str:
@@ -455,6 +475,42 @@ class JevShadow:
             logger.warning("jev shadow: submit failed: %s", exc)
             return False
 
+    def serve(
+        self,
+        *,
+        client: str,
+        query: str,
+        limit: int,
+        served: Sequence[Any],
+        candidates: Sequence[Any],
+        degraded: bool,
+    ) -> list[Any] | None:
+        """Rerank inline (ADR 0047); return Jev's top ``limit`` or None.
+
+        Runs the same preparation, request and validation as a shadow job,
+        on the calling thread, without the idle wait. Returns the pool
+        objects in Jev's order, truncated to ``limit``, when the run
+        succeeded; ``None`` on any failure, budget stop or exception, in
+        which case the caller keeps the normal order. Never raises.
+        """
+        try:
+            if not served:
+                return None
+            job = _Job(
+                client, query, limit, list(served), list(candidates), degraded, mode="served"
+            )
+            row = self.run(job)
+            if row.get("status") != "ok":
+                return None
+            by_id: dict[str, Any] = {}
+            for r in job.served + job.candidates:
+                by_id.setdefault(str(r.memory.id), r)
+            order = json.loads(row["jev_order"])
+            return [by_id[cid] for cid in order[:limit]]
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("jev serve: failed, keeping normal order: %s", exc)
+            return None
+
     def _ensure_worker(self) -> None:
         if self._worker is not None and self._worker.is_alive():
             return
@@ -494,11 +550,13 @@ class JevShadow:
             "served_ids": json.dumps([str(r.memory.id) for r in job.served]),
             "degraded": int(job.degraded),
             "model": s.model,
+            "mode": job.mode,
         }
         try:
             # Yield to searches in this process: prep holds the GIL briefly.
+            # A served run is the search, so it never waits.
             started = time.perf_counter()
-            deadline = time.monotonic() + s.idle_wait_seconds
+            deadline = time.monotonic() + (0 if job.mode == "served" else s.idle_wait_seconds)
             while job.busy() > 0 and time.monotonic() < deadline:
                 time.sleep(0.05)
             row["wait_ms"] = (time.perf_counter() - started) * 1000
@@ -630,6 +688,7 @@ def _build(config: Any, vault_root: Path) -> JevShadow | None:
         request_byte_limit=config.request_byte_limit,
         timeout_seconds=config.timeout_seconds,
         daily_budget_usd=config.daily_budget_usd,
+        serve=bool(getattr(config, "serve", False)),
         sample_rate=config.sample_rate,
         min_limit=config.min_limit,
         skip_types=list(config.skip_types),
