@@ -1845,6 +1845,7 @@ async def _run_daemon(
     search_config: Any = None,
     hygiene_config: Any = None,
     reconcile_interval_seconds: int = 0,
+    openclaw_scheduled_session_ttl_days: int | None = None,
 ) -> None:
     # Build the boot-echo hash set up front: walk every watched workspace +
     # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
@@ -1867,6 +1868,7 @@ async def _run_daemon(
         index,
         embedding_signature=embedding_signature,
         boot_echo_hashes=boot_echo_hashes,
+        openclaw_scheduled_session_ttl_days=openclaw_scheduled_session_ttl_days,
     )
 
     # Build the catch-up reconcile streams but DON'T await them here:
@@ -2451,6 +2453,9 @@ def daemon(
                 search_config=cfg.search,
                 hygiene_config=cfg.hygiene,
                 reconcile_interval_seconds=cfg.adapters.reconcile_interval_seconds,
+                openclaw_scheduled_session_ttl_days=(
+                    cfg.adapters.openclaw.scheduled_session_ttl_days
+                ),
             )
         )
     except KeyboardInterrupt:
@@ -3097,6 +3102,16 @@ def hygiene_cleanup_retro(
         Path | None,
         typer.Option("--json-out", help="Write the full plan + apply result as JSON."),
     ] = None,
+    noise_kind: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--noise-kind",
+            help=(
+                "Restrict the noise replay to these rule kinds (repeatable), e.g. "
+                "--noise-kind openclaw_scheduled_session. Default: every kind."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Retroactively apply Layer-1 dedup + noise rules to the existing vault.
 
@@ -3157,7 +3172,12 @@ def hygiene_cleanup_retro(
                     typer.echo(f"  ERROR: {err}", err=True)
 
         if noise:
-            noise_plan = find_noise_hits(vault_obj, index)
+            noise_plan = find_noise_hits(
+                vault_obj,
+                index,
+                openclaw_scheduled_session_ttl_days=cfg.adapters.openclaw.scheduled_session_ttl_days,
+                kinds=frozenset(noise_kind) if noise_kind else None,
+            )
             typer.echo("")
             typer.echo(format_noise_report(noise_plan))
             payload["noise"] = {
