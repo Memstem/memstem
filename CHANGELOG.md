@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-03
+
+Minor release: searches no longer hang when the vector scan stalls on a cold page cache; they return keyword results after 15 s (ADR 0048).
+
 ### Added
 
 - Searches from the daemon and MCP server now have a deadline on their semantic half (ADR 0048). If query embedding plus the vector scan take longer than `search.semantic_timeout_seconds` (default 15 s), the search returns its keyword results flagged `degraded` instead of hanging, and the overrunning scan is interrupted. Cold page-cache scans had been stalling Ari's searches past the 60 s client timeout. Set the option to `null` to restore the unbounded behaviour.
