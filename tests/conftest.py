@@ -30,3 +30,13 @@ def _isolate_memstem_secrets(
     """
     secrets_file = tmp_path_factory.mktemp("memstem-secrets") / "secrets.yaml"
     monkeypatch.setenv("MEMSTEM_SECRETS_FILE", str(secrets_file))
+
+
+@pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """ADR 0050: tests must never phone home (or be counted as installs).
+
+    ``tests/test_update_check.py`` clears this per test and mocks the network.
+    """
+    monkeypatch.setenv("MEMSTEM_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))

@@ -647,6 +647,23 @@ class AdaptersConfig(BaseModel):
     (startup reconcile still runs)."""
 
 
+class UpdatesConfig(BaseModel):
+    """ADR 0050 — daily update check and anonymous install count."""
+
+    check: bool = True
+    """Check once a day whether a newer MemStem is released. Notify only —
+    MemStem never updates itself. Env ``MEMSTEM_NO_UPDATE_CHECK=1`` also disables."""
+
+    anonymous_stats: bool = True
+    """Send the check through ``endpoint`` with an anonymous count (version, OS,
+    Python minor, install type, random install ID). ``False`` — or
+    ``DO_NOT_TRACK=1`` / ``MEMSTEM_NO_TELEMETRY=1`` — asks PyPI directly instead,
+    sending nothing identifying. See docs/privacy.md."""
+
+    endpoint: str = "https://updates.memstem.dev/v1/check"
+    interval_hours: int = Field(default=24, ge=1)
+
+
 class Config(BaseModel):
     """Top-level Memstem configuration."""
 
@@ -662,3 +679,4 @@ class Config(BaseModel):
     http: HttpServerConfig = Field(default_factory=HttpServerConfig)
     mcp: McpServerConfig = Field(default_factory=McpServerConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
+    updates: UpdatesConfig = Field(default_factory=UpdatesConfig)

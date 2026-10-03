@@ -100,6 +100,20 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+
+@app.callback()
+def _root_callback() -> None:
+    """Unified memory and skill infrastructure for AI agents."""
+    # ADR 0050: one line on an interactive terminal when a newer release is known
+    # (read from the daemon's cached check; no network, never on pipes/MCP stdio).
+    try:
+        from memstem.update_check import maybe_print_cli_notice
+
+        maybe_print_cli_notice(lambda msg: typer.echo(msg, err=True))
+    except Exception:  # a notice must never break a command
+        pass
+
+
 auth_app = typer.Typer(
     name="auth",
     help="Manage stored API keys for embedder providers.",
@@ -1104,7 +1118,27 @@ def doctor(
         typer.echo(f"{failures} issue(s). Run with --vault to point at a different vault.")
         raise typer.Exit(1)
     typer.echo("All checks passed.")
+    _doctor_update_line(cfg)
     _maybe_print_star_nudge(typer.echo)
+
+
+def _doctor_update_line(cfg: Config) -> None:
+    """ADR 0050: report whether a newer release exists (fresh check)."""
+    from memstem import update_check as uc
+
+    if not uc.checks_enabled(cfg.updates):
+        typer.echo("Update check: disabled.")
+        return
+    status = uc.check_now(cfg.updates)
+    if status is None:
+        typer.echo("Update check: could not reach the update server or PyPI.")
+    elif status.update_available:
+        typer.echo(uc.notice_text(status))
+    else:
+        typer.echo(f"Update check: up to date ({status.current}).")
+    if uc.stats_enabled(cfg.updates) and uc.disclosure_pending():
+        typer.echo(uc.DISCLOSURE)
+        uc.mark_disclosed()
 
 
 def _http_status_from_exception(exc: BaseException) -> int | None:
@@ -1846,6 +1880,7 @@ async def _run_daemon(
     hygiene_config: Any = None,
     reconcile_interval_seconds: int = 0,
     openclaw_scheduled_session_ttl_days: int | None = None,
+    updates_config: Any = None,
 ) -> None:
     # Build the boot-echo hash set up front: walk every watched workspace +
     # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
@@ -1949,6 +1984,11 @@ async def _run_daemon(
 
         hygiene_loop = HygieneLoop(vault_obj, index, hygiene_config)
         tasks.append(asyncio.create_task(hygiene_loop.run()))
+
+    # ADR 0050: daily update check (notify only; anonymous count unless opted out).
+    from memstem.update_check import run_periodic as _update_check_loop
+
+    tasks.append(asyncio.create_task(_update_check_loop(updates_config)))
 
     # ADR 0026: map adapter name -> adapter so the source-deletion sweep can
     # ask the owning adapter whether each record_map ref still exists on disk.
@@ -2456,6 +2496,7 @@ def daemon(
                 openclaw_scheduled_session_ttl_days=(
                     cfg.adapters.openclaw.scheduled_session_ttl_days
                 ),
+                updates_config=cfg.updates,
             )
         )
     except KeyboardInterrupt:
