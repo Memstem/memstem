@@ -483,6 +483,19 @@ The full operator playbook (run cleanup, run backfill, run verify,
 interpret findings, resolve skill review tickets, tune ranking) is
 in [docs/operations.md — Post-cleanup operator playbook](./docs/operations.md#post-cleanup-operator-playbook).
 
+## Updates and privacy
+
+MemStem checks once a day for a new release and tells you about it — in the daemon log,
+`/health`, `memstem doctor`, and once per version on an interactive terminal. It never
+updates itself. To hear about releases by email instead, watch the repo on GitHub
+(**Watch → Custom → Releases**).
+
+With that check it sends an anonymous count (MemStem version, OS, Python version, install type
+and a random install ID) so we can see how many people use MemStem. It never sends your
+memories, paths, hostname or username, and the IP address is not stored. Opt out with
+`updates.anonymous_stats: false` or `DO_NOT_TRACK=1`; turn the check off with
+`updates.check: false`. Details: [docs/privacy.md](docs/privacy.md).
+
 ## Platform support
 
 | OS | Support | Notes |

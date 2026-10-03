@@ -311,7 +311,20 @@ def build_app(
             "hygiene": hygiene_block,
             "skipped_files": skipped_block,
             "sqlite_vec": index.sqlite_vec_info,
+            "update": _update_block(),
         }
+
+    def _update_block() -> dict[str, Any] | None:
+        """ADR 0050: last cached update check (informational; never degrades status)."""
+        try:
+            from dataclasses import asdict
+
+            from memstem.update_check import read_cached
+
+            cached = read_cached()
+        except Exception:
+            return None
+        return asdict(cached) if cached is not None else None
 
     @app.get("/version")
     async def version() -> dict[str, str]:
