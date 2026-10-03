@@ -3207,6 +3207,74 @@ def hygiene_cleanup_retro(
         index.close()
 
 
+@hygiene_app.command("strip-expired-vectors")
+def hygiene_strip_expired_vectors(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Delete the vector chunks. Default is dry-run."),
+    ] = False,
+    type_: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--type",
+            help="Only records of these types (repeatable), e.g. --type session. Default: all.",
+        ),
+    ] = None,
+    json_out: Annotated[
+        Path | None,
+        typer.Option("--json-out", help="Write the plan (ids, types, chunk counts) as JSON."),
+    ] = None,
+) -> None:
+    """Drop vector chunks of records already hidden by an elapsed ``valid_to``.
+
+    Expired records are filtered out of search, but only after the vector
+    scan, so their chunks still cost every query. This removes those chunks
+    and keeps the markdown, the index row, FTS and ``embed_state`` (nothing
+    re-embeds them). The freed vec0 slots are reclaimed by the daily
+    ``vec_compact`` stage or ``memstem vec-compact``.
+    """
+    import json
+
+    from memstem.hygiene.expired_vectors import apply_strip, find_expired_with_vectors
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    index = _open_index(cfg)
+    try:
+        plan = find_expired_with_vectors(index, types=frozenset(type_) if type_ else None)
+        by_type: dict[str, list[int]] = {}
+        for h in plan.hits:
+            agg = by_type.setdefault(h.type, [0, 0])
+            agg[0] += 1
+            agg[1] += h.chunks
+        typer.echo(
+            f"expired records holding vectors: {len(plan.hits)} ({plan.chunks} chunks)"
+            + "".join(f"\n  {t}: {n} records, {c} chunks" for t, (n, c) in sorted(by_type.items()))
+        )
+        removed = 0
+        if apply:
+            removed = apply_strip(index, plan)
+            typer.echo(f"stripped {removed} chunks from {len(plan.hits)} records")
+        else:
+            typer.echo("dry-run: re-run with --apply to delete these chunks")
+        if json_out is not None:
+            json_out.write_text(
+                json.dumps(
+                    {
+                        "applied": apply,
+                        "chunks_removed": removed,
+                        "hits": [
+                            {"id": h.id, "type": h.type, "title": h.title, "chunks": h.chunks}
+                            for h in plan.hits
+                        ],
+                    },
+                    indent=2,
+                )
+            )
+    finally:
+        index.close()
+
+
 @hygiene_app.command("verify")
 def hygiene_verify(
     vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,

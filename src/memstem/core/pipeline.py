@@ -299,7 +299,8 @@ class Pipeline:
         self._record_mapping(record.source, record.ref, memory_id)
         with self.index._lock, self.index.db:
             record_body_hash(self.index.db, body_dedup_hash, str(memory_id))
-        if self.index.needs_reembed(
+        already_expired = fm.valid_to is not None and fm.valid_to <= datetime.now(tz=UTC)
+        if not already_expired and self.index.needs_reembed(
             str(memory_id), body_hash(record.body), self.embedding_signature
         ):
             self.index.enqueue_embed(str(memory_id))

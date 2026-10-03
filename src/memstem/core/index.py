@@ -1206,6 +1206,21 @@ class Index:
             self.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
 
+    def strip_vectors(self, memory_id: str) -> int:
+        """Drop ``memory_id``'s vectors (and any pending embed job); keep everything else.
+
+        For records already hidden from search (expired ``valid_to``): their vec0
+        rows still cost every query a scan (search filters expiry *after* the KNN).
+        The ``memories`` row, FTS row and ``embed_state`` stay, so the record is
+        still readable/recoverable and ``needs_reembed`` keeps answering "embedded"
+        — nothing re-embeds it unless its body changes. Returns chunks removed.
+        """
+        with self._lock, self.db:
+            n = len(self._vec_chunk_ids(memory_id))
+            self._delete_vectors(memory_id)
+            self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
+        return n
+
     def vec_occupancy(self) -> tuple[int, int]:
         """``(live_rows, allocated_slots)`` for ``memories_vec``.
 

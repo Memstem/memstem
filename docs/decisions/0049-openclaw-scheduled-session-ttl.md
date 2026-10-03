@@ -48,8 +48,10 @@ sources is not a cleanup path for these.
 - Expired records stay in the vault and the index (`valid_to` is a frontmatter field). Default
   search hides them; `include_expired` still finds them; clearing `valid_to` restores them.
 - Expiry alone does not remove vector chunks (search filters `valid_to` after the KNN scan, as
-  ADR 0029 notes), so the ~9% scan saving needs a separate vector-strip step. Not part of this
-  ADR.
+  ADR 0029 notes), so the ~9% scan saving needs a separate vector-strip step:
+  `memstem hygiene strip-expired-vectors` (follow-up PR) drops their vec0 chunks but keeps the
+  markdown, index row, FTS and `embed_state`, and the pipeline skips enqueueing already-expired
+  records, so they are not re-embedded. Freed slots are reclaimed by `vec_compact`.
 - Only the OpenClaw adapter's isolated cron sessions are covered. Scheduled-job transcripts that
   reach MemStem through another adapter (e.g. an OpenClaw Codex harness writing into
   `~/.codex`) keep their source's normal treatment.

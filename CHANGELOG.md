@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - OpenClaw scheduled-job sessions can now expire (ADR 0049). Set `adapters.openclaw.scheduled_session_ttl_days` (for example `28`) and sessions whose transcript opens with OpenClaw's `[cron:<job uuid> …]` marker are tagged transient with `valid_to = run time + N days`, so heartbeats and cron runs stop piling up in search. Off by default. `hygiene cleanup-retro` gains `--noise-kind` to replay just this rule over existing records (`--noise-kind openclaw_scheduled_session`).
+- `memstem hygiene strip-expired-vectors` (dry-run by default, `--apply`, `--type`) removes the vector chunks of records whose `valid_to` has passed. Search already hides them, but scanned their vectors on every query. The markdown, index row, FTS and `embed_state` stay, and the pipeline no longer enqueues already-expired records for embedding, so nothing re-embeds them.
 
 ## [0.27.0] - 2026-10-03
 
