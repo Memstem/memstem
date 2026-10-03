@@ -221,6 +221,7 @@ def build_app(
         embedder=embedder,
         reranker=reranker,
         shadow=build_jev_shadow(sc.jev_shadow, vault.root),
+        semantic_timeout=sc.semantic_timeout_seconds,
     )
     default_rerank_top_n = effective_rerank_top_n(
         sc.rerank_top_n, reranker_enabled=sc.reranker.enabled
