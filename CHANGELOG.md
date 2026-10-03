@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Searches from the daemon and MCP server now have a deadline on their semantic half (ADR 0048). If query embedding plus the vector scan take longer than `search.semantic_timeout_seconds` (default 15 s), the search returns its keyword results flagged `degraded` instead of hanging, and the overrunning scan is interrupted. Cold page-cache scans had been stalling Ari's searches past the 60 s client timeout. Set the option to `null` to restore the unbounded behaviour.
+
 ## [0.26.0] - 2026-09-30
 
 Minor release: Jev reranking can be served (opt-in, ADR 0047) after a 60-query blind-labelled shadow evaluation; timeout and score-validation changes cut the shadow fallback rate.

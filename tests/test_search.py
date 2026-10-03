@@ -1263,3 +1263,114 @@ class TestSearchConcurrency:
         search.search("probe", limit=1)
         # Counter always returns to zero after the call, success or not.
         assert index.searches_in_flight == 0
+
+
+class TestSemanticDeadline:
+    """ADR 0048: an overrunning semantic leg degrades to keyword-only results."""
+
+    class _Embedder:
+        def __init__(self, vec: list[float], delay: float = 0.0) -> None:
+            self._vec = vec
+            self._delay = delay
+
+        def embed_query(self, text: str) -> list[float]:
+            import time
+
+            time.sleep(self._delay)
+            return self._vec
+
+    def _emb(self, vec: list[float], delay: float = 0.0) -> Any:
+        return self._Embedder(vec, delay)
+
+    def _seed(self, vault: Vault, index: Index) -> tuple[Memory, list[float]]:
+        m = _make_memory(body="cloudflare tunnel notes", vault=vault)
+        index.upsert(m)
+        vec = _fake_embedding(7)
+        index.upsert_vectors(str(m.id), ["c"], [vec])
+        return m, vec
+
+    def test_fast_leg_is_unchanged(self, vault: Vault, index: Index) -> None:
+        m, vec = self._seed(vault, index)
+        search = Search(vault=vault, index=index, embedder=self._emb(vec), semantic_timeout=5.0)
+        outcome = search.search_with_status("cloudflare")
+        assert outcome.degraded is False
+        assert [str(r.memory.id) for r in outcome.results] == [str(m.id)]
+        assert outcome.results[0].vec_rank == 1
+
+    def test_slow_embed_returns_keyword_results_at_deadline(
+        self, vault: Vault, index: Index
+    ) -> None:
+        import time
+
+        m, vec = self._seed(vault, index)
+        search = Search(
+            vault=vault,
+            index=index,
+            embedder=self._emb(vec, delay=2.0),
+            semantic_timeout=0.3,
+        )
+        t0 = time.monotonic()
+        outcome = search.search_with_status("cloudflare")
+        assert time.monotonic() - t0 < 1.5
+        assert outcome.degraded is True
+        assert outcome.degraded_reason == "semantic search exceeded 0.3s; keyword-only results"
+        assert [str(r.memory.id) for r in outcome.results] == [str(m.id)]
+        assert outcome.results[0].vec_rank is None
+
+    def test_stuck_vector_scan_is_interrupted(
+        self, vault: Vault, index: Index, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scan that never finishes on its own is interrupted, not leaked."""
+        import sqlite3
+        import threading
+        import time
+
+        m, vec = self._seed(vault, index)
+        search = Search(vault=vault, index=index, embedder=self._emb(vec), semantic_timeout=0.3)
+        done = threading.Event()
+        seen: list[BaseException] = []
+        conns: list[object] = []
+
+        def stuck_query_vec(embedding: Any, *, limit: int, types: Any, db: Any) -> list[VecHit]:
+            conns.append(db)
+            try:
+                db.execute(
+                    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) "
+                    "SELECT count(*) FROM c"
+                ).fetchone()
+            except BaseException as exc:
+                seen.append(exc)
+                raise
+            finally:
+                done.set()
+            return []
+
+        monkeypatch.setattr(search, "query_vec", stuck_query_vec)
+        outcome = search.search_with_status("cloudflare")
+        assert outcome.degraded is True
+        assert [str(r.memory.id) for r in outcome.results] == [str(m.id)]
+        assert done.wait(2.0), "abandoned scan was not interrupted"
+        assert isinstance(seen[0], sqlite3.OperationalError)
+        assert "interrupt" in str(seen[0])
+        # The scan ran on its own reader, not the caller's connection.
+        assert conns[0] is not None and conns[0] is not index.db
+
+        # The next search is healthy again: interrupted reader was not re-pooled.
+        monkeypatch.undo()
+        time.sleep(0.05)
+        healthy = search.search_with_status("cloudflare")
+        assert healthy.degraded is False
+        assert healthy.results[0].vec_rank == 1
+
+    def test_no_timeout_keeps_inline_path(self, vault: Vault, index: Index) -> None:
+        _, vec = self._seed(vault, index)
+        search = Search(vault=vault, index=index, embedder=self._emb(vec))
+        assert search.semantic_timeout is None
+        assert search.search_with_status("cloudflare").degraded is False
+        assert search._semantic_pool is None
+
+    def test_config_default_is_fifteen_seconds(self) -> None:
+        from memstem.config import SearchConfig
+
+        assert SearchConfig().semantic_timeout_seconds == 15.0
+        assert SearchConfig(semantic_timeout_seconds=None).semantic_timeout_seconds is None

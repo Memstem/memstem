@@ -147,6 +147,7 @@ class _Resources:
         "_reranker_resolved",
         "_search",
         "_vault",
+        "semantic_timeout",
     )
 
     def __init__(
@@ -170,6 +171,8 @@ class _Resources:
         self._reranker: Reranker | None = None
         self._reranker_resolved = False
         self._search: Search | None = None
+        # ADR 0048; set by build_server from SearchConfig before first search.
+        self.semantic_timeout: float | None = None
         # Use an RLock because `search` composes the cached vault/index/embedder
         # via their properties while holding the same guard. A plain Lock would
         # self-deadlock on first `res.search` access in lazy mode.
@@ -269,6 +272,7 @@ class _Resources:
                         embedder=self.embedder,
                         reranker=self.reranker,
                         shadow=self._build_shadow(),
+                        semantic_timeout=self.semantic_timeout,
                     )
         return self._search
 
@@ -390,6 +394,7 @@ def build_server(
             api_key_env=sc.reranker.api_key_env,
         )
         res = _Resources.eager(vault, index, embedder, reranker)
+    res.semantic_timeout = sc.semantic_timeout_seconds
 
     mcp = MCPServer(name)
     default_rerank_top_n = effective_rerank_top_n(

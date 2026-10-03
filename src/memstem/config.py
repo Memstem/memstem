@@ -281,6 +281,14 @@ class SearchConfig(BaseModel):
     jev_shadow: JevShadowConfig = Field(default_factory=JevShadowConfig)
     """Shadow-mode Jev reranking (ADR 0044). Never changes served results."""
 
+    semantic_timeout_seconds: float | None = Field(default=15.0, gt=0)
+    """Wall-clock cap on the semantic leg of a daemon / MCP search — query
+    embedding plus the vector scan (ADR 0048). When it is exceeded the search
+    returns its keyword (BM25) results flagged ``degraded`` instead of
+    hanging, and the overrunning scan is interrupted. A cold page cache can
+    otherwise stall the brute-force vec0 scan for minutes. ``null`` restores
+    the unbounded behavior."""
+
 
 class HygieneConfig(BaseModel):
     """Hygiene worker configuration."""

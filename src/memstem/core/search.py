@@ -22,6 +22,10 @@ import logging
 import re
 import sqlite3
 import struct
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -46,6 +50,11 @@ from memstem.core.retrieval_log import (
 from memstem.core.storage import Memory, MemoryNotFoundError, Vault
 
 logger = logging.getLogger(__name__)
+
+SEMANTIC_WORKERS = 4
+"""Threads available to deadline-bounded semantic legs (ADR 0048). A leg
+that overruns is interrupted, so workers free up quickly; a leg still queued
+when its deadline passes is skipped rather than run late."""
 
 DEFAULT_RRF_K = 60
 DEFAULT_IMPORTANCE_WEIGHT = 0.2
@@ -184,6 +193,49 @@ def rrf_combine(
     return sorted(fused.values(), key=lambda h: h.score, reverse=True)
 
 
+class _SemanticLegAbandonedError(Exception):
+    """The serving search stopped waiting; the leg must not start new work."""
+
+
+class _SemanticLeg:
+    """Deadline + interrupt handle for one search's semantic leg (ADR 0048).
+
+    ``attach``/``detach`` bracket the vector scan on the leg's own borrowed
+    reader. ``abandon`` interrupts that reader only while the scan is running
+    (both under one lock), so an interrupt can never land on a connection
+    that has already gone back to the pool and is serving another search.
+    The shared locked connection (``db=None`` fallback) is never interrupted:
+    ingest writes run on it.
+    """
+
+    def __init__(self, deadline: float) -> None:
+        self.deadline = deadline
+        self._lock = threading.Lock()
+        self._conn: sqlite3.Connection | None = None
+        self._abandoned = False
+
+    def check(self) -> None:
+        with self._lock:
+            if self._abandoned or time.monotonic() >= self.deadline:
+                raise _SemanticLegAbandonedError()
+
+    def attach(self, conn: sqlite3.Connection | None) -> None:
+        with self._lock:
+            if self._abandoned:
+                raise _SemanticLegAbandonedError()
+            self._conn = conn
+
+    def detach(self) -> None:
+        with self._lock:
+            self._conn = None
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            if self._conn is not None:
+                self._conn.interrupt()
+
+
 class Search:
     """Hybrid search orchestrator over a `Vault` + `Index` (+ optional embedder)."""
 
@@ -195,6 +247,7 @@ class Search:
         reranker: Reranker | None = None,
         hyde: HydeExpander | None = None,
         shadow: JevShadow | None = None,
+        semantic_timeout: float | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
@@ -211,6 +264,11 @@ class Search:
         # Shadow-mode Jev reranking (ADR 0044): scores a wider pool in the
         # background after results are served; never alters them.
         self.shadow = shadow
+        # ADR 0048: wall-clock cap on the semantic leg (query embed + vector
+        # scan). ``None`` keeps the original inline, unbounded behavior.
+        self.semantic_timeout = semantic_timeout
+        self._semantic_pool: ThreadPoolExecutor | None = None
+        self._semantic_pool_lock = threading.Lock()
 
     def query_bm25(
         self,
@@ -523,13 +581,38 @@ class Search:
         ``rdb`` is the borrowed read-only connection (or ``None`` to use
         the shared locked connection — the pre-ADR-0035 behavior).
         """
-        bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types, db=rdb)
-
         vec: list[VecHit] = []
         query_embedding: list[float] | None = None
         degraded = False
         degraded_reason: str | None = None
-        if self.embedder is not None:
+        if self.embedder is not None and self.semantic_timeout is not None:
+            # ADR 0048: run the semantic leg beside BM25 under a deadline;
+            # on overrun serve keyword-only results instead of hanging.
+            leg = _SemanticLeg(time.monotonic() + self.semantic_timeout)
+            future = self._semantic_executor().submit(
+                self._run_semantic_leg, leg, query, use_hyde, limit * OVERFETCH_MULTIPLIER, types
+            )
+            bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types, db=rdb)
+            try:
+                query_embedding, vec = future.result(
+                    timeout=max(0.0, leg.deadline - time.monotonic())
+                )
+            except (FutureTimeoutError, _SemanticLegAbandonedError):
+                leg.abandon()
+                query_embedding, vec = None, []
+                degraded = True
+                degraded_reason = (
+                    f"semantic search exceeded {self.semantic_timeout:g}s; keyword-only results"
+                )
+                logger.warning("search: %s", degraded_reason)
+            except Exception as exc:
+                logger.warning("vec query failed; falling back to BM25: %s", exc)
+                query_embedding, vec = None, []
+                degraded = True
+                degraded_reason = f"{type(exc).__name__}: {exc}"
+        else:
+            bm25 = self.query_bm25(query, limit=limit * OVERFETCH_MULTIPLIER, types=types, db=rdb)
+        if self.embedder is not None and self.semantic_timeout is None:
             embed_input = self._maybe_expand_for_hyde(query, use_hyde=use_hyde)
             try:
                 # embed_query applies the query-only instruction prefix for
@@ -600,6 +683,40 @@ class Search:
             degraded=degraded,
             degraded_reason=degraded_reason,
         )
+
+    def _semantic_executor(self) -> ThreadPoolExecutor:
+        with self._semantic_pool_lock:
+            if self._semantic_pool is None:
+                self._semantic_pool = ThreadPoolExecutor(
+                    max_workers=SEMANTIC_WORKERS, thread_name_prefix="memstem-semantic"
+                )
+            return self._semantic_pool
+
+    def _run_semantic_leg(
+        self,
+        leg: _SemanticLeg,
+        query: str,
+        use_hyde: bool,
+        fetch_limit: int,
+        types: list[str] | None,
+    ) -> tuple[list[float], list[VecHit]]:
+        """Query embed + vector scan on a reader of its own (ADR 0048).
+
+        The caller's reader keeps serving BM25 and materialization, so an
+        overrunning scan never blocks them. The scan's connection is
+        registered with ``leg`` so an abandoned leg can interrupt it.
+        """
+        assert self.embedder is not None
+        leg.check()
+        embedding = self.embedder.embed_query(self._maybe_expand_for_hyde(query, use_hyde=use_hyde))
+        leg.check()
+        with self.index.reader() as vdb:
+            leg.attach(vdb)
+            try:
+                hits = self.query_vec(embedding, limit=fetch_limit, types=types, db=vdb)
+            finally:
+                leg.detach()
+        return embedding, hits
 
     def _first_chunk_embedding(
         self, memory_id: str, db: sqlite3.Connection | None = None
