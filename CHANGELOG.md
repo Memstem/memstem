@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-03
+
+Minor release: OpenClaw heartbeat and cron-job sessions can now expire instead of piling up in search (ADR 0049), expired records can shed their vectors, and MemStem now tells you when a new version is out (ADR 0050).
+
 ### Added
 
 - Daily update check (ADR 0050). The daemon checks once a day for a newer release and reports it in the log, `/health` (`update` block), `memstem doctor` and once per version on an interactive terminal. MemStem never updates itself. By default the check also sends an anonymous count (version, OS, Python version, install type, random install ID) to `updates.memstem.dev` so the maintainers can see how many installs exist; no memories, paths, hostnames or IP addresses are kept. Opt out with `updates.anonymous_stats: false` or `DO_NOT_TRACK=1`; disable the check with `updates.check: false` or `MEMSTEM_NO_UPDATE_CHECK=1`. See `docs/privacy.md`.
