@@ -581,6 +581,14 @@ class OpenClawAdapterConfig(BaseModel):
     """Agent-agnostic files (e.g. `~/ari/HARD-RULES.md`). Emitted with a
     `shared` tag instead of an `agent:*` tag."""
 
+    scheduled_session_ttl_days: int | None = Field(default=None, ge=0)
+    """ADR 0049. When set, OpenClaw scheduled-job (``[cron:…]``) session
+    transcripts are tagged transient and expire this many days after the
+    job ran (``valid_to = created + N days``), so heartbeats and cron runs
+    stop accumulating in search. ``None`` (default) keeps them as ordinary
+    sessions. ``hygiene cleanup-retro --noise`` applies the same rule to
+    records already in the vault."""
+
 
 class ClaudeCodeAdapterConfig(BaseModel):
     """Configuration for the Claude Code adapter."""

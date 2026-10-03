@@ -376,3 +376,58 @@ def test_search_include_deprecated_returns_them(vault: Vault, index: Index) -> N
     assert len(inclusive) == 2
     # Winner ID is still in the set.
     assert str(a.id) in {str(r.memory.id) for r in inclusive}
+
+
+# ─── ADR 0049: OpenClaw scheduled-job sessions ───────────────────────
+
+_CRON_BODY = (
+    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat — overnight "
+    "hourly email/calendar check] Run the checklist.\n\n**Assistant:** Nothing to report."
+)
+
+
+def _write_openclaw_session(vault: Vault, index: Index, *, body: str, created: str) -> Memory:
+    from uuid import uuid4
+
+    fm = validate(
+        {
+            "id": str(uuid4()),
+            "type": "session",
+            "created": created,
+            "updated": created,
+            "source": "openclaw",
+            "title": body[:60],
+        }
+    )
+    memory = Memory(frontmatter=fm, body=body, path=Path(f"sessions/{fm.id}.md"))
+    vault.write(memory)
+    index.upsert(memory)
+    return memory
+
+
+def test_scheduled_session_rule_off_finds_nothing(vault: Vault, index: Index) -> None:
+    _write_openclaw_session(vault, index, body=_CRON_BODY, created="2026-04-25T15:00:00+00:00")
+    plan = find_noise_hits(vault, index)
+    assert not plan.transients and not plan.drops
+
+
+def test_scheduled_session_retro_expires_at_created_plus_ttl(vault: Vault, index: Index) -> None:
+    old = _write_openclaw_session(
+        vault, index, body=_CRON_BODY, created="2026-04-25T15:00:00+00:00"
+    )
+    chat = _write_openclaw_session(
+        vault, index, body="**User:** what's on my calendar?", created="2026-04-25T15:00:00+00:00"
+    )
+    _write_memory(vault, index, title="HB", body="HEARTBEAT_OK\n")  # other kind, filtered out below
+    plan = find_noise_hits(
+        vault,
+        index,
+        openclaw_scheduled_session_ttl_days=28,
+        kinds=frozenset({"openclaw_scheduled_session"}),
+    )
+    assert [h.id for h in plan.transients] == [str(old.frontmatter.id)]
+    assert not plan.drops
+    result = apply_noise_expiry(vault, index, plan)
+    assert result.expired == 1 and not result.apply_errors
+    assert vault.read(old.path).frontmatter.valid_to == datetime(2026, 5, 23, 15, 0, tzinfo=UTC)
+    assert vault.read(chat.path).frontmatter.valid_to is None

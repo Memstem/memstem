@@ -161,11 +161,13 @@ class Pipeline:
         index: Index,
         embedding_signature: str = "",
         boot_echo_hashes: frozenset[str] | None = None,
+        openclaw_scheduled_session_ttl_days: int | None = None,
     ) -> None:
         self.vault = vault
         self.index = index
         self.embedding_signature = embedding_signature
         self.boot_echo_hashes = boot_echo_hashes
+        self.openclaw_scheduled_session_ttl_days = openclaw_scheduled_session_ttl_days
         _ensure_record_map(self.index.db)
 
     def process(self, record: MemoryRecord) -> Memory | None:
@@ -206,7 +208,11 @@ class Pipeline:
                 }
             )
 
-        decision = noise_filter(record, boot_echo_hashes=self.boot_echo_hashes)
+        decision = noise_filter(
+            record,
+            boot_echo_hashes=self.boot_echo_hashes,
+            openclaw_scheduled_session_ttl_days=self.openclaw_scheduled_session_ttl_days,
+        )
         if decision.action is NoiseAction.DROP:
             logger.info(
                 "noise filter dropped record (source=%s, ref=%s, kind=%s): %s",
@@ -221,8 +227,10 @@ class Pipeline:
         # search layer auto-expires it after the documented TTL.
         transient_valid_to: datetime | None = None
         if decision.action is NoiseAction.TAG_TRANSIENT:
-            ttl_days = decision.ttl_days or 28
-            transient_valid_to = datetime.now(tz=UTC) + timedelta(days=ttl_days)
+            ttl_days = decision.ttl_days if decision.ttl_days is not None else 28
+            transient_valid_to = decision.expires_at or (
+                datetime.now(tz=UTC) + timedelta(days=ttl_days)
+            )
             logger.info(
                 "noise filter tagged transient (source=%s, ref=%s, kind=%s, valid_to=%s): %s",
                 record.source,

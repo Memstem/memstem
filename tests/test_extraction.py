@@ -574,3 +574,100 @@ class TestPipelineIntegration:
         second = pipeline.process(_record(body="HEARTBEAT_OK", ref="/x.md"))
         assert first is None
         assert second is None
+
+
+# --- ADR 0049: OpenClaw scheduled-job sessions ---
+
+_CRON_BODY = (
+    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat — overnight "
+    "hourly email/calendar check] Run Ari's full heartbeat checklist from HEARTBEAT.md.\n\n"
+    "**Assistant:** Calendars clear; nothing to report."
+)
+
+
+def _session(
+    body: str = _CRON_BODY,
+    *,
+    source: str = "openclaw",
+    created: str | None = None,
+    type_: str = "session",
+) -> MemoryRecord:
+    return MemoryRecord(
+        source=source,
+        ref="/home/ubuntu/ari/agents/main/agent/openclaw-agent.sqlite#session=abc",
+        title=body[:80],
+        body=body,
+        tags=[],
+        metadata={
+            "type": type_,
+            "created": created or "2026-04-27T10:00:00+00:00",
+            "session_id": "d8bc35c3-f25e-4d5d-b1e0-6503e3c6d5b8",
+        },
+    )
+
+
+class TestOpenClawScheduledSession:
+    def test_detects_cron_session(self) -> None:
+        from memstem.core.extraction import is_openclaw_scheduled_session
+
+        assert is_openclaw_scheduled_session(_session())
+
+    def test_rule_off_by_default(self) -> None:
+        assert noise_filter(_session()).action is NoiseAction.KEEP
+
+    def test_tags_transient_anchored_to_created(self) -> None:
+        from datetime import UTC, datetime
+
+        decision = noise_filter(_session(), openclaw_scheduled_session_ttl_days=28)
+        assert decision.action is NoiseAction.TAG_TRANSIENT
+        assert decision.kind == "openclaw_scheduled_session"
+        assert decision.expires_at == datetime(2026, 5, 25, 10, 0, tzinfo=UTC)
+
+    def test_missing_created_falls_back_to_ttl(self) -> None:
+        rec = _session().model_copy(update={"metadata": {"type": "session"}})
+        decision = noise_filter(rec, openclaw_scheduled_session_ttl_days=28)
+        assert decision.action is NoiseAction.TAG_TRANSIENT
+        assert decision.expires_at is None and decision.ttl_days == 28
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # a real chat that only mentions a cron job
+            "**User:** why did [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat] fail?",
+            "**User:** Please look at the heartbeat cron job tonight.",
+            # marker without a uuid
+            "**User:** [cron:nightly] run the report",
+        ],
+    )
+    def test_no_false_positive(self, body: str) -> None:
+        decision = noise_filter(_session(body), openclaw_scheduled_session_ttl_days=28)
+        assert decision.action is NoiseAction.KEEP
+
+    def test_other_sources_and_types_untouched(self) -> None:
+        assert (
+            noise_filter(
+                _session(source="claude-code"), openclaw_scheduled_session_ttl_days=28
+            ).action
+            is NoiseAction.KEEP
+        )
+        assert (
+            noise_filter(_session(source="codex"), openclaw_scheduled_session_ttl_days=28).action
+            is NoiseAction.KEEP
+        )
+        assert (
+            noise_filter(_session(type_="memory"), openclaw_scheduled_session_ttl_days=28).action
+            is NoiseAction.KEEP
+        )
+
+    def test_pipeline_stamps_anchored_valid_to(self, vault: Vault, index: Index) -> None:
+        from datetime import UTC, datetime
+
+        pipe = Pipeline(vault, index, openclaw_scheduled_session_ttl_days=28)
+        memory = pipe.process(_session())
+        assert memory is not None
+        assert memory.frontmatter.valid_to == datetime(2026, 5, 25, 10, 0, tzinfo=UTC)
+
+    def test_pipeline_rule_disabled_keeps_session(self, vault: Vault, index: Index) -> None:
+        memory = Pipeline(vault, index).process(_session())
+        assert memory is not None
+        assert memory.frontmatter.valid_to is None

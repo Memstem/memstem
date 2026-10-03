@@ -271,12 +271,18 @@ def find_noise_hits(
     vault: Vault,
     index: Index,
     boot_echo_hashes: frozenset[str] | None = None,
+    *,
+    openclaw_scheduled_session_ttl_days: int | None = None,
+    kinds: frozenset[str] | None = None,
 ) -> NoisePlan:
     """Run the noise filter against every indexed memory; surface hits.
 
     Records already expired (``valid_to`` past) are skipped — the
     filter would fire again, but they're already invisible to default
     search.
+
+    ``openclaw_scheduled_session_ttl_days`` enables the ADR 0049 rule;
+    ``kinds`` restricts the plan to the named rule kinds (``None`` = all).
     """
     rows = index.db.execute(
         """
@@ -300,16 +306,24 @@ def find_noise_hits(
             logger.debug("cleanup_retro: skipping %s: %s", row["id"], exc)
             continue
         # Build a synthetic MemoryRecord just to feed the noise filter.
+        # type + created let time-anchored rules (ADR 0049) see the record's own date.
+        fm = memory.frontmatter
         synthetic = MemoryRecord(
             source=row["source"] or "unknown",
             ref=row["path"],
             title=row["title"],
             body=memory.body,
             tags=[],
-            metadata={},
+            metadata={"type": str(getattr(fm.type, "value", fm.type)), "created": fm.created},
         )
-        decision = noise_filter(synthetic, boot_echo_hashes=boot_echo_hashes)
+        decision = noise_filter(
+            synthetic,
+            boot_echo_hashes=boot_echo_hashes,
+            openclaw_scheduled_session_ttl_days=openclaw_scheduled_session_ttl_days,
+        )
         if decision.action is NoiseAction.KEEP:
+            continue
+        if kinds is not None and decision.kind not in kinds:
             continue
         hit = NoiseHit(
             id=row["id"],
@@ -538,10 +552,15 @@ def apply_noise_expiry(
             continue
         from datetime import timedelta
 
-        ttl = (
-            transient_ttl_days if transient_ttl_days is not None else (hit.decision.ttl_days or 28)
-        )
-        valid_to = now + timedelta(days=ttl)
+        if transient_ttl_days is None and hit.decision.expires_at is not None:
+            valid_to = hit.decision.expires_at  # ADR 0049: anchored to the record's own time
+        else:
+            ttl = (
+                transient_ttl_days
+                if transient_ttl_days is not None
+                else (hit.decision.ttl_days or 28)
+            )
+            valid_to = now + timedelta(days=ttl)
         try:
             new_fm = memory.frontmatter.model_copy(update={"valid_to": valid_to})
             new_memory = Memory(frontmatter=new_fm, body=memory.body, path=memory.path)

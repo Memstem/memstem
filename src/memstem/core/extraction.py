@@ -26,8 +26,10 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from memstem.adapters.base import MemoryRecord
 
@@ -52,6 +54,10 @@ class NoiseDecision:
     reason: str | None = None
     ttl_days: int | None = None
     """For ``TAG_TRANSIENT`` decisions: how many days from now ``valid_to`` is set."""
+    expires_at: datetime | None = None
+    """For ``TAG_TRANSIENT`` decisions anchored to the record's own time (ADR 0049):
+    the absolute ``valid_to``. When set, callers use it instead of ``now + ttl_days``,
+    so re-ingests and retro replays keep a stable expiry."""
 
 
 # Heartbeat patterns. Two anchors are enough to catch the common cases
@@ -236,6 +242,45 @@ def is_automation_log(ref: str) -> bool:
     return _AUTOMATION_PATH_RE.search(ref) is not None
 
 
+# OpenClaw scheduled-job sessions (ADR 0049). OpenClaw prefixes every cron
+# agent-turn prompt with ``[cron:<job uuid> <job name>]``; the OpenClaw adapter
+# renders transcripts as ``**User:** …`` turns, so for an isolated cron session
+# the marker is the very first thing in the body. Anchored at the start so a
+# chat session that merely *mentions* a cron job never matches.
+_OPENCLAW_SCHEDULED_SESSION_RE = re.compile(
+    r"\A\s*\*\*User:\*\*\s*\[cron:"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[\s\]]",
+    re.IGNORECASE,
+)
+
+
+def is_openclaw_scheduled_session(record: MemoryRecord) -> bool:
+    """Return True if ``record`` is an OpenClaw scheduled-job (cron) session transcript.
+
+    Only ``source == "openclaw"`` session records qualify; the signal is the
+    ``[cron:<uuid> …]`` marker OpenClaw puts at the head of the job's prompt.
+    """
+    if record.source != "openclaw" or not record.body:
+        return False
+    record_type = (record.metadata or {}).get("type")
+    if record_type not in (None, "session"):
+        return False
+    return _OPENCLAW_SCHEDULED_SESSION_RE.match(record.body) is not None
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Best-effort parse of an adapter ``created`` value (datetime or ISO string)."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
 def _head_hash(data: bytes) -> str:
     return hashlib.sha256(data[:_BOOT_ECHO_HEAD_BYTES]).hexdigest()
 
@@ -318,6 +363,7 @@ def is_boot_echo(body: str, hashes: frozenset[str]) -> bool:
 def noise_filter(
     record: MemoryRecord,
     boot_echo_hashes: frozenset[str] | None = None,
+    openclaw_scheduled_session_ttl_days: int | None = None,
 ) -> NoiseDecision:
     """Classify ``record`` as KEEP, DROP, or TAG_TRANSIENT.
 
@@ -330,6 +376,10 @@ def noise_filter(
     is skipped (this is the case for tests and offline migrations).
     Production daemons build the set at startup via
     :func:`build_boot_echo_hashes` and pass it through.
+
+    ``openclaw_scheduled_session_ttl_days`` enables the ADR 0049 rule
+    (``adapters.openclaw.scheduled_session_ttl_days``). ``None`` (the
+    default) keeps OpenClaw scheduled-job sessions as ordinary sessions.
     """
     body = record.body
 
@@ -361,6 +411,20 @@ def noise_filter(
             reason="body's first 1KB hashes to a known system-prompt file",
         )
 
+    if openclaw_scheduled_session_ttl_days is not None and is_openclaw_scheduled_session(record):
+        created = _coerce_datetime((record.metadata or {}).get("created"))
+        return NoiseDecision(
+            action=NoiseAction.TAG_TRANSIENT,
+            kind="openclaw_scheduled_session",
+            reason="OpenClaw scheduled-job ([cron:…]) session transcript",
+            ttl_days=openclaw_scheduled_session_ttl_days,
+            expires_at=(
+                created + timedelta(days=openclaw_scheduled_session_ttl_days)
+                if created is not None
+                else None
+            ),
+        )
+
     if is_automation_log(record.ref):
         return NoiseDecision(
             action=NoiseAction.TAG_TRANSIENT,
@@ -389,6 +453,7 @@ __all__ = [
     "is_boot_echo",
     "is_cron_output",
     "is_heartbeat",
+    "is_openclaw_scheduled_session",
     "is_tool_dump",
     "is_transient_task",
     "noise_filter",
