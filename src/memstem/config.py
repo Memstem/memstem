@@ -599,6 +599,13 @@ class ClaudeCodeAdapterConfig(BaseModel):
     extra_files: list[Path] = Field(default_factory=list)
     """Additional CLAUDE.md or instructions files to ingest as memories."""
 
+    skills_root: Path | None = None
+    """User-skills directory (ADR 0051). Defaults to ``$CLAUDE_CONFIG_DIR/skills``,
+    else ``~/.claude/skills``. Hidden folders and symlinked skills are skipped."""
+
+    ingest_skills: bool = True
+    """Index ``<skills_root>/<name>/SKILL.md`` as ``type: skill`` records."""
+
 
 class CodexAdapterConfig(BaseModel):
     """Configuration for the Codex (OpenAI) adapter.

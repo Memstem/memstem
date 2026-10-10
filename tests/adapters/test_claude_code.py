@@ -636,3 +636,97 @@ class TestParsesOffEventLoop:
             await watcher.aclose()
 
         assert seen and all(t is not loop_thread for t in seen)
+
+
+# --- User skills (ADR 0051) -------------------------------------------------
+
+
+def _write_skill(root: Path, name: str, body: str = "Do the thing.") -> Path:
+    skill = root / name / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text(
+        f"---\nname: {name}\ndescription: Use for {name}.\n---\n\n# {name}\n\n{body}\n"
+    )
+    return skill
+
+
+async def _collect(gen: AsyncGenerator[MemoryRecord, None]) -> list[MemoryRecord]:
+    return [rec async for rec in gen]
+
+
+class TestSkills:
+    async def test_reconcile_indexes_plain_skills_tagged_claude_code(self, tmp_path: Path) -> None:
+        root = tmp_path / "skills"
+        _write_skill(root, "pocket-files")
+        _write_skill(root, ".system/vendor")
+        _write_skill(root, ".trash/old")
+        _write_skill(root / "synced" / "8e15-6dc4", "docx")
+        _write_skill(root / "synced" / "f749-9971", "docx")
+        adapter = ClaudeCodeAdapter(skills_root=root)
+        records = await _collect(adapter.reconcile([]))
+        assert [r.title for r in records] == ["pocket-files"]
+        rec = records[0]
+        assert rec.metadata["type"] == "skill"
+        assert rec.source == "claude-code"
+        assert "agent:claude-code" in rec.tags
+        assert rec.ref == str(root / "pocket-files" / "SKILL.md")
+
+    async def test_symlinked_skills_are_skipped(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "ari" / "skills"
+        _write_skill(canonical, "council")
+        root = tmp_path / "skills"
+        root.mkdir()
+        (root / "council").symlink_to(canonical / "council", target_is_directory=True)
+        real = root / "linked-file"
+        real.mkdir()
+        (real / "SKILL.md").symlink_to(canonical / "council" / "SKILL.md")
+        _write_skill(root, "mine")
+        adapter = ClaudeCodeAdapter(skills_root=root)
+        assert [r.title for r in await _collect(adapter.reconcile([]))] == ["mine"]
+
+    async def test_identical_codex_copy_is_not_indexed_twice(self, tmp_path: Path) -> None:
+        root, codex = tmp_path / "claude", tmp_path / "codex"
+        _write_skill(root, "pocket-projects", "same")
+        _write_skill(codex, "pocket-projects", "same")
+        _write_skill(root, "pocket-files", "claude wording")
+        _write_skill(codex, "pocket-files", "codex wording")
+        adapter = ClaudeCodeAdapter(skills_root=root, codex_skills_roots=[codex])
+        assert [r.title for r in await _collect(adapter.reconcile([]))] == ["pocket-files"]
+
+    async def test_missing_root_and_no_root_are_quiet(self, tmp_path: Path) -> None:
+        assert await _collect(ClaudeCodeAdapter(skills_root=tmp_path / "nope").reconcile([])) == []
+        assert await _collect(ClaudeCodeAdapter().reconcile([])) == []
+
+    async def test_watch_emits_new_skill(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("MEMSTEM_CLAUDE_CODE_WATCH_DEBOUNCE_SECONDS", "0")
+        root = tmp_path / "skills"
+        root.mkdir()
+        adapter = ClaudeCodeAdapter(skills_root=root)
+
+        async def collect_one() -> MemoryRecord:
+            async for rec in adapter.watch([]):
+                return rec
+            raise RuntimeError("watch returned without yielding")
+
+        task = asyncio.create_task(collect_one())
+        await asyncio.sleep(0.2)
+        (root / "deploy").mkdir()
+        await asyncio.sleep(0.2)
+        _write_skill(root, "deploy")
+        record = await asyncio.wait_for(task, timeout=5.0)
+        assert record.title == "deploy"
+        assert "agent:claude-code" in record.tags
+
+
+def test_builder_defaults_and_opt_out(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from memstem.cli import _build_claude_adapter
+    from memstem.config import Config
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
+    cfg = Config(vault_path=tmp_path / "vault")
+    adapter, _paths = _build_claude_adapter(cfg)
+    assert adapter.skills_root == tmp_path / "cc" / "skills"
+    assert adapter.codex_skills_roots, "the Codex skills root is passed for duplicate detection"
+    cfg.adapters.claude_code.ingest_skills = False
+    adapter, _paths = _build_claude_adapter(cfg)
+    assert adapter.skills_root is None

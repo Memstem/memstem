@@ -1051,7 +1051,7 @@ def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
 
     # Exactly the markdown the adapters ingest — nothing more, or the check
     # would flag files no adapter ever reads. Claude Code ingests session
-    # JSONL from its roots and only the listed extra_files as markdown;
+    # JSONL from its roots, the listed extra_files and user skills as markdown;
     # Codex ingests <memories_root>/*.md and user SKILL.md files.
     candidates: list[Path] = []
     oc = cfg.adapters.openclaw
@@ -1071,6 +1071,12 @@ def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
     if cx.ingest_memories:
         candidates.extend(
             _iter_memory_files(Path(cx.memories_root or codex_home / "memories").expanduser())
+        )
+    if cfg.adapters.claude_code.ingest_skills:
+        from memstem.adapters.claude_code import _iter_skill_files as _iter_claude_skill_files
+
+        candidates.extend(
+            _iter_claude_skill_files(_claude_skills_root(cfg.adapters.claude_code.skills_root))
         )
 
     bad: list[tuple[Path, str]] = []
@@ -1821,7 +1827,28 @@ def _build_claude_adapter(cfg: Config) -> tuple[ClaudeCodeAdapter, list[Path]]:
         else list(DEFAULT_CLAUDE_CODE_PATHS)
     )
     extras = [Path(p).expanduser() for p in cc.extra_files]
-    return ClaudeCodeAdapter(extra_files=extras), paths
+    skills_root: Path | None = None
+    codex_skills: list[Path] = []
+    if cc.ingest_skills:
+        skills_root = _claude_skills_root(cc.skills_root)
+        cx = cfg.adapters.codex
+        if cx.ingest_skills:
+            codex_home = Path(cx.codex_home).expanduser() if cx.codex_home else DEFAULT_CODEX_HOME
+            codex_skills = [
+                Path(cx.skills_root).expanduser() if cx.skills_root else codex_home / "skills"
+            ]
+    adapter = ClaudeCodeAdapter(
+        extra_files=extras, skills_root=skills_root, codex_skills_roots=codex_skills
+    )
+    return adapter, paths
+
+
+def _claude_skills_root(configured: Path | None) -> Path:
+    """``skills_root`` from config, else ``$CLAUDE_CONFIG_DIR/skills``, else ``~/.claude/skills``."""
+    if configured:
+        return Path(configured).expanduser()
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (Path(config_dir).expanduser() if config_dir else Path.home() / ".claude") / "skills"
 
 
 def _build_codex_adapter(cfg: Config) -> CodexAdapter:
@@ -2453,6 +2480,8 @@ def daemon(
     typer.echo(f"  claude-code roots: {', '.join(str(p) for p in claude_paths)}")
     if claude_adapter.extra_files:
         typer.echo(f"  claude-code extras: {', '.join(str(p) for p in claude_adapter.extra_files)}")
+    if claude_adapter.skills_root is not None:
+        typer.echo(f"  claude-code skills: {claude_adapter.skills_root}")
     codex_roots = [
         f"{label}={p}"
         for label, p in (

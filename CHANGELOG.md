@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code user skills are indexed (ADR 0051). `~/.claude/skills/<name>/SKILL.md` (or `$CLAUDE_CONFIG_DIR/skills`) becomes a `type: skill` record tagged `agent:claude-code`, stored at `skills/claude-code/<slug>.md`, and the watcher picks up new or edited skills within seconds. Only that one level is read, as Claude Code loads it; hidden folders, symlinked skills (indexed from their canonical copy), vendor skills synced into `skills/synced/…`, and byte-identical copies of a Codex skill of the same name are skipped. Configure with `adapters.claude_code.skills_root` and `adapters.claude_code.ingest_skills` (default `true`).
+
 ## [0.28.0] - 2026-10-03
 
 Minor release: OpenClaw heartbeat and cron-job sessions can now expire instead of piling up in search (ADR 0049), expired records can shed their vectors, and MemStem now tells you when a new version is out (ADR 0050).

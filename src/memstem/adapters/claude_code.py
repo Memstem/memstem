@@ -16,6 +16,18 @@ Two ingestion paths:
    Each becomes a single record tagged `instructions` so a search for
    "what does the global CLAUDE.md say about X" actually finds it.
 
+3. **User skills** under `~/.claude/skills/<name>/SKILL.md` (ADR 0051) —
+   one `type: skill` record each, tagged `agent:claude-code` so the vault
+   path (`skills/claude-code/<slug>.md`) cannot collide with a Codex or
+   OpenClaw skill of the same name. Only that one level is read, as Claude
+   Code loads it (vendor skills synced into `skills/synced/…` are not the
+   user's). Hidden folders and anything reached through a symlink are
+   skipped: a symlinked skill is a copy of one kept
+   elsewhere (usually an OpenClaw workspace) and is indexed from there. A
+   skill whose `SKILL.md` is byte-identical to the Codex user skill of the
+   same folder name is also skipped, because a tool that installs one skill
+   for both clients (Pocket Code does) would otherwise index it twice.
+
 For v0.1 the policy is "re-emit the full file on every change." The
 consuming pipeline upserts by `ref`, so re-emits idempotently replace
 the prior record. A future version can track per-line offsets to emit
@@ -39,6 +51,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from memstem.adapters.base import Adapter, MemoryRecord
+from memstem.adapters.codex import _markdown_to_record
 from memstem.core.skipped import SKIPPED
 
 logger = logging.getLogger(__name__)
@@ -348,6 +361,65 @@ def _iter_jsonl_files(root: Path) -> Iterator[Path]:
             yield path
 
 
+SKILL_AGENT_TAG = "agent:claude-code"
+
+
+def _is_plain_skill_path(skill_md: Path, skills_root: Path) -> bool:
+    """True for exactly ``<root>/<name>/SKILL.md``, with no hidden folder or symlink.
+
+    One level deep, as Claude Code itself loads user skills: deeper copies
+    such as ``skills/synced/<id>/<name>/SKILL.md`` (vendor skills synced from
+    the Claude apps, often several copies of each) are not the user's own.
+    A symlinked folder or ``SKILL.md`` is a copy of a skill kept elsewhere.
+    """
+    try:
+        rel = skill_md.relative_to(skills_root)
+    except ValueError:
+        return False
+    if len(rel.parts) != 2 or rel.parts[1] != "SKILL.md" or rel.parts[0].startswith("."):
+        return False
+    node = skills_root
+    for part in rel.parts:
+        node = node / part
+        if node.is_symlink():
+            return False
+    return True
+
+
+def _iter_skill_files(root: Path) -> Iterator[Path]:
+    if not root.is_dir():
+        return
+    for path in sorted(root.glob("*/SKILL.md")):
+        if path.is_file() and _is_plain_skill_path(path, root):
+            yield path
+
+
+def _duplicates_codex_skill(skill_md: Path, skills_root: Path, codex_roots: list[Path]) -> bool:
+    """True when the Codex user skill with the same folder path has identical bytes."""
+    try:
+        rel = skill_md.relative_to(skills_root)
+        mine = skill_md.read_bytes()
+    except (ValueError, OSError):
+        return False
+    for root in codex_roots:
+        other = root / rel
+        try:
+            if other.is_file() and other.read_bytes() == mine:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _skill_record(
+    path: Path, skills_root: Path, codex_roots: list[Path], source_name: str = "claude-code"
+) -> MemoryRecord | None:
+    if _duplicates_codex_skill(path, skills_root, codex_roots):
+        logger.debug("skipping %s: identical to the Codex skill of the same name", path)
+        return None
+    return _markdown_to_record(path, "skill", source_name, extra_tags=[SKILL_AGENT_TAG])
+
+
 class _EventHandler(FileSystemEventHandler):
     """Coalesces rapid-fire file events via per-path debounce timers."""
 
@@ -409,9 +481,21 @@ class ClaudeCodeAdapter(Adapter):
 
     name = "claude-code"
 
-    def __init__(self, extra_files: list[Path] | None = None) -> None:
+    def __init__(
+        self,
+        extra_files: list[Path] | None = None,
+        *,
+        skills_root: Path | None = None,
+        codex_skills_roots: list[Path] | None = None,
+    ) -> None:
         # Resolve once up front so equality checks during watch are reliable.
         self.extra_files = [Path(p).expanduser().resolve() for p in (extra_files or [])]
+        # Not resolved: resolving would follow a symlinked root and make every
+        # skill under it look like a plain path (ADR 0051 skips symlinks).
+        self.skills_root = Path(skills_root).expanduser().absolute() if skills_root else None
+        self.codex_skills_roots = [
+            Path(p).expanduser().resolve() for p in (codex_skills_roots or [])
+        ]
 
     async def reconcile(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         for root in paths:
@@ -429,6 +513,13 @@ class ClaudeCodeAdapter(Adapter):
             instr = await asyncio.to_thread(_instructions_record, extra, self.name)
             if instr is not None:
                 yield instr
+        if self.skills_root is not None:
+            for skill in _iter_skill_files(self.skills_root):
+                rec = await asyncio.to_thread(
+                    _skill_record, skill, self.skills_root, self.codex_skills_roots, self.name
+                )
+                if rec is not None:
+                    yield rec
 
     async def watch(self, paths: list[Path]) -> AsyncGenerator[MemoryRecord, None]:
         queue: asyncio.Queue[Path] = asyncio.Queue()
@@ -445,6 +536,8 @@ class ClaudeCodeAdapter(Adapter):
             if extra.parent.exists() and extra.parent not in watched_parents:
                 observer.schedule(handler, str(extra.parent), recursive=False)
                 watched_parents.add(extra.parent)
+        if self.skills_root is not None and self.skills_root.is_dir():
+            observer.schedule(handler, str(self.skills_root), recursive=True)
 
         observer.start()
         self._observer = observer  # registered for watcher_alive() / health
@@ -452,6 +545,17 @@ class ClaudeCodeAdapter(Adapter):
             while True:
                 changed = await queue.get()
                 if not changed.is_file():
+                    continue
+                if (
+                    self.skills_root is not None
+                    and changed.name == "SKILL.md"
+                    and _is_plain_skill_path(changed, self.skills_root)
+                ):
+                    rec = await asyncio.to_thread(
+                        _skill_record, changed, self.skills_root, self.codex_skills_roots, self.name
+                    )
+                    if rec is not None:
+                        yield rec
                     continue
                 resolved = changed.resolve()
 
