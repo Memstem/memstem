@@ -395,7 +395,13 @@ def _iter_skill_files(root: Path) -> Iterator[Path]:
 
 
 def _duplicates_codex_skill(skill_md: Path, skills_root: Path, codex_roots: list[Path]) -> bool:
-    """True when the Codex user skill with the same folder path has identical bytes."""
+    """True when the Codex adapter indexes an identical copy of this skill.
+
+    Only a plain (non-symlinked) Codex copy counts: the Codex adapter skips
+    symlinked skills, and on some installs ``~/.codex/skills/<name>`` is a
+    symlink *to* this very Claude Code skill, so skipping here too would
+    leave the skill indexed nowhere.
+    """
     try:
         rel = skill_md.relative_to(skills_root)
         mine = skill_md.read_bytes()
@@ -404,7 +410,7 @@ def _duplicates_codex_skill(skill_md: Path, skills_root: Path, codex_roots: list
     for root in codex_roots:
         other = root / rel
         try:
-            if other.is_file() and other.read_bytes() == mine:
+            if other.is_file() and _is_plain_skill_path(other, root) and other.read_bytes() == mine:
                 return True
         except OSError:
             continue

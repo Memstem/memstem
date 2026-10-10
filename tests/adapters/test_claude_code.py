@@ -693,6 +693,20 @@ class TestSkills:
         adapter = ClaudeCodeAdapter(skills_root=root, codex_skills_roots=[codex])
         assert [r.title for r in await _collect(adapter.reconcile([]))] == ["pocket-files"]
 
+    async def test_codex_symlink_to_this_skill_is_not_a_duplicate(self, tmp_path: Path) -> None:
+        # Seen on a real install: ~/.codex/skills/<name> -> ~/.claude/skills/<name>.
+        # The Codex adapter skips the symlink, so the Claude record must stand.
+        root, codex = tmp_path / "claude", tmp_path / "codex"
+        _write_skill(root, "session-handoff")
+        codex.mkdir()
+        (codex / "session-handoff").symlink_to(root / "session-handoff", target_is_directory=True)
+        _write_skill(root, "shared-file")
+        (codex / "shared-file").mkdir()
+        (codex / "shared-file" / "SKILL.md").symlink_to(root / "shared-file" / "SKILL.md")
+        adapter = ClaudeCodeAdapter(skills_root=root, codex_skills_roots=[codex])
+        titles = sorted(str(r.title) for r in await _collect(adapter.reconcile([])))
+        assert titles == ["session-handoff", "shared-file"]
+
     async def test_missing_root_and_no_root_are_quiet(self, tmp_path: Path) -> None:
         assert await _collect(ClaudeCodeAdapter(skills_root=tmp_path / "nope").reconcile([])) == []
         assert await _collect(ClaudeCodeAdapter().reconcile([])) == []

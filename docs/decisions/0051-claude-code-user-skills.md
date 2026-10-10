@@ -39,7 +39,10 @@ The Claude Code adapter indexes user skills:
    symlink** (the folder or the `SKILL.md`). The canonical copy is indexed by its own
    adapter.
 3. **Skip a byte-identical copy of a Codex user skill** with the same folder name, when
-   the Codex adapter indexes skills. The Codex record stands for both.
+   the Codex adapter indexes skills and that copy is a plain file (not reached through a
+   symlink, which the Codex adapter skips). The Codex record stands for both. (0.29.1: on
+   some installs `~/.codex/skills/<name>` is a symlink to the Claude Code copy; counting it
+   left the skill indexed nowhere.)
 4. **Tag each record `agent:claude-code`**, so its vault path is
    `skills/claude-code/<slug>.md` and cannot collide with Codex or OpenClaw skills.
 5. **Config:** `adapters.claude_code.skills_root` (default `$CLAUDE_CONFIG_DIR/skills`,
