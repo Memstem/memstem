@@ -341,6 +341,8 @@ adapters:
       - ~/.claude/projects
     extra_files:
       - ~/.claude/CLAUDE.md
+    # skills_root: ~/.claude/skills   # default; user skills are indexed (ADR 0051)
+    # ingest_skills: true
 ```
 
 Run `memstem doctor` after edits to verify every configured target exists and the embedder is reachable.
