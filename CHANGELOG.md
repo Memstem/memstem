@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude Code skill is no longer skipped as a "duplicate" of a Codex copy that is a symlink (ADR 0051). The Codex adapter does not index symlinked skills, and on some installs `~/.codex/skills/<name>` points at the Claude Code copy, so the skill ended up indexed nowhere.
+
 ## [0.29.0] - 2026-10-10
 
 Minor release: Claude Code user skills are now indexed, like Codex and OpenClaw skills (ADR 0051).
