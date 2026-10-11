@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A memory or skill file whose YAML frontmatter does not parse is no longer skipped whole (ADR 0052). The most common cause is a plain-prose `description:` or `title:` containing `: ` (`Browser support: Chrome 114+`), which YAML reads as a nested mapping and rejects. Strict YAML is still tried first; when it fails, the header is read one `key: value` line at a time (values keep their YAML type when YAML accepts them alone, otherwise the literal string; bare `key:` lines take their indented block as a list or nested mapping) and the file is indexed. The daemon logs `frontmatter read leniently for <path>` at INFO so the header can still be tidied. Headers that are not `key: value` lines at all are still reported on `/health` `skipped_files` and by `memstem doctor`.
+
 ## [0.29.1] - 2026-10-10
 
 Patch release: fixes Claude Code skills being skipped when the Codex copy is a symlink to them (ADR 0051).

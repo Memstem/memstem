@@ -1039,15 +1039,16 @@ def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
 
     Walks the same roots the adapters ingest (OpenClaw workspaces and shared
     files, Claude Code roots and extras, Codex skills/memories) and parses
-    each ``*.md`` with the adapters' own parser. A file with no frontmatter
-    is fine; only a frontmatter block that fails to parse is reported. Runs
+    each ``*.md`` with the adapters' own parser (including the lenient
+    recovery of ADR 0052, so a file the daemon ingests is never reported). A
+    file with no frontmatter is fine; only a frontmatter block that fails to
+    parse is reported. Runs
     in the CLI process, so it works with the daemon stopped — the daemon's
     own view is ``/health`` ``skipped_files``.
     """
-    import frontmatter as fm
-
     from memstem.adapters.codex import _iter_memory_files, _iter_skill_files
     from memstem.adapters.openclaw import _iter_workspace_files
+    from memstem.core.frontmatter import load_post
 
     # Exactly the markdown the adapters ingest — nothing more, or the check
     # would flag files no adapter ever reads. Claude Code ingests session
@@ -1086,7 +1087,7 @@ def _scan_source_frontmatter(cfg: Config) -> list[tuple[Path, str]]:
             continue
         seen.add(path)
         try:
-            fm.loads(path.read_text(encoding="utf-8"))
+            load_post(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as exc:
             bad.append((path, f"unreadable: {exc}"))
         except Exception as exc:
