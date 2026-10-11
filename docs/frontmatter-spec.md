@@ -101,4 +101,4 @@ _ingested from claude-code on 2026-04-25_
 
 ## Validation
 
-The Memstem daemon validates frontmatter on ingest. Invalid frontmatter is rejected with a logged warning; the file remains on disk for human inspection.
+The Memstem daemon validates frontmatter on ingest. For files MemStem itself authors, invalid frontmatter is a bug and is rejected. For agent-authored source files (memories, skills, instructions) the daemon is tolerant (ADR 0052): a header that is not valid YAML — typically a prose `description:` containing `: ` — is read one `key: value` line at a time and the file is indexed, with an INFO log naming the file so the header can be tidied. Only a header that is not `key: value` lines at all (or lacks its closing `---`) is skipped; such files are listed on `/health` `skipped_files` and by `memstem doctor`, and remain on disk for human inspection.

@@ -24,7 +24,11 @@ from memstem.core.skipped import SKIPPED, SkippedFiles
 from memstem.core.storage import Vault
 from memstem.servers.http_server import build_app
 
-BAD = "---\ntitle: broken: [unclosed\n---\n\nbody\n"
+# Unrecoverable: the header line is not a ``key: value`` pair, so even the
+# lenient reader (ADR 0052) gives up and the YAML error is reported.
+BAD = "---\n[unclosed\n---\n\nbody\n"
+# Recoverable: valid to a human, a YAML "mapping values" error to the parser.
+SLOPPY = "---\ntitle: Browser support: Chrome 114+\n---\n\nbody\n"
 GOOD = "---\ntitle: fixed\n---\n\nbody\n"
 
 
@@ -78,6 +82,32 @@ class TestAdapterHooks:
         assert {f["source"] for f in SKIPPED.snapshot()} == {"claude-code", "codex"}
 
 
+class TestLenientRecovery:
+    """ADR 0052: a colon in a prose header value no longer costs the file."""
+
+    def test_openclaw_ingests_sloppy_header_and_does_not_record(self, tmp_path: Path) -> None:
+        path = _write(tmp_path / "memory" / "sloppy.md", SLOPPY)
+        rec = _file_to_record(path, "openclaw")
+        assert rec is not None and rec.title == "Browser support: Chrome 114+"
+        assert rec.body.strip() == "body"
+        assert SKIPPED.count() == 0
+
+    def test_claude_code_and_codex_ingest_sloppy_header(self, tmp_path: Path) -> None:
+        cc = _write(tmp_path / "CLAUDE.md", SLOPPY)
+        assert _instructions_record(cc, "claude-code") is not None
+        cx = _write(tmp_path / "skills" / "x" / "SKILL.md", SLOPPY)
+        rec = _markdown_to_record(cx, "skill", "codex")
+        assert rec is not None and rec.title == "Browser support: Chrome 114+"
+        assert SKIPPED.count() == 0
+
+    def test_sloppy_file_drops_off_the_list_once_recovered(self, tmp_path: Path) -> None:
+        path = _write(tmp_path / "memory" / "was-bad.md", BAD)
+        assert _file_to_record(path, "openclaw") is None and SKIPPED.count() == 1
+        path.write_text(SLOPPY, encoding="utf-8")
+        assert _file_to_record(path, "openclaw") is not None
+        assert SKIPPED.count() == 0
+
+
 class TestHealth:
     def test_health_exposes_block_without_degrading(self, tmp_path: Path) -> None:
         root = tmp_path / "vault"
@@ -107,6 +137,7 @@ class TestDoctorScan:
         ws = tmp_path / "ws"
         _write(ws / "memory" / "bad.md", BAD)
         _write(ws / "memory" / "good.md", GOOD)
+        _write(ws / "memory" / "sloppy.md", SLOPPY)  # ingested leniently, so not reported
         _write(ws / "memory" / "plain.md", "# no frontmatter at all\n")
         _write(ws / "skills" / "s" / "SKILL.md", "---\nname: s\n---\n# S\n")
         cfg = Config(

@@ -8,6 +8,7 @@ strongly-typed `Frontmatter` model conforming to `docs/frontmatter-spec.md`.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -15,6 +16,7 @@ from typing import Any, Self
 from uuid import UUID, uuid4, uuid5
 
 import frontmatter as fm
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
@@ -105,6 +107,140 @@ def parse(content: str) -> tuple[dict[str, Any], str]:
     """
     post = fm.loads(content)
     return dict(post.metadata), post.content
+
+
+_BOUNDARY_RE = re.compile(r"^-{3,}\s*$")
+"""A frontmatter delimiter line, as python-frontmatter recognises it."""
+_KEY_RE = re.compile(r"^(?P<key>[A-Za-z0-9_][A-Za-z0-9_.\-]*):(?:\s+(?P<value>\S.*?))?\s*$")
+"""``key: value`` or a bare ``key:`` opening an indented block."""
+
+
+def _condense(exc: BaseException) -> str:
+    return " ".join(str(exc).split())
+
+
+def _lenient_scalar(text: str) -> Any:
+    """One frontmatter value, read the way its author meant it.
+
+    YAML scalars that parse (numbers, dates, booleans, quoted strings, flow
+    lists) keep their YAML type so a recovered file matches a clean one.
+    Anything YAML rejects — or would turn into a *mapping*, which is what an
+    unquoted ``Browser support: Chrome 114+`` becomes — is kept as the literal
+    string.
+    """
+    text = text.strip()
+    try:
+        value = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return text
+    if isinstance(value, dict):
+        return text
+    return value
+
+
+def _dedent(lines: list[str]) -> list[str]:
+    indent = min(len(line) - len(line.lstrip()) for line in lines)
+    return [line[indent:] for line in lines]
+
+
+def _lenient_block(lines: list[str]) -> Any:
+    """An indented block under a bare ``key:`` — a list or a nested mapping."""
+    lines = _dedent([line for line in lines if line.strip()])
+    if lines[0].startswith("- ") or lines[0] == "-":
+        items: list[Any] = []
+        for line in lines:
+            if line.startswith("- ") or line == "-":
+                items.append(_lenient_scalar(line[1:]))
+            elif items and isinstance(items[-1], str):
+                items[-1] = f"{items[-1]} {line.strip()}"
+            else:
+                raise ValueError(f"unexpected list line: {line!r}")
+        return items
+    return _lenient_mapping(lines)
+
+
+def _lenient_mapping(lines: list[str]) -> dict[str, Any]:
+    """Read ``key: value`` lines one at a time (see :func:`load_post`)."""
+    result: dict[str, Any] = {}
+    last_key: str | None = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        match = _KEY_RE.match(line) if line[0] not in " \t" else None
+        if match is None:
+            # A wrapped plain scalar continues on the next line in YAML too.
+            if last_key is not None and isinstance(result[last_key], str):
+                result[last_key] = f"{result[last_key]} {line.strip()}".strip()
+                i += 1
+                continue
+            raise ValueError(f"line {i + 1} is not a key: value pair: {line!r}")
+        key, value = match.group("key"), match.group("value")
+        if value is None:
+            block: list[str] = []
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j][0] in " \t"):
+                block.append(lines[j])
+                j += 1
+            result[key] = _lenient_block(block) if any(b.strip() for b in block) else None
+            i = j
+        else:
+            result[key] = _lenient_scalar(value)
+            i += 1
+        last_key = key
+    if not result:
+        raise ValueError("frontmatter block has no keys")
+    return result
+
+
+def _lenient_split(text: str) -> tuple[dict[str, Any], str]:
+    lines = text.split("\n")
+    if not lines or not _BOUNDARY_RE.match(lines[0]):
+        raise ValueError("no opening frontmatter delimiter")
+    for end in range(1, len(lines)):
+        if _BOUNDARY_RE.match(lines[end]):
+            break
+    else:
+        raise ValueError("no closing frontmatter delimiter")
+    return _lenient_mapping(lines[1:end]), "\n".join(lines[end + 1 :]).strip()
+
+
+def load_post(text: str) -> tuple[fm.Post, str | None]:
+    """Parse frontmatter+markdown, recovering files whose header is not valid YAML.
+
+    Agents write memory and skill files by hand, and the most common slip is a
+    plain-prose ``description:`` or ``title:`` that happens to contain ``: `` —
+    valid to a human, a YAML ``mapping values are not allowed`` error to the
+    parser. Until 0.30.0 such a file was skipped whole: its *content* fell out
+    of the index over a punctuation mark in its header, which is exactly what
+    the pull-based, agent-agnostic contract says must not happen (ADR 0005 and
+    :func:`coerce`; ADR 0052).
+
+    Strict YAML is tried first and wins whenever it parses, so clean files are
+    unaffected. Otherwise the header is read one ``key: value`` line at a
+    time: each value keeps its YAML type when YAML accepts it on its own and
+    is kept as the literal string when it does not; bare ``key:`` lines take
+    the indented block beneath them as a list or a nested mapping; wrapped
+    lines continue the previous value. A header that does not even look like
+    ``key: value`` lines — or has no closing ``---`` — still fails, and the
+    original YAML error is re-raised so the file is reported as before.
+
+    Returns ``(post, recovered)``: ``recovered`` is ``None`` for a clean parse
+    and the condensed YAML error when the lenient reader was needed, so
+    callers can log that the file would be worth fixing.
+    """
+    try:
+        return fm.loads(text), None
+    except Exception as exc:
+        try:
+            metadata, body = _lenient_split(text)
+        except ValueError:
+            raise exc from None
+        post = fm.Post(body)
+        post.metadata.update(metadata)
+        return post, _condense(exc)
 
 
 def serialize(metadata: dict[str, Any], body: str) -> str:

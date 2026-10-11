@@ -32,7 +32,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import frontmatter as fm
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -46,6 +45,7 @@ from memstem.adapters.openclaw_sqlite import (
 from memstem.adapters.plugin_skills import iter_plugin_skills
 from memstem.adapters.trajectory import merge_transcripts
 from memstem.config import OpenClawWorkspace
+from memstem.core.frontmatter import load_post
 from memstem.core.skipped import SKIPPED
 
 logger = logging.getLogger(__name__)
@@ -82,11 +82,13 @@ def _file_to_record(path: Path, source_name: str) -> MemoryRecord | None:
         return None
 
     try:
-        post = fm.loads(text)
+        post, recovered = load_post(text)
     except Exception as exc:
         logger.warning("frontmatter parse failed for %s: %s", path, exc)
         SKIPPED.record(path, exc, source=source_name)
         return None
+    if recovered:
+        logger.info("frontmatter read leniently for %s (not valid YAML: %s)", path, recovered)
     SKIPPED.clear(path)
 
     meta = dict(post.metadata)

@@ -14,6 +14,7 @@ from memstem.core.frontmatter import (
     MemoryType,
     Provenance,
     coerce,
+    load_post,
     parse,
     serialize,
     validate,
@@ -49,6 +50,102 @@ class TestParse:
         meta, body = parse(text)
         assert meta == {"title": "only meta"}
         assert body == ""
+
+
+class TestLoadPost:
+    """ADR 0052: a header that is not valid YAML is read leniently, not skipped."""
+
+    def test_clean_yaml_is_untouched(self) -> None:
+        post, recovered = load_post("---\ntitle: hi\nn: 2\n---\n\nbody\n")
+        assert recovered is None
+        assert dict(post.metadata) == {"title": "hi", "n": 2}
+        assert post.content == "body"
+
+    def test_no_frontmatter_is_untouched(self) -> None:
+        post, recovered = load_post("just markdown\n")
+        assert recovered is None and dict(post.metadata) == {}
+
+    def test_colon_in_prose_description_is_kept_as_string(self) -> None:
+        text = (
+            "---\n"
+            "name: Text-wrap discipline — balance + pretty\n"
+            "description: Modern CSS `text-wrap: balance` is the default. "
+            "Browser support: Chrome 114+, Safari 17.4+\n"
+            "type: feedback\n"
+            "originDate: 2026-04-21\n"
+            "---\n"
+            "Every page ships with this.\n\n```css\nh1 { text-wrap: balance; }\n```\n"
+        )
+        post, recovered = load_post(text)
+        assert recovered and "mapping values are not allowed" in recovered
+        meta = dict(post.metadata)
+        assert meta["name"] == "Text-wrap discipline — balance + pretty"
+        description = meta["description"]
+        assert isinstance(description, str)
+        assert description.startswith("Modern CSS `text-wrap: balance`")
+        assert description.endswith("Safari 17.4+")
+        assert meta["type"] == "feedback"
+        assert str(meta["originDate"]) == "2026-04-21"  # YAML types survive
+        assert post.content.startswith("Every page ships with this.")
+        assert post.content.endswith("```")
+
+    def test_quoted_quotes_and_alias_like_values(self) -> None:
+        text = (
+            '---\ndescription: WIRED (Skyler: "All 5") — five hooks\nref: *not-an-alias\n---\nb\n'
+        )
+        post, recovered = load_post(text)
+        assert recovered
+        assert post.metadata["description"] == 'WIRED (Skyler: "All 5") — five hooks'
+        assert post.metadata["ref"] == "*not-an-alias"
+
+    def test_nested_blocks_lists_and_wrapped_lines(self) -> None:
+        text = (
+            "---\n"
+            "title: a: b\n"
+            "tags: [x, y]\n"
+            "metadata:\n"
+            "  type: feedback\n"
+            "  owner: Skyler: lead\n"
+            "links:\n"
+            "  - one\n"
+            "  - two: three\n"
+            "summary: first line\n"
+            "  continues here\n"
+            "empty:\n"
+            "# a comment\n"
+            "---\n"
+            "body\n"
+        )
+        post, recovered = load_post(text)
+        assert recovered
+        assert dict(post.metadata) == {
+            "title": "a: b",
+            "tags": ["x", "y"],
+            "metadata": {"type": "feedback", "owner": "Skyler: lead"},
+            "links": ["one", "two: three"],
+            "summary": "first line continues here",
+            "empty": None,
+        }
+        assert post.content == "body"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "---\n[unclosed\n---\n\nbody\n",  # first line is not key: value
+            "---\ntitle: a: b\nbody without closing\n",  # fm.loads treats as body, no error
+            "---\n\n---\nbody\n",
+        ],
+    )
+    def test_unrecoverable_headers_still_raise_or_pass_through(self, text: str) -> None:
+        # Either strict parsing accepts it (no frontmatter → plain body) or the
+        # original YAML error is re-raised; the lenient reader never invents
+        # metadata for something that is not key: value lines.
+        try:
+            post, recovered = load_post(text)
+        except Exception as exc:
+            assert "while parsing" in str(exc) or "mapping values" in str(exc)
+        else:
+            assert recovered is None and dict(post.metadata) == {}
 
 
 class TestSerialize:
