@@ -157,6 +157,89 @@ class TestExtractMessageText:
         assert _extract_message_text(42) == ""
 
 
+AGENTS_MD_BLOCK = (
+    "# AGENTS.md instructions for /home/agent/workspace\n\n<INSTRUCTIONS>\n"
+    "# Assistant Instructions\nYou are a personal AI assistant.\n</INSTRUCTIONS>"
+)
+PLUGINS_BLOCK = (
+    "<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n"
+    "- Airtable (airtable@openai-curated-remote)\n</recommended_plugins>"
+)
+ENV_BLOCK = "<environment_context>\n  <cwd>/home/agent/workspace</cwd>\n</environment_context>"
+
+
+def _multi_block_line(role: str, texts: list[str]) -> dict[str, Any]:
+    line = _message_line(role, "")
+    line["payload"]["content"] = [{"type": "input_text", "text": t} for t in texts]
+    return line
+
+
+class TestInjectedContext:
+    """Codex-injected context blocks are dropped from user turns (ADR 0053)."""
+
+    def test_injected_blocks_in_one_message_are_all_dropped(self, tmp_path: Path) -> None:
+        path = _write_session(
+            tmp_path / "rollout.jsonl",
+            [
+                _session_meta_line(),
+                _multi_block_line("user", [AGENTS_MD_BLOCK, PLUGINS_BLOCK, ENV_BLOCK]),
+                _message_line("user", "Monitor the Access Doors account"),
+                _message_line("assistant", "Done.", block_type="output_text"),
+            ],
+        )
+        parsed = _parse_session_file(path)
+        assert parsed is not None
+        body = parsed["body"]
+        for marker in ("AGENTS.md", "<INSTRUCTIONS>", "recommended_plugins", "Airtable", "<cwd>"):
+            assert marker not in body
+        assert body == "**User:** Monitor the Access Doors account\n\n**Assistant:** Done."
+        assert parsed["title"] == "Monitor the Access Doors account"
+        assert parsed["turn_count"] == 2
+
+    def test_real_text_after_injected_block_in_same_message_is_kept(self, tmp_path: Path) -> None:
+        path = _write_session(
+            tmp_path / "rollout.jsonl",
+            [_session_meta_line(), _multi_block_line("user", [PLUGINS_BLOCK, "what is 2+2"])],
+        )
+        parsed = _parse_session_file(path)
+        assert parsed is not None
+        assert parsed["body"] == "**User:** what is 2+2"
+        assert parsed["title"] == "what is 2+2"
+
+    def test_agents_md_heading_without_instructions_tag_is_kept(self) -> None:
+        text = "# AGENTS.md instructions are confusing, can you rewrite them?"
+        assert _extract_message_text(text, drop_injected=True) == text
+
+    def test_untitled_agents_md_variant_is_dropped(self) -> None:
+        block = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nrules\n</INSTRUCTIONS>"
+        assert (
+            _extract_message_text([{"type": "input_text", "text": block}], drop_injected=True) == ""
+        )
+
+    def test_invoked_skill_becomes_marker(self) -> None:
+        block = (
+            "<skill>\n<name>google-ads</name>\n<path>/x/SKILL.md</path>\n---\nlong body\n</skill>"
+        )
+        content = [{"type": "input_text", "text": block}, {"type": "input_text", "text": "run it"}]
+        assert _extract_message_text(content, drop_injected=True) == "[skill: google-ads]\nrun it"
+
+    def test_string_content_injected_block_dropped(self) -> None:
+        assert _extract_message_text(PLUGINS_BLOCK, drop_injected=True) == ""
+
+    def test_assistant_text_is_never_filtered(self, tmp_path: Path) -> None:
+        path = _write_session(
+            tmp_path / "rollout.jsonl",
+            [
+                _session_meta_line(),
+                _message_line("user", "show me the plugin tag"),
+                _message_line("assistant", PLUGINS_BLOCK, block_type="output_text"),
+            ],
+        )
+        parsed = _parse_session_file(path)
+        assert parsed is not None
+        assert "recommended_plugins" in parsed["body"]
+
+
 class TestParseSessionFile:
     def test_extracts_metadata(self, tmp_path: Path) -> None:
         path = _basic_session(tmp_path / "rollout.jsonl")
