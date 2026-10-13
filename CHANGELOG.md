@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-13
+
+Minor release: Codex sessions stop indexing the context Codex injects into every rollout (ADR 0053). Existing sessions shrink on the next daemon start.
+
 ### Fixed
 
 - Codex sessions no longer index the context Codex injects into every rollout (ADR 0053). The AGENTS.md instructions, the `<recommended_plugins>` catalogue and `<environment_context>` arrive as separate blocks in the first user message; only a message *starting* with `<environment_context>` was dropped, so the rest was stored as if the user had typed it and often became the session title. User turns are now filtered per block, and an invoked `<skill>` becomes a one-line `[skill: name]` marker. On Codex-fed vaults this was 66–91% of all indexed text. Existing sessions are rewritten and re-embedded by the next daemon start (startup reconcile); distillations are not regenerated.
