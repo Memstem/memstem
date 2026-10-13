@@ -229,6 +229,10 @@ class Pipeline:
                 decision.kind,
                 decision.reason,
             )
+            if session_existing is None and _is_session_type(record):
+                stale_id = self._lookup_id_or_none(record.source, record.ref)
+                if stale_id is not None:
+                    self._retire_superseded_session(record, str(stale_id))
             return None
 
         # TAG_TRANSIENT: persist the record but stamp `valid_to` so the
@@ -321,12 +325,13 @@ class Pipeline:
         return memory
 
     def _retire_superseded_session(self, record: MemoryRecord, stale_id: str) -> None:
-        """Remove a session whose source now parses to another memory's body (ADR 0053).
+        """Remove a session whose source no longer yields its own record (ADR 0053).
 
         The source's previous version is stored under ``stale_id``; its new
-        content is byte-identical to a memory already held, so ADR 0012 keeps
-        only that one. Without this the stale version (e.g. a transcript still
-        carrying Codex's injected context) stayed searchable forever. The ref's
+        content is either byte-identical to a memory already held (ADR 0012
+        keeps only that one) or noise the filter drops (ADR 0011). Without this
+        the stale version (e.g. a transcript still carrying Codex's injected
+        context) stayed searchable forever. The ref's
         mapping is dropped; the memory goes only when no other ref keeps it,
         and its vault file only when the file still names this memory.
         """
@@ -343,7 +348,7 @@ class Pipeline:
                 pass
         self.index.delete(stale_id)
         logger.info(
-            "dedup: retired superseded session %s (source=%s, ref=%s)",
+            "retired superseded session %s (source=%s, ref=%s)",
             stale_id,
             record.source,
             record.ref,

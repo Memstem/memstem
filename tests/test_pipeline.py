@@ -617,3 +617,16 @@ class TestRetireSupersededSession:
 
         assert index.lookup_record_mapping("openclaw", "/m/b.md") == str(b.id)
         assert index.get_path(str(b.id)) is not None
+
+    def test_stale_session_is_removed_when_new_version_is_noise(
+        self, vault: Vault, index: Index
+    ) -> None:
+        pipe = Pipeline(vault, index)
+        old = "<recommended_plugins>\nHere is a list of plugins you could install.\n" * 20
+        b = _processed(pipe, self._session("/r/b.jsonl", old + "\n\n" + self.A_BODY))
+        tool_dump = "\n".join(f"[function_call: exec_command] {i}" for i in range(60))
+
+        assert pipe.process(self._session("/r/b.jsonl", tool_dump)) is None
+
+        assert index.lookup_record_mapping("codex", "/r/b.jsonl") is None
+        assert index.get_path(str(b.id)) is None

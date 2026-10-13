@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A session whose source now parses to exactly another memory's body is retired instead of being left with its previous content (ADR 0053 addendum). After 0.31.0 stripped Codex's injected context, many scheduled agent runs became identical; the exact-body dedup skipped each later copy and its old, boilerplate-heavy version stayed searchable. Only `session` records are retired; authored memories, skills and dailies are never removed this way. Deleting a memory from the index now also clears its body-hash rows.
+- A session whose source now parses to exactly another memory's body, or to content the noise filter drops, is retired instead of being left with its previous content (ADR 0053 addendum). After 0.31.0 stripped Codex's injected context, many scheduled agent runs became identical; the exact-body dedup skipped each later copy and its old, boilerplate-heavy version stayed searchable. Only `session` records are retired; authored memories, skills and dailies are never removed this way. Deleting a memory from the index now also clears its body-hash rows.
+- `Vault.walk` skips a file deleted between the directory listing and the read instead of raising; a hygiene stage scanning the vault while an ingest removed files failed its cycle.
 
 ## [0.31.0] - 2026-10-13
 

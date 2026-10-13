@@ -67,7 +67,12 @@ When a source's record maps to an existing memory and its new body duplicates a
 never an authored memory/skill/daily), the pipeline now drops that ref's `record_map`
 row and, if no other ref still maps to the stale memory, deletes it from the index and
 deletes its vault file when the file still carries that id. This matches what ADR 0012
-already does for a duplicate arriving fresh: one copy is kept. `Index.delete` also
+already does for a duplicate arriving fresh: one copy is kept.
+
+The same applies when the session's new body is dropped by the ADR 0011 noise filter.
+On the same vault 785 runs were, without the injected prose, almost entirely tool
+calls; the filter dropped the new version and the padded old one stayed. A session the
+filter would reject on arrival is now also removed when its source re-parses to noise. `Index.delete` also
 removes the memory's `body_hash_index` rows, so a deleted memory can no longer make the
 pipeline drop identical content as a duplicate of nothing.
 - New wrappers Codex adds later will need adding to the list. The fleet health check's

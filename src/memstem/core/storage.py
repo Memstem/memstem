@@ -158,6 +158,8 @@ class Vault:
             except InvalidFrontmatterError as exc:
                 logger.warning("skipping %s: %s", md_path, exc)
                 continue
+            except MemoryNotFoundError:
+                continue  # deleted between the directory listing and the read
             if types is not None and memory.type.value not in types:
                 continue
             yield memory
