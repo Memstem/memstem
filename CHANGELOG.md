@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-10-13
+
+Patch release: finishes the 0.31.0 Codex cleanup by retiring stale session copies (ADR 0053 addendum).
+
 ### Fixed
 
 - A session whose source now parses to exactly another memory's body, or to content the noise filter drops, is retired instead of being left with its previous content (ADR 0053 addendum). After 0.31.0 stripped Codex's injected context, many scheduled agent runs became identical; the exact-body dedup skipped each later copy and its old, boilerplate-heavy version stayed searchable. Only `session` records are retired; authored memories, skills and dailies are never removed this way. Deleting a memory from the index now also clears its body-hash rows.
