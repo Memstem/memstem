@@ -149,6 +149,16 @@ class TestWalk:
         titles = sorted(m.frontmatter.title or "" for m in vault.walk())
         assert titles == ["a", "b", "skill-c"]
 
+    def test_walk_skips_file_deleted_mid_walk(self, tmp_vault: Path) -> None:
+        vault = Vault(tmp_vault)
+        vault.write(_make_memory("memories/a.md", title="a"))
+        vault.write(_make_memory("memories/b.md", title="b"))
+        walker = vault.walk()
+        first = next(walker)
+        other = "memories/b.md" if first.frontmatter.title == "a" else "memories/a.md"
+        vault.delete(other)  # a concurrent ingest removed it after the listing
+        assert list(walker) == []
+
     def test_walk_filters_by_type(self, tmp_vault: Path) -> None:
         vault = Vault(tmp_vault)
         vault.write(_make_memory("memories/a.md"))
