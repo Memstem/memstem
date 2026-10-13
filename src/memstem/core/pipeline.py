@@ -73,6 +73,14 @@ def _is_authored_type(record: MemoryRecord) -> bool:
         return True
 
 
+def _is_session_type(record: MemoryRecord) -> bool:
+    """True if the record resolves to a ``session`` (ADR 0053 retirement scope)."""
+    try:
+        return coerce(record.metadata or {}).type == MemoryType.SESSION
+    except Exception:
+        return False
+
+
 def _agent_tag(record: MemoryRecord) -> str | None:
     """Extract `agent:<tag>` from record tags, returning the tag or None.
 
@@ -274,6 +282,12 @@ class Pipeline:
             #     rotating that .jsonl would look like a dead authored source.
             if existing_id_for_ref is None and _is_authored_type(record):
                 self._record_mapping(record.source, record.ref, UUID(existing_id_for_hash))
+            elif (
+                existing_id_for_ref is not None
+                and session_existing is None
+                and _is_session_type(record)
+            ):
+                self._retire_superseded_session(record, str(existing_id_for_ref))
             logger.info(
                 "dedup: skipped exact body duplicate (source=%s, ref=%s, points_to=%s)",
                 record.source,
@@ -305,6 +319,35 @@ class Pipeline:
         ):
             self.index.enqueue_embed(str(memory_id))
         return memory
+
+    def _retire_superseded_session(self, record: MemoryRecord, stale_id: str) -> None:
+        """Remove a session whose source now parses to another memory's body (ADR 0053).
+
+        The source's previous version is stored under ``stale_id``; its new
+        content is byte-identical to a memory already held, so ADR 0012 keeps
+        only that one. Without this the stale version (e.g. a transcript still
+        carrying Codex's injected context) stayed searchable forever. The ref's
+        mapping is dropped; the memory goes only when no other ref keeps it,
+        and its vault file only when the file still names this memory.
+        """
+        self.index.delete_record_mapping(record.source, record.ref)
+        if self.index.count_record_mappings(stale_id) > 0:
+            return
+        rel_path = self.index.get_path(stale_id)
+        if rel_path is not None:
+            try:
+                memory = self.vault.read(rel_path)
+                if str(memory.id) == stale_id:
+                    self.vault.delete(rel_path)
+            except MemoryNotFoundError:
+                pass
+        self.index.delete(stale_id)
+        logger.info(
+            "dedup: retired superseded session %s (source=%s, ref=%s)",
+            stale_id,
+            record.source,
+            record.ref,
+        )
 
     def _openclaw_session(self, record: MemoryRecord) -> Memory | None:
         """Share the canonical session slot across SQLite, bridge and archives.

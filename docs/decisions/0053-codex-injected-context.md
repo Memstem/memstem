@@ -54,5 +54,21 @@ first real user text.
   dead fraction passes its threshold.
 - A rollout whose only user content was injected text now yields no record; its earlier
   record is left as it was.
+
+## Addendum (0.31.1) — retire a session that now duplicates another
+
+Rolling 0.31.0 out on a headless-agent vault showed that once the injected text is
+gone, thousands of scheduled runs are byte-identical. ADR 0012's exact-body dedup then
+returned early for each later copy, and its *previous* version, still carrying the
+injected text, stayed stored and searchable (3,059 of 7,602 sessions on that vault).
+
+When a source's record maps to an existing memory and its new body duplicates a
+*different* memory, and the record is a `session` (not OpenClaw's merged session slot,
+never an authored memory/skill/daily), the pipeline now drops that ref's `record_map`
+row and, if no other ref still maps to the stale memory, deletes it from the index and
+deletes its vault file when the file still carries that id. This matches what ADR 0012
+already does for a duplicate arriving fresh: one copy is kept. `Index.delete` also
+removes the memory's `body_hash_index` rows, so a deleted memory can no longer make the
+pipeline drop identical content as a duplicate of nothing.
 - New wrappers Codex adds later will need adding to the list. The fleet health check's
   per-vault size and the share of session text are the signal.

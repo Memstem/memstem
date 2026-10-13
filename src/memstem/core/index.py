@@ -1204,6 +1204,9 @@ class Index:
             self.db.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_queue WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM embed_state WHERE memory_id = ?", (memory_id,))
+            # A hash row left pointing at a deleted id would make the pipeline
+            # drop identical content as a "duplicate" of nothing.
+            self.db.execute("DELETE FROM body_hash_index WHERE memory_id = ?", (memory_id,))
             self.db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
 
     def strip_vectors(self, memory_id: str) -> int:
@@ -1956,6 +1959,14 @@ class Index:
                 """
             ).fetchall()
         return [(r["source"], r["ref"], r["memory_id"], r["type"]) for r in rows]
+
+    def count_record_mappings(self, memory_id: str) -> int:
+        """Number of ``(source, ref)`` rows that point at ``memory_id``."""
+        with self._lock:
+            row = self.db.execute(
+                "SELECT COUNT(*) AS n FROM record_map WHERE memory_id = ?", (memory_id,)
+            ).fetchone()
+        return int(row["n"])
 
     def delete_record_mapping(self, source: str, ref: str) -> None:
         """Remove a single ``(source, ref)`` row from ``record_map``.

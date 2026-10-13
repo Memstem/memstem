@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from memstem.adapters.base import MemoryRecord
+from memstem.core.dedup import normalized_body_hash as normalized_hash
 from memstem.core.index import Index, body_hash
 from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Memory, Vault
@@ -566,3 +567,53 @@ class TestSkipEnqueueWhenUnchanged:
             "SELECT 1 FROM embed_queue WHERE memory_id = ?", (str(memory.id),)
         ).fetchall()
         assert len(rows) == 1
+
+
+class TestRetireSupersededSession:
+    """ADR 0053: a session that re-parses to another memory's body is retired."""
+
+    A_BODY = "**User:** monitor the ads account\n\n**Assistant:** No changes today."
+
+    def _session(self, ref: str, body: str) -> MemoryRecord:
+        return _record(source="codex", ref=ref, title="run", body=body, type_="session")
+
+    def test_stale_session_is_removed_when_it_now_duplicates_another(
+        self, vault: Vault, index: Index
+    ) -> None:
+        pipe = Pipeline(vault, index)
+        a = _processed(pipe, self._session("/r/a.jsonl", self.A_BODY))
+        old_b_body = "<recommended_plugins>catalogue</recommended_plugins>\n\n" + self.A_BODY
+        b = _processed(pipe, self._session("/r/b.jsonl", old_b_body))
+        assert b.path is not None and (vault.root / b.path).is_file()
+
+        assert pipe.process(self._session("/r/b.jsonl", self.A_BODY)) is None
+
+        assert index.lookup_record_mapping("codex", "/r/b.jsonl") is None
+        assert index.get_path(str(b.id)) is None
+        assert not (vault.root / b.path).exists()
+        assert index.find_memory_id_for_body_hash(normalized_hash(old_b_body)) is None
+        assert index.lookup_record_mapping("codex", "/r/a.jsonl") == str(a.id)
+        assert a.path is not None and (vault.root / a.path).is_file()
+
+    def test_session_kept_while_another_ref_still_maps_to_it(
+        self, vault: Vault, index: Index
+    ) -> None:
+        pipe = Pipeline(vault, index)
+        _processed(pipe, self._session("/r/a.jsonl", self.A_BODY))
+        b = _processed(pipe, self._session("/r/b.jsonl", "a different transcript"))
+        pipe._record_mapping("codex", "/r/b-copy.jsonl", b.id)
+
+        assert pipe.process(self._session("/r/b.jsonl", self.A_BODY)) is None
+
+        assert index.lookup_record_mapping("codex", "/r/b.jsonl") is None
+        assert index.get_path(str(b.id)) is not None
+
+    def test_authored_memory_is_never_retired(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index)
+        _processed(pipe, _record(ref="/m/a.md", body="shared note text"))
+        b = _processed(pipe, _record(ref="/m/b.md", body="original note text"))
+
+        assert pipe.process(_record(ref="/m/b.md", body="shared note text")) is None
+
+        assert index.lookup_record_mapping("openclaw", "/m/b.md") == str(b.id)
+        assert index.get_path(str(b.id)) is not None
