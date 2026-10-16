@@ -236,6 +236,33 @@ def _open_index(
     return idx
 
 
+def _open_index_readonly(config: Config) -> Index:
+    """Open the index read-only for ``memstem mcp --read-only``.
+
+    No migration, no vec-table creation, no signature re-stamp or requeue:
+    those are writes, and the daemon that owns the vault does them. A
+    differing embedder signature is only warned about, because query
+    vectors from a different model would rank poorly against the stored ones.
+    """
+    db_path = config.index_path or config.vault_path / "_meta" / "index.db"
+    idx = Index(
+        db_path,
+        dimensions=config.embedding.dimensions,
+        vec_extension=vec_accel.resolve(config.sqlite_vec_path).path,
+    )
+    idx.connect_readonly()
+    stored = idx.peek_embedding_signature()
+    current = _embedding_signature(config)
+    if stored is not None and stored != current:
+        logger.warning(
+            "read-only index was embedded with %s but this config embeds queries with %s; "
+            "semantic results will rank poorly until the vault owner reindexes",
+            stored,
+            current,
+        )
+    return idx
+
+
 def _maybe_embedder(config: Config) -> Embedder | None:
     """Build the configured embedder; return None on failure (logged)."""
     try:
@@ -886,6 +913,15 @@ def migrate(
 @app.command()
 def mcp(
     vault: str | None = typer.Option(None, help="Vault path override"),
+    read_only: bool = typer.Option(
+        False,
+        "--read-only",
+        help=(
+            "Serve only the read tools (no memstem_upsert) and open the index "
+            "read-only, so nothing can write to the vault or index. Safe beside "
+            "a running daemon. Also enabled by `mcp.read_only: true` in config.yaml."
+        ),
+    ),
 ) -> None:
     """Run the Memstem MCP server on stdio.
 
@@ -896,9 +932,12 @@ def mcp(
     index is opening.
     """
     cfg = _load_config(_resolve_vault_path(vault))
+    read_only = read_only or cfg.mcp.read_only
     resources = _Resources.lazy(
         build_vault=lambda: Vault(cfg.vault_path),
-        build_index=lambda: _open_index(cfg),
+        build_index=(
+            (lambda: _open_index_readonly(cfg)) if read_only else (lambda: _open_index(cfg))
+        ),
         build_embedder=lambda: _maybe_embedder(cfg),
         build_reranker=lambda: _maybe_reranker(cfg),
         build_shadow=lambda: build_jev_shadow(cfg.search.jev_shadow, cfg.vault_path),
@@ -908,6 +947,7 @@ def mcp(
         search_config=cfg.search,
         hygiene_config=cfg.hygiene,
         idle_timeout_seconds=cfg.mcp.idle_timeout_seconds,
+        read_only=read_only,
     )
     try:
         server.run()

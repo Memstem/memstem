@@ -248,6 +248,7 @@ class Search:
         hyde: HydeExpander | None = None,
         shadow: JevShadow | None = None,
         semantic_timeout: float | None = None,
+        read_only: bool = False,
     ) -> None:
         self.vault = vault
         self.index = index
@@ -263,7 +264,11 @@ class Search:
         self.hyde = hyde if hyde is not None else NoOpExpander()
         # Shadow-mode Jev reranking (ADR 0044): scores a wider pool in the
         # background after results are served; never alters them.
-        self.shadow = shadow
+        self.shadow = None if read_only else shadow
+        # Read-only serving (``memstem mcp --read-only``): search must not write
+        # anything. Disables the query log, the Jev shadow ledger and the
+        # rerank / HyDE caches regardless of what the caller passes.
+        self.read_only = read_only
         # ADR 0048: wall-clock cap on the semantic leg (query embed + vector
         # scan). ``None`` keeps the original inline, unbounded behavior.
         self.semantic_timeout = semantic_timeout
@@ -454,6 +459,9 @@ class Search:
         order) are queued for Jev scoring. No second search runs, and the
         served outcome is returned unchanged either way.
         """
+        if self.read_only:
+            log_client = None
+            shadow_client = None
         wants_shadow = (
             self.shadow is not None
             and shadow_client is not None
@@ -779,7 +787,11 @@ class Search:
             return query
         if not self.hyde.should_expand(query):
             return query
-        hypothesis = self.hyde.expand_cached(query, db=self.index.db, lock=self.index.lock)
+        hypothesis = (
+            self.hyde.expand_cached(query)
+            if self.read_only
+            else self.hyde.expand_cached(query, db=self.index.db, lock=self.index.lock)
+        )
         if not hypothesis:
             return query
         return hypothesis
@@ -809,9 +821,13 @@ class Search:
         # The lock is passed INTO score_candidates so it guards only the cache
         # DB ops, not the per-candidate LLM calls — holding it across N reranker
         # round-trips would stall the embed workers and other searches.
-        scores = self.reranker.score_candidates(
-            query, candidates, db=self.index.db, lock=self.index.lock
-        )
+        if self.read_only:
+            # No cache table writes: score uncached.
+            scores = self.reranker.score_candidates(query, candidates)
+        else:
+            scores = self.reranker.score_candidates(
+                query, candidates, db=self.index.db, lock=self.index.lock
+            )
         # Pair (rerank_score, original RRF score) for stable composite
         # ordering. Higher rerank wins; ties break on RRF (which itself
         # already encodes importance boost) so two ``1.0`` reranks

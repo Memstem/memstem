@@ -1,5 +1,8 @@
 """MCP server exposing Memstem search, get, list_skills, get_skill, upsert.
 
+With ``read_only=True`` (``memstem mcp --read-only``) ``memstem_upsert`` is not
+registered and nothing a tool does writes to the vault or the index.
+
 Built on `MCPServer` from the official `mcp` Python SDK (v2; the class
 FastMCP was renamed in SDK 2.0, decorator API unchanged). Tools match the
 contract in `docs/mcp-api.md`. The server is a pure factory — the daemon
@@ -147,6 +150,7 @@ class _Resources:
         "_reranker_resolved",
         "_search",
         "_vault",
+        "read_only",
         "semantic_timeout",
     )
 
@@ -173,6 +177,9 @@ class _Resources:
         self._search: Search | None = None
         # ADR 0048; set by build_server from SearchConfig before first search.
         self.semantic_timeout: float | None = None
+        # Set by build_server(read_only=...) before first search; keeps the
+        # Search from writing (query log, Jev shadow ledger, rerank cache).
+        self.read_only = False
         # Use an RLock because `search` composes the cached vault/index/embedder
         # via their properties while holding the same guard. A plain Lock would
         # self-deadlock on first `res.search` access in lazy mode.
@@ -271,8 +278,9 @@ class _Resources:
                         index=self.index,
                         embedder=self.embedder,
                         reranker=self.reranker,
-                        shadow=self._build_shadow(),
+                        shadow=None if self.read_only else self._build_shadow(),
                         semantic_timeout=self.semantic_timeout,
+                        read_only=self.read_only,
                     )
         return self._search
 
@@ -342,6 +350,7 @@ def build_server(
     search_config: SearchConfig | None = None,
     hygiene_config: HygieneConfig | None = None,
     idle_timeout_seconds: int = 0,
+    read_only: bool = False,
 ) -> MCPServer:
     """Construct an MCPServer bound to the given resources.
 
@@ -370,6 +379,13 @@ def build_server(
     until they contend on the SQLite write lock. ``0`` (the default
     for the factory) disables auto-exit; the CLI's ``memstem mcp``
     command threads ``cfg.mcp.idle_timeout_seconds`` here.
+
+    ``read_only`` serves only the read tools: ``memstem_upsert`` is not
+    registered (not merely refused), and the read tools stop their own
+    bookkeeping writes — no query-log rows, no Jev shadow ledger, no
+    rerank cache. The caller is responsible for opening the index
+    read-only as well (``Index.connect_readonly``); the ``memstem mcp``
+    command does both.
     """
     sc = search_config or SearchConfig()
     hc = hygiene_config or HygieneConfig()
@@ -395,12 +411,15 @@ def build_server(
         )
         res = _Resources.eager(vault, index, embedder, reranker)
     res.semantic_timeout = sc.semantic_timeout_seconds
+    res.read_only = read_only
 
     mcp = MCPServer(name)
     default_rerank_top_n = effective_rerank_top_n(
         sc.rerank_top_n, reranker_enabled=sc.reranker.enabled
     )
-    log_client = "mcp" if hc.query_log_enabled else None
+    # The query log feeds the hygiene importance bump, which rewrites memory
+    # frontmatter, so a read-only server must not feed it either.
+    log_client = "mcp" if hc.query_log_enabled and not read_only else None
     activity = _ActivityTracker()
     if idle_timeout_seconds > 0:
         _start_idle_watcher(activity, idle_timeout_seconds)
@@ -438,7 +457,7 @@ def build_server(
                 mmr_lambda=sc.mmr_lambda,
                 rerank_top_n=default_rerank_top_n,
                 log_client=log_client,
-                shadow_client="mcp",
+                shadow_client=None if read_only else "mcp",
                 log_max_rows=hc.query_log_max_rows,
             )
             return [
@@ -452,7 +471,12 @@ def build_server(
         """Retrieve a single memory by vault-relative path or by id."""
         activity.touch()
         # Try path first (most common); fall back to id lookup via the index.
+        # Read-only serving is for other people's agents: keep it to indexed
+        # memories by refusing paths into underscore-prefixed vault internals
+        # (_meta/config, _review/ tickets), the same rule upsert applies.
         try:
+            if read_only and any(part.startswith("_") for part in Path(id_or_path).parts):
+                raise MemoryNotFoundError(id_or_path)
             memory = res.vault.read(id_or_path)
             if log_client is not None:
                 log_get(
@@ -533,6 +557,12 @@ def build_server(
         if not rows:
             raise ToolError(f"no skill named {name!r}")
         return _serialize_memory(res.vault.read(rows[0]["path"]))
+
+    if read_only:
+        # The only tool that writes. Not registering it (rather than refusing
+        # at call time) keeps it out of tools/list, so a client cannot even
+        # attempt it.
+        return mcp
 
     @mcp.tool()
     async def memstem_upsert(

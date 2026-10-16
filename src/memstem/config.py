@@ -486,6 +486,14 @@ class McpServerConfig(BaseModel):
 
     idle_timeout_seconds: int = Field(default=1800, ge=0)  # 30 minutes
 
+    read_only: bool = False
+    """Serve only the read tools (``memstem_upsert`` is not registered) and open
+    the index read-only, so the process can never write to the vault or the
+    index. Equivalent to ``memstem mcp --read-only``; the flag wins when
+    either is set. The key lives in the vault's own config file, so it also
+    makes the vault owner's local ``memstem mcp`` read-only — to restrict a
+    *remote* client, prefer the flag in the forced command."""
+
 
 class OpenClawLayout(BaseModel):
     """Per-workspace path conventions.

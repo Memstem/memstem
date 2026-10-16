@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -13,7 +15,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from memstem.cli import _load_config, _sync_embedder_secret, app
+from memstem.cli import _load_config, _open_index, _sync_embedder_secret, app
 from memstem.config import Config, EmbeddingConfig
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
@@ -810,6 +812,76 @@ class TestCommands:
         assert result.exit_code == 0
         assert "MCP server" in result.output
 
+    def test_mcp_help_documents_read_only(self, runner: CliRunner) -> None:
+        # Rich may colour option names (splitting "--read-only" with ANSI codes)
+        # and wrap columns when CI forces a terminal; strip codes before matching.
+        result = runner.invoke(app, ["mcp", "--help"], env={"COLUMNS": "200"})
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--read-only" in plain
+
+    def _run_mcp(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        vault: Path,
+        args: list[str],
+    ) -> dict[str, object]:
+        """Invoke `memstem mcp` with the stdio server stubbed; return build_server's kwargs."""
+        captured: dict[str, object] = {}
+
+        class _Server:
+            def run(self) -> None:
+                pass
+
+        def _fake_build_server(**kwargs: object) -> _Server:
+            captured.update(kwargs)
+            return _Server()
+
+        monkeypatch.setattr("memstem.cli.build_server", _fake_build_server)
+        result = runner.invoke(app, ["mcp", "--vault", str(vault), *args])
+        assert result.exit_code == 0, result.output
+        return captured
+
+    def test_mcp_defaults_to_read_write(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, initialized_vault: Path
+    ) -> None:
+        captured = self._run_mcp(runner, monkeypatch, initialized_vault, [])
+        assert captured["read_only"] is False
+
+    def test_mcp_read_only_flag(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, initialized_vault: Path
+    ) -> None:
+        captured = self._run_mcp(runner, monkeypatch, initialized_vault, ["--read-only"])
+        assert captured["read_only"] is True
+
+    def test_mcp_read_only_config_key(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, initialized_vault: Path
+    ) -> None:
+        cfg_path = initialized_vault / "_meta" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text())
+        cfg["mcp"] = {"read_only": True}
+        cfg_path.write_text(yaml.safe_dump(cfg))
+        captured = self._run_mcp(runner, monkeypatch, initialized_vault, [])
+        assert captured["read_only"] is True
+
+    def test_mcp_read_only_opens_index_read_only(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, initialized_vault: Path
+    ) -> None:
+        # The read-only resources must open an existing index with connect_readonly
+        # (writes raise), the normal ones with the writing connect().
+        _open_index(_load_config(initialized_vault)).close()
+        for flag, expect_read_only in (("--read-only", True), (None, False)):
+            captured = self._run_mcp(runner, monkeypatch, initialized_vault, [flag] if flag else [])
+            resources = captured["resources"]
+            idx = resources.index  # type: ignore[attr-defined]
+            try:
+                assert idx.read_only is expect_read_only
+                if expect_read_only:
+                    with pytest.raises(sqlite3.OperationalError):
+                        idx.db.execute("DELETE FROM memories")
+            finally:
+                idx.close()
+
     def test_daemon_help(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["daemon", "--help"])
         assert result.exit_code == 0
@@ -1323,7 +1395,7 @@ class TestDaemonSecretSync:
     def _cfg(self, tmp_path: Path, **embedding: object) -> Config:
         return Config(
             vault_path=tmp_path / "vault",
-            embedding=EmbeddingConfig(**embedding),  # type: ignore[arg-type]
+            embedding=EmbeddingConfig(**embedding),  # type: ignore[arg-type, unused-ignore]
         )
 
     def test_persists_env_key_and_logs_masked(
@@ -1438,8 +1510,8 @@ class TestDoctorEmbedder:
 
         def factory(ecfg: EmbeddingConfig) -> object:
             emb = real_embed_for(ecfg)
-            emb._client = httpx.Client(  # type: ignore[attr-defined]
-                base_url=emb.base_url,  # type: ignore[attr-defined]
+            emb._client = httpx.Client(  # type: ignore[attr-defined, unused-ignore]
+                base_url=emb.base_url,  # type: ignore[attr-defined, unused-ignore]
                 transport=httpx.MockTransport(handler),
             )
             return emb
@@ -1655,7 +1727,7 @@ class TestReconcileBackpressure:
 
         # No search in flight: returns immediately.
         t0 = time.monotonic()
-        await _yield_to_searches(pipeline)  # type: ignore[arg-type]
+        await _yield_to_searches(pipeline)  # type: ignore[arg-type, unused-ignore]
         assert time.monotonic() - t0 < 0.5
 
         # Search in flight: waits, then proceeds promptly once it finishes.
@@ -1663,7 +1735,7 @@ class TestReconcileBackpressure:
         release = asyncio.get_running_loop().call_later(0.3, index.search_finished)
         try:
             t0 = time.monotonic()
-            await _yield_to_searches(pipeline)  # type: ignore[arg-type]
+            await _yield_to_searches(pipeline)  # type: ignore[arg-type, unused-ignore]
             waited = time.monotonic() - t0
             assert 0.2 <= waited < 5.0, f"expected ~0.3s yield, got {waited:.2f}s"
         finally:

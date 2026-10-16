@@ -107,6 +107,25 @@ Add or update a memory. Used by adapters and by clients writing knowledge.
 }
 ```
 
+## Read-only mode
+
+`memstem mcp --read-only` (or `mcp.read_only: true` in `_meta/config.yaml`; either enables it) serves the four read tools — `memstem_search`, `memstem_get`, `memstem_list_skills`, `memstem_get_skill` — and does not register `memstem_upsert` at all, so it is absent from `tools/list` rather than refused at call time. The use case is a client that must search a vault it does not own, e.g. an SSH forced command in `authorized_keys`:
+
+```
+command="memstem mcp --read-only",no-pty,no-port-forwarding ssh-ed25519 AAAA… colleague
+```
+
+Prefer the flag over the config key for that: the key sits in the vault's own `config.yaml` (and would also make the owner's local `memstem mcp` read-only).
+
+In this mode nothing a tool does writes to the vault or the index:
+
+- The index is opened `mode=ro` with `PRAGMA query_only`. No migration, vec-table creation, journal-mode change or embedder-signature re-stamp runs. A WAL reader never takes the write lock, so it neither blocks nor is blocked by a running daemon. Because it cannot migrate, it refuses an index that does not exist yet or is below this build's schema (`ReadOnlyIndexUnavailableError`) and one whose vector dimensions differ from the config; start the daemon on that vault once, then retry. The `-wal`/`-shm` files must be readable and creatable by the user running the command (they are, for the daemon's own user).
+- The query log is off (`memstem_search` result exposures and `memstem_get` opens are not recorded). That log feeds the hygiene importance bump, which rewrites memory frontmatter, so a read-only client must not feed it.
+- The Jev shadow reranker (ledger write plus an external API call) is not built, and the rerank cache is not written (reranking itself, if configured, still runs).
+- `memstem_get` refuses paths into underscore-prefixed vault directories (`_meta/`, `_review/`), the same rule `memstem_upsert` applies; ids and ordinary vault paths work as usual.
+
+Query embedding still calls the configured embedder, so semantic search needs that embedder's API key available to the process, as it does normally.
+
 ## Derived records (`type: distillation`, `type: project`)
 
 Returned by the same `memstem_search` and `memstem_get` tools. They look like any other memory but carry `links` pointing back to their source records (the session a distillation summarized; the sessions + distillations a project rollup aggregated). Importance is seeded at 0.8 (distillation) / 0.85 (project) so they outrank raw transcripts on close ties.
