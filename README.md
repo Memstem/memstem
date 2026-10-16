@@ -228,6 +228,8 @@ Once `memstem connect-clients` has run, an MCP-aware client (Claude Code, etc.) 
 
 See [docs/mcp-api.md](./docs/mcp-api.md) for the full schema.
 
+**Read-only mode.** `memstem mcp --read-only` serves the first four tools only: `memstem_upsert` is not registered, the index is opened read-only, and the server writes nothing (no query log, no importance signal, no caches). It is safe beside a running daemon, and meant for letting another person's or agent's MCP client search a vault it must never change, for example `command="memstem mcp --read-only"` as an SSH forced command. See [Read-only mode](./docs/mcp-api.md#read-only-mode).
+
 Every search runs in parallel down two paths and is merged with Reciprocal Rank Fusion, so exact-keyword hits and semantic neighbours both surface in one ranked list:
 
 <p align="center"><img src="./docs/images/hybrid-search.png" alt="Hybrid search — FTS5 BM25 + sqlite-vec cosine, merged with RRF" width="540"></p>

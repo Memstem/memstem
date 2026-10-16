@@ -74,6 +74,17 @@ class EmbeddingDimensionMismatchError(RuntimeError):
     """
 
 
+class ReadOnlyIndexUnavailableError(RuntimeError):
+    """The index cannot be opened read-only (missing, or not at the current schema).
+
+    A read-only connection never creates or migrates anything, so an
+    index that does not exist yet, or that an older build left below the
+    current schema version, cannot be served read-only. The remedy is to
+    let the daemon (or any normal ``memstem`` command) on that vault open
+    it once, which creates and migrates it.
+    """
+
+
 def body_hash(body: str) -> str:
     """Stable hash of a body string used to detect content changes.
 
@@ -527,6 +538,7 @@ class Index:
         self.dimensions = dimensions
         self.on_dimension_mismatch = on_dimension_mismatch
         self._db: sqlite3.Connection | None = None
+        self._read_only = False
         self._lock = threading.RLock()
         self._reader_pool: list[sqlite3.Connection] = []
         self._reader_pool_lock = threading.Lock()
@@ -588,6 +600,98 @@ class Index:
         db.execute("PRAGMA busy_timeout = 5000")
         self._db = db
         self._migrate()
+
+    @property
+    def read_only(self) -> bool:
+        """True when opened via :meth:`connect_readonly` (no writes possible)."""
+        return self._read_only
+
+    def connect_readonly(self) -> None:
+        """Open the index read-only, without touching the file.
+
+        For serving a vault that another process (the daemon) owns:
+        ``mode=ro`` plus ``PRAGMA query_only`` make any write an error, and
+        none of :meth:`connect`'s writing steps run — no ``journal_mode``
+        switch, no schema migration or column backfill, no vec-table
+        creation or dimension rebuild. WAL readers never block the writer
+        (they take shared read marks, not the write lock), so this is safe
+        beside a running daemon. The ``-wal``/``-shm`` files must be
+        reachable by this user; with a live daemon owned by the same user
+        they are.
+
+        Raises :class:`ReadOnlyIndexUnavailableError` when the file is
+        missing or its schema is older than this build expects (it cannot
+        be migrated from here), and :class:`EmbeddingDimensionMismatchError`
+        when the vec table's dimensions differ from the configured ones
+        (rebuilding is a write, so ``on_dimension_mismatch`` is ignored).
+        """
+        if self._db is not None:
+            return
+        if not self.db_path.is_file():
+            raise ReadOnlyIndexUnavailableError(
+                f"no index at {self.db_path}; start the memstem daemon on that vault "
+                "once so it can create the index, then retry"
+            )
+        db = sqlite3.connect(
+            f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False
+        )
+        try:
+            db.row_factory = sqlite3.Row
+            accelerated = vec_accel.load(db, self.vec_extension)
+            version, debug = db.execute("SELECT vec_version(), vec_debug()").fetchone()
+            flags = next(
+                (
+                    ln.split(":", 1)[1].strip()
+                    for ln in debug.splitlines()
+                    if ln.startswith("Build flags")
+                ),
+                "",
+            )
+            db.execute("PRAGMA busy_timeout = 5000")
+            db.execute("PRAGMA query_only = ON")
+            self._db = db
+            self._check_readonly_compatible()
+        except BaseException:
+            self._db = None
+            db.close()
+            raise
+        self._vec_info = {
+            "version": version,
+            "build_flags": flags,
+            "extension": str(self.vec_extension) if accelerated else "bundled",
+        }
+        self._read_only = True
+
+    def _check_readonly_compatible(self) -> None:
+        """Refuse a read-only open of an index this build would have to migrate."""
+        try:
+            row = self.db.execute(
+                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            current = int(row["version"]) if row else 0
+            cols = {r["name"] for r in self.db.execute("PRAGMA table_info(memories)")}
+        except sqlite3.OperationalError:
+            current, cols = 0, set()
+        if current < SCHEMA_VERSION or "deleted_at" not in cols:
+            raise ReadOnlyIndexUnavailableError(
+                f"index at {self.db_path} is at schema v{current}, this memstem needs "
+                f"v{SCHEMA_VERSION}; it cannot be migrated read-only. Start the daemon "
+                "(or run any normal memstem command) on that vault once, then retry"
+            )
+        existing_dims = self._vec_table_dimensions()
+        if existing_dims is not None and existing_dims != self.dimensions:
+            raise EmbeddingDimensionMismatchError(
+                f"index at {self.db_path} was built with {existing_dims}-dim vectors "
+                f"but the config asks for {self.dimensions}; the vault owner must run "
+                "`memstem reindex` or fix the embedding config"
+            )
+
+    def peek_embedding_signature(self) -> str | None:
+        """The embedder signature stamped on the index, without writing anything."""
+        row = self.db.execute(
+            "SELECT value FROM index_meta WHERE key = 'embedding_signature'"
+        ).fetchone()
+        return str(row["value"]) if row is not None else None
 
     @property
     def sqlite_vec_info(self) -> dict[str, str] | None:
@@ -2139,6 +2243,7 @@ class Index:
 __all__ = [
     "FtsHit",
     "Index",
+    "ReadOnlyIndexUnavailableError",
     "VecHit",
     "body_hash",
     "extract_wikilinks",

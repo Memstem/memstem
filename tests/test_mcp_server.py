@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 
 from memstem.config import RerankerConfig, SearchConfig
 from memstem.core.frontmatter import validate
-from memstem.core.index import Index
+from memstem.core.index import EmbeddingDimensionMismatchError, Index, ReadOnlyIndexUnavailableError
 from memstem.core.rerank import StubReranker
 from memstem.core.storage import Memory, Vault
 from memstem.servers.mcp_server import (
@@ -977,3 +978,241 @@ class TestSearchDegradationFlag:
         results = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
         assert len(results) == 1
         assert results[0]["embedder_degraded"] is False
+
+
+_READ_TOOLS = {"memstem_search", "memstem_get", "memstem_list_skills", "memstem_get_skill"}
+
+
+def _tree_digest(root: Path) -> dict[str, bytes]:
+    """Every file under ``root`` (path -> content), excluding the SQLite index."""
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and p.name != "index.db"
+    }
+
+
+def _query_log_rows(index: Index) -> int:
+    return int(index.db.execute("SELECT COUNT(*) FROM query_log").fetchone()[0])
+
+
+class TestReadOnlyToolSurface:
+    async def test_upsert_absent_when_read_only(self, vault: Vault, index: Index) -> None:
+        mcp = build_server(vault, index, read_only=True)
+        assert {t.name for t in await mcp.list_tools()} == _READ_TOOLS
+
+    async def test_upsert_present_by_default(self, vault: Vault, index: Index) -> None:
+        mcp = build_server(vault, index)
+        names = {t.name for t in await mcp.list_tools()}
+        assert names == _READ_TOOLS | {"memstem_upsert"}
+
+    async def test_calling_upsert_in_read_only_is_unknown_tool(
+        self, vault: Vault, index: Index
+    ) -> None:
+        mcp = build_server(vault, index, read_only=True)
+        before = _tree_digest(vault.root)
+        with pytest.raises(Exception, match="memstem_upsert"):
+            await _call_tool(
+                mcp, "memstem_upsert", {"frontmatter": {"type": "memory"}, "body": "nope"}
+            )
+        assert _tree_digest(vault.root) == before
+
+    async def test_read_only_lazy_handshake_still_lists_tools(
+        self, vault: Vault, index: Index
+    ) -> None:
+        spy = _CallCounter(lambda: index)
+        res = _Resources.lazy(
+            build_vault=lambda: vault, build_index=spy, build_embedder=lambda: None
+        )
+        mcp = build_server(resources=res, read_only=True)
+        assert {t.name for t in await mcp.list_tools()} == _READ_TOOLS
+        assert spy.calls == 0
+
+
+class TestReadOnlyReads:
+    """The four read tools behave the same with read_only=True."""
+
+    async def test_search_get_skills_work(self, vault: Vault, index: Index) -> None:
+        note = _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        skill = _make_memory(
+            type_="skill",
+            title="deploy-site",
+            body="deploy steps",
+            scope="universal",
+            verification="ok",
+            vault=vault,
+            index=index,
+        )
+        mcp = build_server(vault, index, read_only=True)
+
+        hits = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        assert [h["id"] for h in hits] == [str(note.id)]
+
+        got = await _call_tool(mcp, "memstem_get", {"id_or_path": str(note.path)})
+        assert got["id"] == str(note.id)
+        by_id = await _call_tool(mcp, "memstem_get", {"id_or_path": str(note.id)})
+        assert by_id["body"] == "cloudflare tunnel notes"
+
+        skills = await _call_tool(mcp, "memstem_list_skills", {})
+        assert [s["id"] for s in skills] == [str(skill.id)]
+
+        one = await _call_tool(mcp, "memstem_get_skill", {"name": "deploy-site"})
+        assert one["id"] == str(skill.id)
+
+    async def test_get_refuses_vault_internals(self, vault: Vault, index: Index) -> None:
+        (vault.root / "_meta" / "config.yaml").write_text("embedding:\n  provider: x\n")
+        mcp = build_server(vault, index, read_only=True)
+        for path in ("_meta/config.yaml", "memories/../_meta/config.yaml"):
+            with pytest.raises(Exception, match="no memory found"):
+                await _call_tool(mcp, "memstem_get", {"id_or_path": path})
+
+
+class TestReadOnlyNoSideEffects:
+    """A read-only server writes nothing: not the vault, not the index."""
+
+    async def test_search_and_get_write_no_query_log(self, vault: Vault, index: Index) -> None:
+        note = _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        mcp = build_server(vault, index, read_only=True)
+        await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        await _call_tool(mcp, "memstem_get", {"id_or_path": str(note.path)})
+        await _call_tool(mcp, "memstem_get", {"id_or_path": str(note.id)})
+        assert _query_log_rows(index) == 0
+
+    async def test_normal_mode_does_log(self, vault: Vault, index: Index) -> None:
+        # Control for the test above: the log is on by default, so a zero
+        # count there is the flag's doing, not a disabled log.
+        note = _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        mcp = build_server(vault, index)
+        await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        await _call_tool(mcp, "memstem_get", {"id_or_path": str(note.path)})
+        assert _query_log_rows(index) >= 2
+
+    async def test_rerank_cache_not_written(self, vault: Vault, index: Index) -> None:
+        a = _make_memory(body="cloudflare alpha tunnel", vault=vault, index=index)
+        _make_memory(body="cloudflare beta tunnel", vault=vault, index=index)
+        stub = StubReranker()
+        stub.set_default(0.4)
+        stub.set_score("cloudflare", str(a.id), 0.9)
+        sc = SearchConfig(reranker=RerankerConfig(enabled=True), rerank_top_n=10)
+
+        def cache_rows() -> int:
+            return int(index.db.execute("SELECT COUNT(*) FROM rerank_cache").fetchone()[0])
+
+        ro = build_server(
+            resources=_Resources.eager(vault, index, None, stub), search_config=sc, read_only=True
+        )
+        hits = await _call_tool(ro, "memstem_search", {"query": "cloudflare"})
+        assert hits[0]["id"] == str(a.id)  # rerank still applies
+        assert cache_rows() == 0
+
+        rw = build_server(resources=_Resources.eager(vault, index, None, stub), search_config=sc)
+        await _call_tool(rw, "memstem_search", {"query": "cloudflare"})
+        assert cache_rows() > 0
+
+    async def test_jev_shadow_not_built_or_used(self, vault: Vault, index: Index) -> None:
+        _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        shadow_builds = _CallCounter(lambda: None)
+        res = _Resources.lazy(
+            build_vault=lambda: vault,
+            build_index=lambda: index,
+            build_embedder=lambda: None,
+            build_shadow=shadow_builds,
+        )
+        mcp = build_server(resources=res, read_only=True)
+        await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+        assert shadow_builds.calls == 0
+        assert res.search.read_only is True
+        assert res.search.shadow is None
+
+
+class TestReadOnlyIndexBesideWriter:
+    """A real read-only connection, with a normal (daemon-like) one still open."""
+
+    def _open_ro(self, index: Index) -> Index:
+        ro = Index(index.db_path, dimensions=768)
+        ro.connect_readonly()
+        return ro
+
+    async def test_serves_reads_without_writing_anything(
+        self, tmp_path: Path, vault: Vault
+    ) -> None:
+        writer = Index(tmp_path / "index.db", dimensions=768)
+        writer.connect()
+        note = _make_memory(body="cloudflare tunnel notes", vault=vault, index=writer)
+        writer.close()  # checkpoints the WAL: the main file now holds everything
+        db_file = tmp_path / "index.db"
+        db_before = db_file.read_bytes()
+        files_before = _tree_digest(vault.root)
+
+        ro = Index(db_file, dimensions=768)
+        ro.connect_readonly()
+        try:
+            mcp = build_server(vault, ro, read_only=True)
+            hits = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+            assert [h["id"] for h in hits] == [str(note.id)]
+            await _call_tool(mcp, "memstem_get", {"id_or_path": str(note.id)})
+            await _call_tool(mcp, "memstem_list_skills", {})
+            assert _query_log_rows(ro) == 0
+            with pytest.raises(sqlite3.OperationalError):
+                ro.db.execute("DELETE FROM memories")
+        finally:
+            ro.close()
+
+        assert db_file.read_bytes() == db_before
+        assert _tree_digest(vault.root) == files_before
+
+    async def test_does_not_block_a_writer_or_wait_on_one(self, vault: Vault, index: Index) -> None:
+        note = _make_memory(body="cloudflare tunnel notes", vault=vault, index=index)
+        index.db.commit()
+        ro = self._open_ro(index)
+        try:
+            mcp = build_server(vault, ro, read_only=True)
+            # Reader is mid-use (open snapshot), and the daemon writes anyway...
+            await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+            ro.db.execute("BEGIN")
+            ro.db.execute("SELECT COUNT(*) FROM memories").fetchone()
+            other = _make_memory(body="cloudflare second note", vault=vault, index=index)
+            index.db.commit()
+            ro.db.execute("ROLLBACK")
+            # ...and while a writer holds the write lock, reads still complete.
+            index.db.execute("BEGIN IMMEDIATE")
+            try:
+                hits = await _call_tool(mcp, "memstem_search", {"query": "cloudflare"})
+                assert {h["id"] for h in hits} == {str(note.id), str(other.id)}
+            finally:
+                index.db.execute("ROLLBACK")
+        finally:
+            ro.close()
+
+    def test_missing_index_raises_without_creating_it(self, tmp_path: Path) -> None:
+        idx = Index(tmp_path / "meta" / "index.db", dimensions=768)
+        with pytest.raises(ReadOnlyIndexUnavailableError, match="no index"):
+            idx.connect_readonly()
+        assert not (tmp_path / "meta").exists()
+
+    def test_old_schema_raises_and_is_not_migrated(self, tmp_path: Path) -> None:
+        path = tmp_path / "index.db"
+        idx = Index(path, dimensions=768)
+        idx.connect()
+        idx.db.execute("DELETE FROM schema_version")
+        idx.db.execute("INSERT INTO schema_version(version) VALUES (3)")
+        idx.db.commit()
+        idx.close()
+        before = path.read_bytes()
+
+        ro = Index(path, dimensions=768)
+        with pytest.raises(ReadOnlyIndexUnavailableError, match="schema v3"):
+            ro.connect_readonly()
+        assert path.read_bytes() == before
+
+    def test_dimension_mismatch_raises_and_is_not_rebuilt(self, tmp_path: Path) -> None:
+        path = tmp_path / "index.db"
+        idx = Index(path, dimensions=768)
+        idx.connect()
+        idx.close()
+        before = path.read_bytes()
+
+        ro = Index(path, dimensions=1024, on_dimension_mismatch="rebuild")
+        with pytest.raises(EmbeddingDimensionMismatchError):
+            ro.connect_readonly()
+        assert path.read_bytes() == before

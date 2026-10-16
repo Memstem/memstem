@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `memstem mcp --read-only` (also `mcp.read_only: true` in `config.yaml`) serves only the read tools: `memstem_upsert` is not registered, the index is opened `mode=ro` + `query_only` (no migration, no vec-table or signature writes, no write lock, so it is safe beside a running daemon), and the server writes nothing — no query log, no Jev shadow ledger, no rerank cache. `memstem_get` also refuses paths into underscore-prefixed vault directories in this mode. For letting another person's agent search a vault it must never change, e.g. over an SSH forced command. A missing index, an index below the current schema, or a vec-dimension mismatch is reported instead of being migrated or rebuilt. See `docs/mcp-api.md`.
+
 ## [0.31.1] - 2026-10-13
 
 Patch release: finishes the 0.31.0 Codex cleanup by retiring stale session copies (ADR 0053 addendum).
