@@ -1395,7 +1395,7 @@ class TestDaemonSecretSync:
     def _cfg(self, tmp_path: Path, **embedding: object) -> Config:
         return Config(
             vault_path=tmp_path / "vault",
-            embedding=EmbeddingConfig(**embedding),
+            embedding=EmbeddingConfig(**embedding),  # type: ignore[arg-type, unused-ignore]
         )
 
     def test_persists_env_key_and_logs_masked(
@@ -1510,8 +1510,8 @@ class TestDoctorEmbedder:
 
         def factory(ecfg: EmbeddingConfig) -> object:
             emb = real_embed_for(ecfg)
-            emb._client = httpx.Client(
-                base_url=emb.base_url,
+            emb._client = httpx.Client(  # type: ignore[attr-defined, unused-ignore]
+                base_url=emb.base_url,  # type: ignore[attr-defined, unused-ignore]
                 transport=httpx.MockTransport(handler),
             )
             return emb
@@ -1727,7 +1727,7 @@ class TestReconcileBackpressure:
 
         # No search in flight: returns immediately.
         t0 = time.monotonic()
-        await _yield_to_searches(pipeline)
+        await _yield_to_searches(pipeline)  # type: ignore[arg-type, unused-ignore]
         assert time.monotonic() - t0 < 0.5
 
         # Search in flight: waits, then proceeds promptly once it finishes.
@@ -1735,7 +1735,7 @@ class TestReconcileBackpressure:
         release = asyncio.get_running_loop().call_later(0.3, index.search_finished)
         try:
             t0 = time.monotonic()
-            await _yield_to_searches(pipeline)
+            await _yield_to_searches(pipeline)  # type: ignore[arg-type, unused-ignore]
             waited = time.monotonic() - t0
             assert 0.2 <= waited < 5.0, f"expected ~0.3s yield, got {waited:.2f}s"
         finally:
