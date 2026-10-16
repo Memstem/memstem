@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -812,8 +813,11 @@ class TestCommands:
         assert "MCP server" in result.output
 
     def test_mcp_help_documents_read_only(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["mcp", "--help"])
-        assert "--read-only" in result.output
+        # Rich may colour option names (splitting "--read-only" with ANSI codes)
+        # and wrap columns when CI forces a terminal; strip codes before matching.
+        result = runner.invoke(app, ["mcp", "--help"], env={"COLUMNS": "200"})
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--read-only" in plain
 
     def _run_mcp(
         self,
@@ -1391,7 +1395,7 @@ class TestDaemonSecretSync:
     def _cfg(self, tmp_path: Path, **embedding: object) -> Config:
         return Config(
             vault_path=tmp_path / "vault",
-            embedding=EmbeddingConfig(**embedding),  # type: ignore[arg-type]
+            embedding=EmbeddingConfig(**embedding),
         )
 
     def test_persists_env_key_and_logs_masked(
@@ -1506,8 +1510,8 @@ class TestDoctorEmbedder:
 
         def factory(ecfg: EmbeddingConfig) -> object:
             emb = real_embed_for(ecfg)
-            emb._client = httpx.Client(  # type: ignore[attr-defined]
-                base_url=emb.base_url,  # type: ignore[attr-defined]
+            emb._client = httpx.Client(
+                base_url=emb.base_url,
                 transport=httpx.MockTransport(handler),
             )
             return emb
@@ -1723,7 +1727,7 @@ class TestReconcileBackpressure:
 
         # No search in flight: returns immediately.
         t0 = time.monotonic()
-        await _yield_to_searches(pipeline)  # type: ignore[arg-type]
+        await _yield_to_searches(pipeline)
         assert time.monotonic() - t0 < 0.5
 
         # Search in flight: waits, then proceeds promptly once it finishes.
@@ -1731,7 +1735,7 @@ class TestReconcileBackpressure:
         release = asyncio.get_running_loop().call_later(0.3, index.search_finished)
         try:
             t0 = time.monotonic()
-            await _yield_to_searches(pipeline)  # type: ignore[arg-type]
+            await _yield_to_searches(pipeline)
             waited = time.monotonic() - t0
             assert 0.2 <= waited < 5.0, f"expected ~0.3s yield, got {waited:.2f}s"
         finally:
