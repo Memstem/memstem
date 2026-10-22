@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-22
+
+Minor release: opt-in recency for search ranking and for Jev's judgement (ADR 0054). Both switches are off by default, so behaviour is unchanged until a vault turns one on.
+
 ### Added
 
 - Query-time recency weighting, off by default (ADR 0054). `search.recency.enabled: true` multiplies each hit's score by `1 + weight * 2^(-age / half_life)` (defaults 0.10 and 30 days), with age taken at search time from the record's content date (a distillation's source session date, else `updated`). Skills, decisions, people and pinned records count as current; queries that name an earlier time are searched without it. Nothing is written to the vault.
