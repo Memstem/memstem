@@ -50,6 +50,7 @@ from memstem.core.embeddings import (
 from memstem.core.index import Index
 from memstem.core.jev_shadow import build_jev_shadow
 from memstem.core.pipeline import Pipeline
+from memstem.core.recency import policy_from_config
 from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.search import Search
 from memstem.core.storage import Vault
@@ -653,6 +654,7 @@ def _search_via_direct_db(
                 vector_weight=cfg.search.vector_weight,
                 importance_weight=cfg.search.importance_weight,
                 type_bias=cfg.search.type_bias,
+                recency=policy_from_config(cfg.search.recency),
                 mmr_lambda=mmr_lambda,
                 rerank_top_n=rerank_top_n if reranker_enabled else None,
                 log_client="cli" if cfg.hygiene.query_log_enabled else None,

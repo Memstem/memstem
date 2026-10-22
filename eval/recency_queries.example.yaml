@@ -1,0 +1,28 @@
+# Recency eval template (ADR 0054): questions whose answer changed over time.
+#
+# Copy to a private location (e.g. <vault>/_meta/eval/recency_queries.yaml);
+# real entries name your own hosts, people and settings, so keep them out of
+# the repo. For each question, pick an expected phrase that only appears in
+# files updated *after* the change (count matching files per month first),
+# and phrase the query without that phrase so keyword match alone can't hit.
+#
+#   scripts/run_eval.py --queries <vault>/_meta/eval/recency_queries.yaml \
+#       --production-ranking --no-recency --jev base
+#   scripts/run_eval.py --queries <vault>/_meta/eval/recency_queries.yaml \
+#       --production-ranking --recency --jev prefer-recent
+#
+# Jev shuffles documents with a time-based seed: repeat Jev runs and compare
+# means, not single runs.
+
+queries:
+  - id: cur_embedding_route
+    class: current
+    query: which provider route do we use for embeddings
+    expect:
+      body_contains: ["<phrase only present after the switch>"]
+
+  - id: cur_report_destination
+    class: current
+    query: where should a finished HTML report go for review
+    expect:
+      body_contains: ["<new destination's command or path>"]

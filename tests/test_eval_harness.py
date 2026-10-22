@@ -8,7 +8,7 @@ import pytest
 
 from memstem.core.frontmatter import Frontmatter, validate
 from memstem.core.index import Index
-from memstem.core.search import Result, Search
+from memstem.core.search import Result, Search, SearchOutcome
 from memstem.core.storage import Memory, Vault
 from memstem.eval import (
     EvalQuery,
@@ -431,3 +431,22 @@ def test_query_result_reciprocal_rank_at_various_ranks() -> None:
     assert QueryResult(query=q, rank=1, top_k=10, elapsed_ms=1.0).reciprocal_rank == 1.0
     assert QueryResult(query=q, rank=2, top_k=10, elapsed_ms=1.0).reciprocal_rank == 0.5
     assert QueryResult(query=q, rank=10, top_k=10, elapsed_ms=1.0).reciprocal_rank == 0.1
+
+
+def test_run_eval_forwards_search_kwargs() -> None:
+    # ADR 0054: the eval can run with the live ranking knobs / recency / Jev.
+    seen: list[dict[str, object]] = []
+
+    class _StubSearch:
+        def search_with_status(self, query: str, **kwargs: object) -> SearchOutcome:
+            seen.append(kwargs)
+            return SearchOutcome(results=[])
+
+    q = EvalQuery(
+        id="cur1",
+        class_="current",
+        query="which embedder",
+        expect=ExpectMatcher(body_contains=("x",)),
+    )
+    run_eval(_StubSearch(), [q], search_kwargs={"importance_weight": 0.0})  # type: ignore[arg-type]
+    assert seen == [{"limit": 10, "log_client": None, "importance_weight": 0.0}]

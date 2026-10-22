@@ -12,6 +12,10 @@ Usage::
                         --queries eval/queries.yaml
     scripts/run_eval.py --json-out /tmp/eval.json  # save full report
 
+    # ADR 0054: the vault's live ranking, recency on, Jev serving with the
+    # prefer-recent prompt (Jev runs log to a throwaway ledger, not the vault's).
+    scripts/run_eval.py --production-ranking --recency --jev prefer-recent
+
 The eval never writes to ``query_log`` (passes ``log_client=None``) so
 running it doesn't pollute live retrieval signals.
 """
@@ -21,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -30,6 +35,8 @@ import yaml
 from memstem.config import Config
 from memstem.core.embeddings import Embedder, EmbeddingError, embed_for
 from memstem.core.index import Index
+from memstem.core.jev_shadow import build_jev_shadow
+from memstem.core.recency import policy_from_config
 from memstem.core.search import Search
 from memstem.core.storage import Vault
 from memstem.eval import format_report, load_queries, report_to_json, run_eval
@@ -95,6 +102,34 @@ def main(
             help="Run BM25-only (skip vec retrieval). Useful when Ollama is unreachable.",
         ),
     ] = False,
+    production_ranking: Annotated[
+        bool,
+        typer.Option(
+            "--production-ranking",
+            help="Use the vault's search config (importance, type bias, MMR) instead of defaults.",
+        ),
+    ] = False,
+    recency: Annotated[
+        bool | None,
+        typer.Option(
+            "--recency/--no-recency",
+            help="Force query-time recency on or off (ADR 0054). Default: the vault's config.",
+        ),
+    ] = None,
+    recency_weight: Annotated[
+        float | None, typer.Option("--recency-weight", help="Override recency weight.")
+    ] = None,
+    recency_half_life: Annotated[
+        float | None, typer.Option("--recency-half-life", help="Override half-life in days.")
+    ] = None,
+    jev: Annotated[
+        str,
+        typer.Option(
+            "--jev",
+            help="off | base | prefer-recent. Serve Jev's order with that prompt; "
+            "runs are logged to a temporary ledger, never the vault's.",
+        ),
+    ] = "off",
 ) -> None:
     """Run the recall-quality eval and print metrics."""
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
@@ -116,11 +151,45 @@ def main(
     vault_obj = Vault(config.vault_path)
     db_path = config.index_path or config.vault_path / "_meta" / "index.db"
     index = Index(db_path, dimensions=config.embedding.dimensions)
-    index.connect()
+    index.connect_readonly()
     embedder = None if no_embedder else _maybe_embedder(config)
-    search = Search(vault=vault_obj, index=index, embedder=embedder)
 
-    report = run_eval(search, queries)
+    sc = config.search
+    kwargs: dict[str, object] = {}
+    if production_ranking:
+        kwargs.update(
+            rrf_k=sc.rrf_k,
+            bm25_weight=sc.bm25_weight,
+            vector_weight=sc.vector_weight,
+            importance_weight=sc.importance_weight,
+            type_bias=sc.type_bias,
+            mmr_lambda=sc.mmr_lambda,
+        )
+    rc = sc.recency.model_copy()
+    if recency is not None:
+        rc.enabled = recency
+    if recency_weight is not None:
+        rc.weight = recency_weight
+    if recency_half_life is not None:
+        rc.half_life_days = recency_half_life
+    kwargs["recency"] = policy_from_config(rc)
+
+    shadow = None
+    if jev not in ("off", "base", "prefer-recent"):
+        typer.echo(f"ERROR: --jev must be off, base or prefer-recent, got {jev!r}", err=True)
+        raise typer.Exit(2)
+    if jev != "off":
+        jc = sc.jev_shadow.model_copy(
+            update={"enabled": True, "serve": True, "prefer_recent": jev == "prefer-recent"}
+        )
+        shadow = build_jev_shadow(jc, Path(tempfile.mkdtemp(prefix="memstem-eval-jev-")))
+        if shadow is None:
+            typer.echo("ERROR: Jev unavailable (no OpenRouter key?)", err=True)
+            raise typer.Exit(2)
+        kwargs["shadow_client"] = "eval"
+    search = Search(vault=vault_obj, index=index, embedder=embedder, shadow=shadow)
+
+    report = run_eval(search, queries, kwargs)
     typer.echo(format_report(report))
 
     if json_out is not None:

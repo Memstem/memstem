@@ -203,6 +203,12 @@ class JevShadowConfig(BaseModel):
     failure, timeout, filter or budget stop returns the normal order
     unchanged. Every run is still logged to the ledger with ``mode``
     ``served``; ``enabled`` must also be true."""
+    prefer_recent: bool = False
+    """ADR 0054: tell Jev that a document contradicted by a more recently
+    updated one in the pool is stale (unless the query asks about an earlier
+    time), and send each document's content date (a distillation's source
+    session date) instead of its file date. Ledger rows carry
+    ``variant = 'prefer-recent'`` so reports can split the two prompts."""
     model: str = "typesafe/jev-1.13"
     endpoint: str = "https://openrouter.ai/api/alpha/decisions"
     api_key_env: str = "OPENROUTER_API_KEY"
@@ -224,6 +230,27 @@ class JevShadowConfig(BaseModel):
     skip_types: list[str] = Field(default_factory=lambda: ["__watchdog__"])
     skip_sensitive_queries: bool = True
     """Don't send candidates for credential-retrieval queries off-host."""
+
+
+class RecencyConfig(BaseModel):
+    """Query-time recency weighting (ADR 0054). Off by default.
+
+    Each hit's score is multiplied by ``1 + weight * 2 ** (-age / half_life)``
+    where age is measured at search time from the record's content date.
+    Nothing is written to the vault, so disabling it restores the previous
+    ranking exactly.
+    """
+
+    enabled: bool = False
+    weight: float = Field(default=0.10, ge=0.0, le=1.0)
+    """Boost for a record updated today; halves every ``half_life_days``."""
+    half_life_days: float = Field(default=30.0, gt=0)
+    timeless_types: list[str] = Field(default_factory=lambda: ["skill", "decision", "person"])
+    """Types that never go stale; they score as if updated today. Pinned
+    records are treated the same way."""
+    skip_historical_queries: bool = True
+    """Turn the factor off for a search whose query names an earlier time
+    ("back in June", "originally", "2025")."""
 
 
 class SearchConfig(BaseModel):
@@ -255,6 +282,9 @@ class SearchConfig(BaseModel):
     that makes "prefer distillations and curated memories over raw
     sessions" explicit and tunable. To disable it entirely, set every
     type to ``1.0`` (or supply an empty mapping)."""
+
+    recency: RecencyConfig = Field(default_factory=RecencyConfig)
+    """Query-time recency multiplier applied after ``type_bias`` (ADR 0054)."""
 
     mmr_lambda: float | None = None
     """Maximal Marginal Relevance diversification (ADR 0016) applied in
@@ -294,6 +324,8 @@ class HygieneConfig(BaseModel):
     """Hygiene worker configuration."""
 
     decay_half_life_days: int = Field(default=90, ge=1)
+    """Unused: ADR 0008's write-time decay was never built. Search-time
+    recency (``search.recency``, ADR 0054) replaces it."""
     skill_extraction_enabled: bool = True
     query_log_enabled: bool = True
     """ADR 0008 Tier 1 query log (search/get exposure log).
