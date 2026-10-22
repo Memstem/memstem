@@ -48,6 +48,7 @@ from memstem.config import HttpServerConfig, HygieneConfig, SearchConfig
 from memstem.core.embeddings import Embedder
 from memstem.core.index import Index
 from memstem.core.jev_shadow import build_jev_shadow
+from memstem.core.recency import policy_from_config
 from memstem.core.rerank import build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
@@ -360,6 +361,7 @@ def build_app(
                     else sc.importance_weight
                 ),
                 type_bias=(req.type_bias if req.type_bias is not None else sc.type_bias),
+                recency=policy_from_config(sc.recency),
                 mmr_lambda=(req.mmr_lambda if req.mmr_lambda is not None else sc.mmr_lambda),
                 rerank_top_n=(
                     # Request-supplied values are clamped; the operator-

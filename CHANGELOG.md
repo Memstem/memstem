@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Query-time recency weighting, off by default (ADR 0054). `search.recency.enabled: true` multiplies each hit's score by `1 + weight * 2^(-age / half_life)` (defaults 0.10 and 30 days), with age taken at search time from the record's content date (a distillation's source session date, else `updated`). Skills, decisions, people and pinned records count as current; queries that name an earlier time are searched without it. Nothing is written to the vault.
+- `search.jev_shadow.prefer_recent: true` (off by default) tells Jev that a document contradicted by a more recently updated one in the pool is stale unless the query asks about an earlier time, and sends content dates. Ledger rows gain a `variant` column (`base` / `prefer-recent`); existing ledgers are migrated in place.
+- `scripts/run_eval.py --production-ranking --recency/--no-recency --recency-weight --recency-half-life --jev off|base|prefer-recent`, plus `eval/recency_queries.example.yaml`, a template for a private set of questions whose answer changed over time. The eval now opens the index read-only and logs Jev runs to a temporary ledger.
+
 ## [0.32.0] - 2026-10-16
 
 Minor release: a read-only MCP mode for letting another person's agent search a vault it must never change.

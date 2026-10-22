@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,8 @@ import yaml
 
 from memstem.core.search import Result, Search
 
-VALID_CLASSES: tuple[str, ...] = ("factual", "conceptual", "procedural", "historical")
+VALID_CLASSES: tuple[str, ...] = ("factual", "conceptual", "procedural", "historical", "current")
+"""``current`` (ADR 0054): the answer changed over time and the newest state is expected."""
 DEFAULT_TOP_K = 10
 
 
@@ -184,15 +185,24 @@ def load_queries(path: Path) -> list[EvalQuery]:
     return out
 
 
-def run_query(search: Search, query: EvalQuery) -> QueryResult:
+def run_query(
+    search: Search,
+    query: EvalQuery,
+    search_kwargs: Mapping[str, Any] | None = None,
+) -> QueryResult:
     """Execute one query against :class:`Search` and find the first matching rank.
 
     Passes ``log_client=None`` so running the eval doesn't bump
     importance on whatever happens to surface — the eval reads live
     state, it shouldn't change it.
+
+    ``search_kwargs`` are forwarded to :meth:`Search.search_with_status`
+    (ranking knobs, ``recency``, ``shadow_client`` for a served Jev run).
     """
     start = time.perf_counter()
-    results = search.search(query.query, limit=query.top_k, log_client=None)
+    results = search.search_with_status(
+        query.query, limit=query.top_k, log_client=None, **dict(search_kwargs or {})
+    ).results
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     rank: int | None = None
     for i, result in enumerate(results, start=1):
@@ -202,10 +212,14 @@ def run_query(search: Search, query: EvalQuery) -> QueryResult:
     return QueryResult(query=query, rank=rank, top_k=query.top_k, elapsed_ms=elapsed_ms)
 
 
-def run_eval(search: Search, queries: Sequence[EvalQuery]) -> EvalReport:
+def run_eval(
+    search: Search,
+    queries: Sequence[EvalQuery],
+    search_kwargs: Mapping[str, Any] | None = None,
+) -> EvalReport:
     """Run every query and aggregate per-class + overall metrics."""
     start = time.perf_counter()
-    per_query = [run_query(search, q) for q in queries]
+    per_query = [run_query(search, q, search_kwargs) for q in queries]
     elapsed_ms = (time.perf_counter() - start) * 1000.0
 
     total = len(per_query)

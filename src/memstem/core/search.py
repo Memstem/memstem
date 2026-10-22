@@ -34,6 +34,7 @@ from memstem.core.hyde import HydeExpander, NoOpExpander
 from memstem.core.index import FtsHit, Index, VecHit
 from memstem.core.jev_shadow import JevShadow
 from memstem.core.mmr import mmr_rerank
+from memstem.core.recency import RecencyPolicy, policy_for_query, recency_multiplier
 from memstem.core.rerank import (
     DEFAULT_RERANK_TOP_N,
     NoOpReranker,
@@ -310,6 +311,7 @@ class Search:
         vector_weight: float = 1.0,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         type_bias: dict[str, float] | None = None,
+        recency: RecencyPolicy | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
         include_deleted: bool = False,
@@ -349,6 +351,12 @@ class Search:
         (no policy applied — pre-0.10 behaviour). Pass an empty dict
         ``{}`` for the same effect when you want the parameter to be
         explicit at the call site.
+
+        ``recency`` (ADR 0054) multiplies each hit's score by
+        ``1 + weight * 2 ** (-age / half_life)``, age measured now from the
+        record's content date. ``None`` (the default) leaves scores alone.
+        The policy is dropped for a query that names an earlier time when
+        ``skip_historical_queries`` is set. See :mod:`memstem.core.recency`.
 
         ``log_client`` (ADR 0008 Tier 1 query log) tags retrieval-log rows
         with the call site (``"cli"``, ``"mcp"``, ``"http"``). Pass
@@ -408,6 +416,7 @@ class Search:
             vector_weight=vector_weight,
             importance_weight=importance_weight,
             type_bias=type_bias,
+            recency=recency,
             include_expired=include_expired,
             include_deprecated=include_deprecated,
             include_deleted=include_deleted,
@@ -428,6 +437,7 @@ class Search:
         vector_weight: float = 1.0,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         type_bias: dict[str, float] | None = None,
+        recency: RecencyPolicy | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
         include_deleted: bool = False,
@@ -477,6 +487,7 @@ class Search:
             vector_weight=vector_weight,
             importance_weight=importance_weight,
             type_bias=type_bias,
+            recency=recency,
             include_expired=include_expired,
             include_deprecated=include_deprecated,
             include_deleted=include_deleted,
@@ -526,6 +537,7 @@ class Search:
         vector_weight: float,
         importance_weight: float,
         type_bias: dict[str, float] | None,
+        recency: RecencyPolicy | None,
         include_expired: bool,
         include_deprecated: bool,
         include_deleted: bool,
@@ -548,6 +560,7 @@ class Search:
                     vector_weight=vector_weight,
                     importance_weight=importance_weight,
                     type_bias=type_bias,
+                    recency=recency,
                     include_expired=include_expired,
                     include_deprecated=include_deprecated,
                     include_deleted=include_deleted,
@@ -573,6 +586,7 @@ class Search:
         vector_weight: float,
         importance_weight: float,
         type_bias: dict[str, float] | None,
+        recency: RecencyPolicy | None,
         include_expired: bool,
         include_deprecated: bool,
         include_deleted: bool,
@@ -661,6 +675,8 @@ class Search:
             limit=materialize_limit,
             importance_weight=importance_weight,
             type_bias=type_bias,
+            # ADR 0054: a query that names an earlier time gets no recency edge.
+            recency=policy_for_query(recency, query),
             include_expired=include_expired,
             include_deprecated=include_deprecated,
             include_deleted=include_deleted,
@@ -876,6 +892,7 @@ class Search:
         limit: int,
         importance_weight: float = DEFAULT_IMPORTANCE_WEIGHT,
         type_bias: dict[str, float] | None = None,
+        recency: RecencyPolicy | None = None,
         include_expired: bool = False,
         include_deprecated: bool = False,
         include_deleted: bool = False,
@@ -883,8 +900,8 @@ class Search:
     ) -> list[Result]:
         """Read each fused hit's `Memory` from the vault, optionally re-score, sort, truncate.
 
-        When the importance boost is off AND no type bias is configured,
-        RRF order is already final and the loop short-circuits as soon as
+        When the importance boost is off AND no type bias or recency
+        policy is configured, RRF order is already final and the loop short-circuits as soon as
         ``limit`` results accumulate. When either re-scoring stage is
         active, results may re-order, so we materialize a wider pool
         (capped at ``limit * OVERFETCH_MULTIPLIER``) before sorting by
@@ -895,7 +912,7 @@ class Search:
         now = datetime.now(tz=UTC)
         boost_active = importance_weight != 0.0
         bias_active = bool(type_bias)
-        rescore_active = boost_active or bias_active
+        rescore_active = boost_active or bias_active or recency is not None
         pool_target = max(limit * OVERFETCH_MULTIPLIER, limit) if rescore_active else limit
 
         pool: list[Result] = []
@@ -928,6 +945,8 @@ class Search:
                 continue
             score = self._apply_importance(hit.score, memory, importance_weight)
             score = self._apply_type_bias(score, memory, type_bias)
+            if recency is not None:
+                score *= recency_multiplier(memory, now, recency)
             pool.append(
                 Result(
                     memory=memory,

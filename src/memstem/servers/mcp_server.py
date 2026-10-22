@@ -40,6 +40,7 @@ from memstem.core.embeddings import Embedder
 from memstem.core.frontmatter import Frontmatter, MemoryType, coerce
 from memstem.core.index import Index
 from memstem.core.jev_shadow import JevShadow
+from memstem.core.recency import policy_from_config
 from memstem.core.rerank import Reranker, build_reranker, effective_rerank_top_n
 from memstem.core.retrieval_log import log_get
 from memstem.core.search import Result, Search
@@ -454,6 +455,7 @@ def build_server(
                 vector_weight=sc.vector_weight,
                 importance_weight=sc.importance_weight,
                 type_bias=sc.type_bias,
+                recency=policy_from_config(sc.recency),
                 mmr_lambda=sc.mmr_lambda,
                 rerank_top_n=default_rerank_top_n,
                 log_client=log_client,

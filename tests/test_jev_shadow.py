@@ -18,6 +18,8 @@ from memstem.config import JevShadowConfig
 from memstem.core.frontmatter import validate
 from memstem.core.index import Index
 from memstem.core.jev_shadow import (
+    QUESTION,
+    QUESTION_PREFER_RECENT,
     UNKNOWN_COST_RESERVE_USD,
     Candidate,
     JevShadow,
@@ -234,6 +236,7 @@ class TestShadowStoreMigration:
         store = ShadowStore(path)
         db = sqlite3.connect(store.path)
         assert db.execute("SELECT mode FROM shadow_runs").fetchone() == ("shadow",)
+        assert db.execute("SELECT variant FROM shadow_runs").fetchone() == ("base",)
         store.record(
             {
                 "ts": "t",
@@ -447,6 +450,74 @@ class TestJevServe:
         a = self._args()
         a["served"] = []
         assert shadow.serve(**a) is None and _rows(shadow) == []
+
+
+class TestPreferRecent:
+    """ADR 0054: opt-in stale-if-contradicted prompt + content dates."""
+
+    def _args(self, served: list[_Hit]) -> dict[str, Any]:
+        return {
+            "client": "http",
+            "query": "which is the winner",
+            "limit": 3,
+            "served": served,
+            "candidates": served,
+            "degraded": False,
+        }
+
+    def _distillation_hit(self) -> _Hit:
+        fm = validate(
+            {
+                "id": str(uuid4()),
+                "type": "distillation",
+                "created": "2026-10-20T00:00:00+00:00",
+                "updated": "2026-10-20T00:00:00+00:00",
+                "source": "hygiene-worker",
+                "title": "digest",
+                "tags": [],
+                "provenance": {
+                    "source": "hygiene-worker",
+                    "source_updated": "2026-06-01T00:00:00+00:00",
+                },
+            }
+        )
+        return _Hit(Memory(frontmatter=fm, body="winner digest", path=Path(f"d/{fm.id}.md")))
+
+    def _documents(self, seen: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return list(seen[0]["payload"]["state"]["documents"].values())
+
+    def test_default_keeps_base_prompt_and_file_date(self, tmp_path: Path) -> None:
+        seen: list[dict[str, Any]] = []
+        shadow = _shadow(tmp_path, _ok_handler(seen), serve=True)
+        hits = [self._distillation_hit()] + [_Hit(_memory(f"m{i}", f"body {i}")) for i in range(2)]
+        assert shadow.serve(**self._args(hits)) is not None
+        questions = seen[0]["payload"]["questions"]
+        for key, q in questions.items():
+            assert q["instructions"] == QUESTION.format(doc=key)
+        assert any(d["updated"].startswith("2026-10-20") for d in self._documents(seen))
+        (row,) = _rows(shadow)
+        assert row["variant"] == "base"
+
+    def test_prefer_recent_prompt_content_date_and_variant(self, tmp_path: Path) -> None:
+        seen: list[dict[str, Any]] = []
+        shadow = _shadow(tmp_path, _ok_handler(seen), serve=True, prefer_recent=True)
+        hits = [self._distillation_hit()] + [_Hit(_memory(f"m{i}", f"body {i}")) for i in range(2)]
+        assert shadow.serve(**self._args(hits)) is not None
+        questions = seen[0]["payload"]["questions"]
+        for key, q in questions.items():
+            assert q["instructions"] == QUESTION_PREFER_RECENT.format(doc=key)
+        dates = [d["updated"] for d in self._documents(seen)]
+        assert any(d.startswith("2026-06-01") for d in dates)
+        assert not any(d.startswith("2026-10-20") for d in dates)
+        (row,) = _rows(shadow)
+        assert row["variant"] == "prefer-recent"
+
+    def test_config_flag_reaches_settings(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        cfg = JevShadowConfig(enabled=True, prefer_recent=True)
+        shadow = build_jev_shadow(cfg, tmp_path)
+        assert shadow is not None and shadow.settings.prefer_recent is True
+        assert JevShadowConfig().prefer_recent is False
 
 
 class _AliveThread:

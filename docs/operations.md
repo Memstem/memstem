@@ -443,6 +443,39 @@ Per-call overrides are also available via the HTTP `/search`
 body (`type_bias` field) and the Python `Search.search` keyword
 argument.
 
+#### Recency (opt-in, ADR 0054)
+
+Off by default. When enabled, each score is multiplied once more, at
+search time, by `1 + weight * 2^(-age_days / half_life_days)`. Age is
+measured from the record's content date (a distillation's source session
+date, otherwise `updated`). Skills, decisions, people and pinned records
+count as current, and a query that names an earlier time ("back in June",
+"originally", "2025") is searched without the factor. Nothing is written
+to the vault, so switching it off restores the previous order exactly.
+
+```yaml
+search:
+  recency:
+    enabled: true
+    weight: 0.10            # +10% for a record updated today; +5% at one half-life
+    half_life_days: 30
+    timeless_types: [skill, decision, person]
+    skip_historical_queries: true
+  jev_shadow:
+    prefer_recent: true     # Jev marks a document stale when a newer one contradicts it
+```
+
+When Jev serves (ADR 0047) its order replaces the fused order, so the
+multiplier mainly decides which records reach Jev's pool and what is
+served when Jev falls back. `prefer_recent` changes Jev's own judgement;
+ledger rows record it as `variant = 'prefer-recent'`. Compare settings
+before enabling:
+
+```bash
+scripts/run_eval.py --queries <vault>/_meta/eval/recency_queries.yaml --production-ranking --no-recency --jev base
+scripts/run_eval.py --queries <vault>/_meta/eval/recency_queries.yaml --production-ranking --recency --jev prefer-recent
+```
+
 ## Accelerated sqlite-vec (AVX)
 
 Vector search is a brute-force scan over every slot in `memories_vec`,
