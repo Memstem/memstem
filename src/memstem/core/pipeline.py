@@ -422,6 +422,8 @@ class Pipeline:
             "ref": record.ref,
             "ingested_at": datetime.now(tz=UTC).isoformat(),
         }
+        if record.source == "opencode" and "opencode" in meta:
+            provenance["opencode"] = meta["opencode"]
         if "trajectory_sqlite" in meta:
             provenance["trajectory_sqlite"] = meta["trajectory_sqlite"]
         elif existing_fm is not None and existing_fm.provenance is not None:

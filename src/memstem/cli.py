@@ -21,6 +21,7 @@ from memstem.adapters.base import Adapter, MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter, is_subagent_transcript
 from memstem.adapters.codex import CodexAdapter, is_subagent_rollout
 from memstem.adapters.openclaw import OpenClawAdapter
+from memstem.adapters.opencode import OpenCodeAdapter
 from memstem.client import (
     DaemonClient,
     DaemonError,
@@ -1321,6 +1322,8 @@ async def _drain_into_pipeline(
     pipeline: Pipeline,
     stream: AsyncGenerator[MemoryRecord, None],
     serial: asyncio.Lock | None = None,
+    *,
+    skip_unchanged: bool = False,
 ) -> None:
     """Feed a live watcher stream into the pipeline, off the event loop.
 
@@ -1340,6 +1343,8 @@ async def _drain_into_pipeline(
     async for record in stream:
         try:
             async with lock:
+                if skip_unchanged and _reconcile_skip_unchanged(pipeline, record):
+                    continue
                 await asyncio.to_thread(pipeline.process, record)
         except Exception as exc:
             logger.warning("pipeline failed for %s/%s: %s", record.source, record.ref, exc)
@@ -1933,6 +1938,19 @@ def _build_codex_adapter(cfg: Config) -> CodexAdapter:
     )
 
 
+def _build_opencode_adapter(cfg: Config) -> OpenCodeAdapter | None:
+    oc = cfg.adapters.opencode
+    if not oc.enabled:
+        return None
+    data = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+    return OpenCodeAdapter(
+        database=oc.database or data / "opencode/opencode.db",
+        poll_seconds=oc.poll_seconds,
+        excluded_directories=oc.excluded_directories,
+        max_session_bytes=oc.max_session_bytes,
+    )
+
+
 async def _run_daemon(
     vault_obj: Vault,
     index: Index,
@@ -1951,6 +1969,7 @@ async def _run_daemon(
     reconcile_interval_seconds: int = 0,
     openclaw_scheduled_session_ttl_days: int | None = None,
     updates_config: Any = None,
+    opencode_adapter: OpenCodeAdapter | None = None,
 ) -> None:
     # Build the boot-echo hash set up front: walk every watched workspace +
     # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
@@ -1990,6 +2009,8 @@ async def _run_daemon(
         ]
         if codex_adapter is not None:
             streams.append((codex_adapter.reconcile([]), "codex"))
+        if opencode_adapter is not None:
+            streams.append((opencode_adapter.reconcile([]), "opencode"))
         return streams
 
     live_ingest = asyncio.Lock()
@@ -2005,6 +2026,14 @@ async def _run_daemon(
         tasks.append(
             asyncio.create_task(
                 _drain_into_pipeline(pipeline, codex_adapter.watch([]), live_ingest)
+            )
+        )
+    if opencode_adapter is not None:
+        tasks.append(
+            asyncio.create_task(
+                _drain_into_pipeline(
+                    pipeline, opencode_adapter.watch([]), live_ingest, skip_unchanged=True
+                )
             )
         )
     if embedder is not None:
@@ -2030,6 +2059,8 @@ async def _run_daemon(
         adapters: list[Adapter] = [openclaw_adapter, claude_adapter]
         if codex_adapter is not None:
             adapters.append(codex_adapter)
+        if opencode_adapter is not None:
+            adapters.append(opencode_adapter)
         tasks.append(
             asyncio.create_task(
                 serve_http(
@@ -2068,6 +2099,9 @@ async def _run_daemon(
     }
     if codex_adapter is not None:
         adapters_by_source[codex_adapter.name] = codex_adapter
+
+    if opencode_adapter is not None:
+        adapters_by_source[opencode_adapter.name] = opencode_adapter
 
     # Startup catch-up runs last and in the background so it never delays
     # the server/watchers/workers coming up (see make_reconcile_streams above).
@@ -2560,6 +2594,7 @@ def daemon(
                 claude_adapter=claude_adapter,
                 claude_paths=claude_paths,
                 codex_adapter=codex_adapter,
+                opencode_adapter=_build_opencode_adapter(cfg),
                 embedding_signature=_embedding_signature(cfg),
                 http_config=cfg.http,
                 search_config=cfg.search,

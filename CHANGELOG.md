@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Opt-in OpenCode SQLite session capture for Pocket OpenRouter conversations, with actual per-response model/provider provenance, retryable polling and shared MemStem MCP setup instructions (ADR 0055).
+
+
 ## [0.33.0] - 2026-10-22
 
 Minor release: opt-in recency for search ranking and for Jev's judgement (ADR 0054). Both switches are off by default, so behaviour is unchanged until a vault turns one on.

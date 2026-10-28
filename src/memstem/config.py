@@ -675,12 +675,24 @@ class CodexAdapterConfig(BaseModel):
     ingest_memories: bool = True
 
 
+class OpenCodeAdapterConfig(BaseModel):
+    """Opt-in OpenCode/Pocket OpenRouter session capture (ADR 0055)."""
+
+    enabled: bool = False
+    database: Path | None = None
+    """Defaults to $XDG_DATA_HOME/opencode/opencode.db or ~/.local/share/opencode/opencode.db."""
+    poll_seconds: float = Field(default=30, ge=1)
+    excluded_directories: list[Path] = Field(default_factory=list)
+    max_session_bytes: int = Field(default=16 * 1024 * 1024, ge=1024)
+
+
 class AdaptersConfig(BaseModel):
     """Per-adapter configuration block."""
 
     openclaw: OpenClawAdapterConfig = Field(default_factory=OpenClawAdapterConfig)
     claude_code: ClaudeCodeAdapterConfig = Field(default_factory=ClaudeCodeAdapterConfig)
     codex: CodexAdapterConfig = Field(default_factory=CodexAdapterConfig)
+    opencode: OpenCodeAdapterConfig = Field(default_factory=OpenCodeAdapterConfig)
 
     reconcile_interval_seconds: int = Field(default=6 * 3600, ge=0)
     """Cadence of the periodic catch-up reconcile (B4 self-heal).

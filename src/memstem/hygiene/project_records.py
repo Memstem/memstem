@@ -104,6 +104,8 @@ notices."""
 # tags are skipped by the project-candidate scan.
 _NON_PROJECT_TAG_PREFIXES = (
     "agent:",
+    "provider:",
+    "model:",
     "topic:",
     "distillation:",
     "project:",
