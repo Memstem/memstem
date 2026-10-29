@@ -511,7 +511,8 @@ class JevShadow:
         Runs the same preparation, request and validation as a shadow job,
         on the calling thread, without the idle wait. Returns the pool
         objects in Jev's order, truncated to ``limit``, when the run
-        succeeded; ``None`` on any failure, budget stop or exception, in
+        succeeded (served hits beyond the pool follow in their normal order
+        when ``limit`` exceeds ``pool_size``); ``None`` on any failure, budget stop or exception, in
         which case the caller keeps the normal order. Never raises.
         """
         try:
@@ -527,7 +528,14 @@ class JevShadow:
             for r in job.served + job.candidates:
                 by_id.setdefault(str(r.memory.id), r)
             order = json.loads(row["jev_order"])
-            return [by_id[cid] for cid in order[:limit]]
+            reranked = [by_id[cid] for cid in order[:limit]]
+            if len(reranked) < limit:
+                # The pool holds at most pool_size hits. A larger limit keeps the
+                # rest of the normal order after Jev's instead of coming back short.
+                scored = set(order)
+                rest = [r for r in job.served if str(r.memory.id) not in scored]
+                reranked += rest[: limit - len(reranked)]
+            return reranked
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("jev serve: failed, keeping normal order: %s", exc)
             return None

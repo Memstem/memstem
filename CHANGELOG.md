@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Opt-in OpenCode SQLite session capture for Pocket OpenRouter conversations, with actual per-response model/provider provenance, retryable polling and shared MemStem MCP setup instructions (ADR 0055).
 
+### Fixed
+- Served Jev searches (ADR 0047) with a `limit` above `search.jev_shadow.pool_size` (default 20) returned only `pool_size` results. Jev's order is now followed by the remaining hits in their normal order, so the caller gets the number it asked for.
+
 
 ## [0.33.0] - 2026-10-22
 
