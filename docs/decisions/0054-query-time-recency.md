@@ -1,6 +1,7 @@
 # 0054 — Query-time recency weighting, and a prefer-recent Jev prompt
 
-- Status: proposed (both opt-in per vault; default off)
+- Status: accepted as opt-in code; the `prefer_recent` prompt was not adopted
+  after the live trial (see "Live trial" below). Both default off.
 - Date: 2026-10-22
 - Supersedes: the write-time decay slice of 0008 (never built)
 - Builds on: 0008 (importance), 0047 (serve Jev's order)
@@ -148,3 +149,32 @@ wanted, since its effect is small either way.
   `false` and restart the daemon; MCP sessions pick it up on restart.
 - `hygiene.decay_half_life_days` stays in the schema for config
   compatibility and is documented as unused.
+
+## Live trial (brads-server Ari vault, 2026-10-22 → 2026-10-29)
+
+`prefer_recent` served all Jev traffic on one vault for a week (4,387
+runs, 0.36% fallback, cost unchanged). Traffic changed during the trial,
+because a new client began sending limit-30 searches, so the prompts were
+compared on the same pools rather than across periods. 70 prefer-recent
+pools, sampled with the 0047 procedure and stratified by search type, and
+the 59 base-period pools from the 0047 fleet sample were each re-scored
+with both prompts twice, on the frozen text the labeller graded. Labels
+were blind, on the 0047 rubric, with a 20% independent re-grade (relevance
+agreement 97.5%, kappa 0.90).
+
+| comparison (129 searches, 109 answerable groups) | Δ, prefer-recent − base | 95% CI |
+|---|---|---|
+| nDCG@10 | −0.017 | −0.039 to +0.004 |
+| MRR@10 | −0.029 | −0.070 to +0.011 |
+| hit@3 | −0.005 | −0.050 to +0.040 |
+
+The prompt does lean newer: the median age of Jev's top result fell from
+7.3 to 3.2 days. But when the two prompts chose different top results,
+the prefer-recent choice was graded better 29 times and worse 42. Jev
+itself kept its 0047 gain (+0.28 nDCG@10 over the normal order as
+served). The +0.05 MRR on the 13 current-state questions above did not
+carry over: real traffic seldom has a newer document that contradicts an
+older one in the same pool. The rubric grades each document on its own
+evidence, so a small benefit on genuinely stale-versus-current pools is
+not ruled out. There was no benefit on traffic as it is. The switch was
+turned back off; the code stays opt-in.

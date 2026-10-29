@@ -429,6 +429,26 @@ class TestJevServe:
         assert json.loads(row["served_ids"]) == [str(r.memory.id) for r in a["served"]]
         assert row["wait_ms"] == 0 or row["wait_ms"] < 50
 
+    def test_limit_above_pool_size_keeps_the_rest_of_the_normal_order(self, tmp_path: Path) -> None:
+        # A limit-30 search with pool_size 20 used to come back with only 20 hits.
+        served = [_Hit(_memory(f"served {i}", f"plain body {i}")) for i in range(7)]
+        served[3] = _Hit(_memory("pool winner", "this is the winner body"))
+        shadow = _shadow(tmp_path, _ok_handler([]), serve=True, pool_size=5)
+        out = shadow.serve(
+            client="mcp",
+            query="which is the winner",
+            limit=7,
+            served=served,
+            candidates=served,
+            degraded=False,
+        )
+        assert out is not None and len(out) == 7
+        assert out[0].memory.frontmatter.title == "pool winner"
+        assert len({r.memory.id for r in out}) == 7
+        assert [r.memory.id for r in out[5:]] == [r.memory.id for r in served[5:]]
+        (row,) = _rows(shadow)
+        assert len(json.loads(row["pool_ids"])) == 5
+
     def test_timeout_returns_none_and_logs(self, tmp_path: Path) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("slow")
