@@ -343,8 +343,9 @@ class HandoffAdapter(Adapter):
             self._emitted[ref] = note.fingerprint
             if record is not None:
                 records.append(record)
+        # pop, not del: the startup reconcile and the first poll can overlap.
         for ref in self._emitted.keys() - notes.keys():
-            del self._emitted[ref]
+            self._emitted.pop(ref, None)
         return records
 
     async def _emit(self, *, changed_only: bool) -> AsyncGenerator[MemoryRecord, None]:
