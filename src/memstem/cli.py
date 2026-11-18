@@ -2458,6 +2458,63 @@ def vec_compact(
         index.close()
 
 
+@app.command(name="vec-dedupe")
+def vec_dedupe(
+    vault: str | None = typer.Option(None, help="Vault path override"),
+    undo: bool = typer.Option(
+        False,
+        "--undo",
+        help=(
+            "Give every alias its own vector row again. Run this, with the daemon "
+            "stopped, before downgrading to a release without ADR 0056."
+        ),
+    ),
+    compact: bool = typer.Option(
+        True,
+        "--compact/--no-compact",
+        help="Compact the vector table afterwards to free the slots dedupe leaves dead.",
+    ),
+    batch_size: int = typer.Option(500, min=1, help="Rows per writer transaction."),
+) -> None:
+    """Store each distinct vector once; duplicates become aliases (ADR 0056).
+
+    Identical chunks (repeated prompts, shared injected context) embed to
+    byte-identical vectors, and every copy costs every vector search a scan.
+    This converts each copy into an alias of one row. Results are unchanged
+    except for the order of exact ties, and nothing is re-embedded. Resumable
+    and batched, so it can run beside the daemon; ``--undo`` reverses it.
+    """
+    cfg = _load_config(_resolve_vault_path(vault))
+    index = _open_index(cfg)
+    try:
+        live, slots = index.vec_occupancy()
+        aliases = index.vec_alias_count()
+        typer.echo(f"before: {live} vector rows, {aliases} aliases, {slots} slots")
+
+        def _progress(scanned: int, changed: int) -> None:
+            if scanned % (batch_size * 20) < batch_size:
+                typer.echo(f"  {scanned} scanned, {changed} changed")
+
+        if undo:
+            result = index.undo_vector_dedupe(batch_size=batch_size, progress=_progress)
+            typer.echo(
+                f"undo: {result.changed} aliases restored as vector rows "
+                f"({result.seconds:.1f}s); now {result.canonical_rows} rows, "
+                f"{result.aliases} aliases"
+            )
+            return
+        result = index.dedupe_vectors(batch_size=batch_size, progress=_progress)
+        typer.echo(
+            f"dedupe: {result.scanned} rows scanned, {result.changed} became aliases "
+            f"({result.seconds:.1f}s); now {result.canonical_rows} rows, {result.aliases} aliases"
+        )
+        if compact and result.changed:
+            c = index.compact_vectors()
+            typer.echo(f"compacted: slots {c.slots_before} -> {c.slots_after} ({c.seconds:.1f}s)")
+    finally:
+        index.close()
+
+
 @vec_accel_app.command("build")
 def vec_accel_build(
     dest: str | None = typer.Option(

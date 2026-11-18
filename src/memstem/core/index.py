@@ -30,7 +30,7 @@ from memstem.core.storage import Memory
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 _VEC_DIMS_RE = re.compile(r"FLOAT\[(\d+)\]", re.IGNORECASE)
 
@@ -446,6 +446,26 @@ MIGRATIONS: dict[int, str] = {
             PRIMARY KEY (memory_id, chunk_index)
         ) WITHOUT ROWID;
     """,
+    16: """
+        -- ADR 0056: one vec0 row per distinct vector. A chunk whose vector
+        -- is byte-equal to an existing row's is an alias of that row here
+        -- instead of a second vec0 row. A chunk lives in exactly one of
+        -- memories_vec (canonical) or vec_aliases.
+        CREATE TABLE IF NOT EXISTS vec_aliases (
+            chunk_id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            canonical_chunk_id TEXT NOT NULL
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_vec_aliases_canonical
+            ON vec_aliases(canonical_chunk_id);
+        -- 16-byte sha256 prefix of an embedding blob -> the canonical chunk
+        -- holding it. Advisory: a match is used only after a byte compare.
+        CREATE TABLE IF NOT EXISTS vec_canon (
+            vec_hash BLOB PRIMARY KEY,
+            chunk_id TEXT NOT NULL UNIQUE
+        ) WITHOUT ROWID;
+    """,
 }
 
 
@@ -494,6 +514,22 @@ def _chunk_index_of(chunk_id: str) -> int | None:
 def _serialize_vector(embedding: Iterable[float]) -> bytes:
     floats = list(embedding)
     return struct.pack(f"{len(floats)}f", *floats)
+
+
+def _vec_hash(blob: bytes) -> bytes:
+    """``vec_canon`` key for an embedding blob (ADR 0056)."""
+    return hashlib.sha256(blob).digest()[:16]
+
+
+@dataclass(frozen=True)
+class VecDedupeResult:
+    """Outcome of :meth:`Index.dedupe_vectors` / :meth:`Index.undo_vector_dedupe`."""
+
+    scanned: int
+    changed: int
+    canonical_rows: int
+    aliases: int
+    seconds: float
 
 
 class Index:
@@ -876,7 +912,13 @@ class Index:
             """
             SELECT m.id AS id, m.body AS body
             FROM memories m
-            WHERE EXISTS (SELECT 1 FROM memories_vec v WHERE v.memory_id = m.id)
+            WHERE (
+                EXISTS (SELECT 1 FROM memories_vec v WHERE v.memory_id = m.id)
+                OR EXISTS (
+                    SELECT 1 FROM vec_aliases a
+                    WHERE a.chunk_id >= m.id || ':' AND a.chunk_id < m.id || ';'
+                )
+              )
               AND NOT EXISTS (SELECT 1 FROM embed_state s WHERE s.memory_id = m.id)
             """
         ).fetchall()
@@ -952,6 +994,8 @@ class Index:
             # never-embedded.
             self.db.execute("DELETE FROM embed_state")
             self.db.execute("DELETE FROM vec_chunk_hashes")
+            self.db.execute("DELETE FROM vec_aliases")
+            self.db.execute("DELETE FROM vec_canon")
         self.db.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
@@ -1093,44 +1137,178 @@ class Index:
 
         with self._lock, self.db:
             self._delete_vectors(memory_id)
-            self.db.executemany(
-                """
-                INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
-                VALUES (?, ?, ?, ?)
-                """,
-                [
-                    (f"{memory_id}:{i}", memory_id, i, _serialize_vector(vec))
-                    for i, vec in enumerate(embeddings)
-                ],
+            for i, vec in enumerate(embeddings):
+                self._insert_chunk_vector(f"{memory_id}:{i}", memory_id, i, _serialize_vector(vec))
+
+    # ---- Chunk vectors (ADR 0056: one vec0 row per distinct vector) -------
+    #
+    # Every helper below except :meth:`vector_blob` expects the caller to
+    # hold :attr:`_lock` and own the transaction on :attr:`db`.
+
+    @staticmethod
+    def _canonical_blob(conn: sqlite3.Connection, chunk_id: str) -> bytes | None:
+        """Embedding of ``chunk_id``'s own vec0 row (primary-key lookup)."""
+        row = conn.execute(
+            "SELECT embedding FROM memories_vec WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        return bytes(row[0]) if row is not None else None
+
+    def _chunk_blob(self, conn: sqlite3.Connection, chunk_id: str) -> bytes | None:
+        """Embedding of ``chunk_id``, resolving an alias to its canonical row."""
+        blob = self._canonical_blob(conn, chunk_id)
+        if blob is not None:
+            return blob
+        row = conn.execute(
+            "SELECT canonical_chunk_id FROM vec_aliases WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        return self._canonical_blob(conn, row[0]) if row is not None else None
+
+    def vector_blob(self, chunk_id: str, db: sqlite3.Connection | None = None) -> bytes | None:
+        """Embedding bytes of ``chunk_id`` (canonical row or alias), or None.
+
+        ``db`` is a borrowed reader; without one the shared connection is
+        used under :attr:`_lock`.
+        """
+        if db is not None:
+            return self._chunk_blob(db, chunk_id)
+        with self._lock:
+            return self._chunk_blob(self.db, chunk_id)
+
+    def _find_equal_canonical(self, blob: bytes, exclude: str | None = None) -> str | None:
+        """A canonical chunk (not ``exclude``) whose vector is byte-equal to ``blob``."""
+        row = self.db.execute(
+            "SELECT chunk_id FROM vec_canon WHERE vec_hash = ?", (_vec_hash(blob),)
+        ).fetchone()
+        if row is None or row[0] == exclude:
+            return None
+        return str(row[0]) if self._canonical_blob(self.db, row[0]) == blob else None
+
+    def _insert_vec_row(self, chunk_id: str, memory_id: str, chunk_index: int, blob: bytes) -> None:
+        self.db.execute(
+            """
+            INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
+            VALUES (?, ?, ?, ?)
+            """,
+            (chunk_id, memory_id, chunk_index, blob),
+        )
+        # OR REPLACE: drops a stale mapping for this hash (its row is gone or
+        # holds a colliding blob) and any older hash this chunk_id carried.
+        self.db.execute(
+            "INSERT OR REPLACE INTO vec_canon(vec_hash, chunk_id) VALUES (?, ?)",
+            (_vec_hash(blob), chunk_id),
+        )
+
+    def _insert_chunk_vector(
+        self, chunk_id: str, memory_id: str, chunk_index: int, blob: bytes
+    ) -> bool:
+        """Store a chunk's vector: an alias if an equal vector exists, else a vec0 row.
+
+        Returns True when the chunk became an alias.
+        """
+        canonical = self._find_equal_canonical(blob, exclude=chunk_id)
+        if canonical is not None:
+            self.db.execute(
+                "INSERT INTO vec_aliases(chunk_id, memory_id, chunk_index, canonical_chunk_id) "
+                "VALUES (?, ?, ?, ?)",
+                (chunk_id, memory_id, chunk_index, canonical),
             )
+            return True
+        self._insert_vec_row(chunk_id, memory_id, chunk_index, blob)
+        return False
+
+    def _remove_chunk_vector(self, chunk_id: str) -> None:
+        """Remove a chunk's vector; promote an alias if it was a shared canonical row."""
+        if self.db.execute("DELETE FROM vec_aliases WHERE chunk_id = ?", (chunk_id,)).rowcount:
+            return
+        blob = self._canonical_blob(self.db, chunk_id)
+        self.db.execute("DELETE FROM vec_canon WHERE chunk_id = ?", (chunk_id,))
+        if blob is None:
+            return
+        heir = self.db.execute(
+            "SELECT chunk_id, memory_id, chunk_index FROM vec_aliases "
+            "WHERE canonical_chunk_id = ? ORDER BY chunk_id LIMIT 1",
+            (chunk_id,),
+        ).fetchone()
+        self.db.execute("DELETE FROM memories_vec WHERE chunk_id = ?", (chunk_id,))
+        if heir is None:
+            return
+        heir_id = str(heir[0])
+        self.db.execute("DELETE FROM vec_aliases WHERE chunk_id = ?", (heir_id,))
+        self._insert_vec_row(heir_id, str(heir[1]), int(heir[2]), blob)
+        self.db.execute(
+            "UPDATE vec_aliases SET canonical_chunk_id = ? WHERE canonical_chunk_id = ?",
+            (heir_id, chunk_id),
+        )
+
+    def _set_chunk_vector(
+        self, chunk_id: str, memory_id: str, chunk_index: int, blob: bytes
+    ) -> None:
+        """Replace an existing chunk's vector.
+
+        A canonical row nobody aliases, getting a vector nobody else has, is
+        updated in place so vec0 reuses its slot (ADR 0045); every other
+        case is remove + insert.
+        """
+        if (
+            self._canonical_blob(self.db, chunk_id) is not None
+            and self.db.execute(
+                "SELECT 1 FROM vec_aliases WHERE canonical_chunk_id = ? LIMIT 1", (chunk_id,)
+            ).fetchone()
+            is None
+            and self._find_equal_canonical(blob, exclude=chunk_id) is None
+        ):
+            self.db.execute(
+                "UPDATE memories_vec SET embedding = ? WHERE chunk_id = ?", (blob, chunk_id)
+            )
+            self.db.execute(
+                "INSERT OR REPLACE INTO vec_canon(vec_hash, chunk_id) VALUES (?, ?)",
+                (_vec_hash(blob), chunk_id),
+            )
+            return
+        self._remove_chunk_vector(chunk_id)
+        self._insert_chunk_vector(chunk_id, memory_id, chunk_index, blob)
+
+    def _alias_chunk_ids(self, memory_id: str, db: sqlite3.Connection | None = None) -> list[str]:
+        conn = db if db is not None else self.db
+        return [
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM vec_aliases WHERE chunk_id >= ? AND chunk_id < ?",
+                (f"{memory_id}:", f"{memory_id};"),
+            )
+        ]
 
     def _vec_chunk_ids(self, memory_id: str, db: sqlite3.Connection | None = None) -> list[str]:
-        """Chunk ids of ``memory_id``'s vector rows, without scanning vec0.
+        """Chunk ids of ``memory_id``'s vectors (vec0 rows and aliases), without scanning vec0.
 
         ``WHERE memory_id = ?`` on vec0 filters a metadata column by
         reading the whole table (1.4 s on a 280K-slot index); the
         ``_rowids`` shadow table has a unique index on the ``chunk_id``
         string, and every chunk id is ``"<memory_id>:<index>"`` — so a
         ``[id + ":", id + ";")`` range finds them in microseconds (ADR 0045).
+        Aliases (ADR 0056) are found the same way on ``vec_aliases``.
         """
         conn = db if db is not None else self.db
-        return [
+        canonical = [
             r[0]
             for r in conn.execute(
                 "SELECT id FROM memories_vec_rowids WHERE id >= ? AND id < ?",
                 (f"{memory_id}:", f"{memory_id};"),
             )
         ]
+        return canonical + self._alias_chunk_ids(memory_id, conn)
 
     def _delete_vectors(self, memory_id: str) -> None:
-        """Delete ``memory_id``'s vector rows and chunk hashes by primary key.
+        """Delete ``memory_id``'s vectors and chunk hashes by primary key.
 
+        Aliases go first, so a canonical row shared only within this
+        record is not promoted to a sibling that is about to be deleted.
         Caller holds :attr:`_lock` and owns the transaction.
         """
-        self.db.executemany(
-            "DELETE FROM memories_vec WHERE chunk_id = ?",
-            [(c,) for c in self._vec_chunk_ids(memory_id)],
-        )
+        aliases = self._alias_chunk_ids(memory_id)
+        self.db.executemany("DELETE FROM vec_aliases WHERE chunk_id = ?", [(c,) for c in aliases])
+        for c in self._vec_chunk_ids(memory_id):
+            self._remove_chunk_vector(c)
         self.db.execute("DELETE FROM vec_chunk_hashes WHERE memory_id = ?", (memory_id,))
 
     def chunk_hashes(self, memory_id: str) -> dict[int, str]:
@@ -1193,12 +1371,9 @@ class Index:
 
             def _read(conn: sqlite3.Connection) -> None:
                 for i, src in to_copy.items():
-                    got = conn.execute(
-                        "SELECT embedding FROM memories_vec WHERE chunk_id = ?",
-                        (f"{memory_id}:{src}",),
-                    ).fetchone()
+                    got = self._chunk_blob(conn, f"{memory_id}:{src}")
                     if got is not None:
-                        copied[i] = bytes(got[0])
+                        copied[i] = got
 
             with self.reader() as rdb:
                 if rdb is not None:
@@ -1249,9 +1424,8 @@ class Index:
                 # Deleted mid-embed: write nothing (the hash rows' FK would
                 # reject them); record_embed_state's FK path cleans up.
                 orphans = self._vec_chunk_ids(memory_id)
-                self.db.executemany(
-                    "DELETE FROM memories_vec WHERE chunk_id = ?", [(c,) for c in orphans]
-                )
+                for c in orphans:
+                    self._remove_chunk_vector(c)
                 return 0, 0, len(orphans)
             existing: dict[int, str] = {}
             stray: list[str] = []
@@ -1276,22 +1450,14 @@ class Index:
                 if i in unchanged:
                     continue
                 if i in existing:
-                    self.db.execute(
-                        "UPDATE memories_vec SET embedding = ? WHERE chunk_id = ?",
-                        (blobs[i], existing[i]),
-                    )
+                    self._set_chunk_vector(existing[i], memory_id, i, blobs[i])
                     updated += 1
                 else:
-                    self.db.execute(
-                        """
-                        INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (f"{memory_id}:{i}", memory_id, i, blobs[i]),
-                    )
+                    self._insert_chunk_vector(f"{memory_id}:{i}", memory_id, i, blobs[i])
                     inserted += 1
             drop = [c for idx, c in existing.items() if idx >= n] + stray
-            self.db.executemany("DELETE FROM memories_vec WHERE chunk_id = ?", [(c,) for c in drop])
+            for c in drop:
+                self._remove_chunk_vector(c)
             self.db.execute("DELETE FROM vec_chunk_hashes WHERE memory_id = ?", (memory_id,))
             rows = [(memory_id, i, h) for i, h in enumerate(hashes)]
             if body_hash is not None:
@@ -1566,6 +1732,22 @@ class Index:
                         self.db.executemany(
                             f"DELETE FROM {build_t} WHERE chunk_id = ?", [(g,) for g in gone]
                         )
+                    # Live rows the copy never saw and the embed_state delta
+                    # cannot see: an alias promoted to canonical (ADR 0056)
+                    # inserts a row without re-embedding its record.
+                    added = [
+                        r[0]
+                        for r in self.db.execute(
+                            f"SELECT id FROM {live_t}_rowids "
+                            f"WHERE id NOT IN (SELECT id FROM {build_t}_rowids)"
+                        ).fetchall()
+                    ]
+                    if added:
+                        self.db.executemany(
+                            f"INSERT INTO {build_t}({select_cols}) "
+                            f"SELECT {select_cols} FROM {live_t} WHERE chunk_id = ?",
+                            [(a,) for a in added],
+                        )
                     _t("prune", tm)
                     tm = time.monotonic()
                     live = self.db.execute(f"SELECT count(*) FROM {live_t}_rowids").fetchone()[0]
@@ -1628,6 +1810,150 @@ class Index:
             slots_before=int(slots_before),
             slots_after=int(slots_after),
             seconds=elapsed,
+        )
+
+    def vec_alias_count(self) -> int:
+        """Chunks stored as aliases of another chunk's vector (ADR 0056)."""
+        with self._lock:
+            return int(self.db.execute("SELECT count(*) FROM vec_aliases").fetchone()[0])
+
+    def _dedupe_counts(self) -> tuple[int, int]:
+        with self._lock:
+            canonical = self.db.execute("SELECT count(*) FROM memories_vec_rowids").fetchone()[0]
+            aliases = self.db.execute("SELECT count(*) FROM vec_aliases").fetchone()[0]
+        return int(canonical), int(aliases)
+
+    def dedupe_vectors(
+        self,
+        *,
+        batch_size: int = 500,
+        batch_pause_seconds: float = 0.1,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> VecDedupeResult:
+        """Turn every vec0 row that duplicates another into an alias (ADR 0056).
+
+        Resumable and safe beside a running daemon: rows are read in
+        ``chunk_id`` order on a reader snapshot, and each batch is converted
+        in one short writer transaction that re-reads both rows by primary
+        key and compares bytes before changing anything. Frees vec0 slots
+        but does not compact; run :meth:`compact_vectors` afterwards.
+        ``progress(scanned, changed)`` is called after each batch.
+        """
+        started = time.monotonic()
+        scanned = changed = 0
+        last = ""
+        while True:
+            with self.reader() as rdb:
+                if rdb is not None:
+                    ids = [
+                        r[0]
+                        for r in rdb.execute(
+                            "SELECT id FROM memories_vec_rowids WHERE id > ? ORDER BY id LIMIT ?",
+                            (last, batch_size),
+                        )
+                    ]
+                else:
+                    with self._lock:
+                        ids = [
+                            r[0]
+                            for r in self.db.execute(
+                                "SELECT id FROM memories_vec_rowids "
+                                "WHERE id > ? ORDER BY id LIMIT ?",
+                                (last, batch_size),
+                            )
+                        ]
+            if not ids:
+                break
+            last = ids[-1]
+            scanned += len(ids)
+            with self._lock, self.db:
+                for cid in ids:
+                    blob = self._canonical_blob(self.db, cid)
+                    if blob is None:
+                        continue  # removed since the page was read
+                    canonical = self._find_equal_canonical(blob, exclude=cid)
+                    if canonical is None:
+                        row = self.db.execute(
+                            "SELECT chunk_id FROM vec_canon WHERE vec_hash = ?", (_vec_hash(blob),)
+                        ).fetchone()
+                        if row is None or self._canonical_blob(self.db, row[0]) is None:
+                            self.db.execute(
+                                "INSERT OR REPLACE INTO vec_canon(vec_hash, chunk_id) VALUES (?, ?)",
+                                (_vec_hash(blob), cid),
+                            )
+                        continue
+                    meta = self.db.execute(
+                        "SELECT memory_id, chunk_index FROM memories_vec WHERE chunk_id = ?", (cid,)
+                    ).fetchone()
+                    self.db.execute("DELETE FROM memories_vec WHERE chunk_id = ?", (cid,))
+                    self.db.execute("DELETE FROM vec_canon WHERE chunk_id = ?", (cid,))
+                    self.db.execute(
+                        "INSERT INTO vec_aliases(chunk_id, memory_id, chunk_index, "
+                        "canonical_chunk_id) VALUES (?, ?, ?, ?)",
+                        (cid, meta[0], int(meta[1]), canonical),
+                    )
+                    self.db.execute(
+                        "UPDATE vec_aliases SET canonical_chunk_id = ? "
+                        "WHERE canonical_chunk_id = ?",
+                        (canonical, cid),
+                    )
+                    changed += 1
+            if progress is not None:
+                progress(scanned, changed)
+            if batch_pause_seconds > 0:
+                time.sleep(batch_pause_seconds)
+        canonical_rows, aliases = self._dedupe_counts()
+        return VecDedupeResult(
+            scanned=scanned,
+            changed=changed,
+            canonical_rows=canonical_rows,
+            aliases=aliases,
+            seconds=time.monotonic() - started,
+        )
+
+    def undo_vector_dedupe(
+        self,
+        *,
+        batch_size: int = 500,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> VecDedupeResult:
+        """Give every alias its own vec0 row again (ADR 0056 rollback).
+
+        Run before downgrading to a release that does not know aliases.
+        Aliases whose canonical row is missing (should not happen) are
+        dropped; their records re-embed on their next body change.
+        """
+        started = time.monotonic()
+        scanned = changed = 0
+        while True:
+            with self._lock, self.db:
+                rows = self.db.execute(
+                    "SELECT chunk_id, memory_id, chunk_index, canonical_chunk_id "
+                    "FROM vec_aliases ORDER BY chunk_id LIMIT ?",
+                    (batch_size,),
+                ).fetchall()
+                for cid, mid, idx, canonical in rows:
+                    blob = self._canonical_blob(self.db, canonical)
+                    self.db.execute("DELETE FROM vec_aliases WHERE chunk_id = ?", (cid,))
+                    if blob is not None:
+                        self.db.execute(
+                            "INSERT INTO memories_vec(chunk_id, memory_id, chunk_index, embedding) "
+                            "VALUES (?, ?, ?, ?)",
+                            (cid, mid, int(idx), blob),
+                        )
+                        changed += 1
+            if not rows:
+                break
+            scanned += len(rows)
+            if progress is not None:
+                progress(scanned, changed)
+        canonical_rows, aliases = self._dedupe_counts()
+        return VecDedupeResult(
+            scanned=scanned,
+            changed=changed,
+            canonical_rows=canonical_rows,
+            aliases=aliases,
+            seconds=time.monotonic() - started,
         )
 
     # ---- Embed state ------------------------------------------------------
@@ -2175,14 +2501,21 @@ class Index:
         fetch_k: int,
         types: list[str] | None,
         limit: int,
-    ) -> list[sqlite3.Row]:
+    ) -> list[dict[str, Any]]:
         """Vec MATCH + optional type filter on ``conn``.
 
         The caller owns concurrency: either it holds :attr:`lock` around
         the shared connection, or ``conn`` is a borrowed reader that no
         other thread touches (ADR 0035).
+
+        vec0 holds one row per distinct vector (ADR 0056), so each hit is
+        expanded into its own chunk followed by its aliases (same distance,
+        ``chunk_id`` order) until ``fetch_k`` chunks are collected. Every
+        distinct vector yields at least one chunk, so the result is the top
+        ``fetch_k`` chunks by distance, as before dedupe; only the order
+        among equal distances differs.
         """
-        rows = conn.execute(
+        hits = conn.execute(
             """
             SELECT v.chunk_id, v.memory_id, v.chunk_index, v.distance
             FROM memories_vec v
@@ -2191,6 +2524,35 @@ class Index:
             """,
             (_serialize_vector(embedding), fetch_k),
         ).fetchall()
+        rows: list[dict[str, Any]] = []
+        for h in hits:
+            if len(rows) >= fetch_k:
+                break
+            distance = h["distance"]
+            rows.append(
+                {
+                    "chunk_id": h["chunk_id"],
+                    "memory_id": h["memory_id"],
+                    "chunk_index": h["chunk_index"],
+                    "distance": distance,
+                }
+            )
+            remaining = fetch_k - len(rows)
+            if remaining <= 0:
+                break
+            for a in conn.execute(
+                "SELECT chunk_id, memory_id, chunk_index FROM vec_aliases "
+                "WHERE canonical_chunk_id = ? ORDER BY chunk_id LIMIT ?",
+                (h["chunk_id"], remaining),
+            ):
+                rows.append(
+                    {
+                        "chunk_id": a[0],
+                        "memory_id": a[1],
+                        "chunk_index": a[2],
+                        "distance": distance,
+                    }
+                )
 
         if types:
             type_set = set(types)
