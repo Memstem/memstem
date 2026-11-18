@@ -14,8 +14,8 @@ largest group has 1,517 copies. The July prototype measured the same share
 (35%) on a 74K-vector vault, so this is structural, not a one-off.
 
 The copies come from records whose chunks repeat exactly: headless
-automation that sends the same prompt every run (1,370 Codex nightly
-forensic-review sessions share chunks 0–3; 453 Council leg sessions), and
+automation that sends the same prompt every run (1,370 sessions of one
+nightly Codex job share chunks 0–3; 453 multi-model panel runs), and
 session transcripts that begin with the same injected context. Identical
 chunk text gives an identical vector under one embedding signature.
 
@@ -73,11 +73,16 @@ the same vector as an **alias** of that row.
 
 ## Consequences
 
-- Ari: ~224K → ~144K scanned vectors, 3.76 → ~2.4 GB. That is a cold scan of
-  ~10 s instead of ~15.7 s, and ~35% less warm CPU per search. Dedupe alone
-  brings cold search under the 15 s deadline but not near the 1–3 s target;
-  an in-memory float16 copy for exact KNN (prototype: 16 ms) is the
-  follow-up that takes the scan off the page cache entirely.
+- Measured 2026-11-18 on a scratch copy of the brads-server index (this
+  branch's code, nothing live touched): 226,659 rows → **146,280 rows +
+  80,379 aliases**; vector chunks 3.76 → **2.40 GB**; db file 5.0 → 3.65 GB
+  after VACUUM. KNN k=50 **cold 15.7 → 10.0 s, warm 0.88 → 0.58 s**. For 20
+  sample queries the top-50 distances were identical at every position
+  (10 of 20 returned a different chunk among exact ties). The pass took
+  674 s and the compaction 501 s, unpaused on an otherwise busy box.
+- Dedupe alone brings cold search under the 15 s deadline but not near the
+  1–3 s target; an in-memory float16 copy for exact KNN (prototype: 16 ms)
+  is the follow-up that takes the scan off the page cache entirely.
 - New duplicates are deduped on write, so the share stays at zero after the
   one-time pass.
 - Search results are unchanged except for ties; no re-embedding, no
