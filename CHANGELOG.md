@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Opt-in handoff-note ingestion (ADR 0057). With `adapters.handoff.enabled: true` and one or more `roots`, the daemon polls those project directories for handoff notes (`*handoff*.md` by default) and keeps one searchable record per note, titled with the project and the note's date and tagged `handoff` and `project:<name>`. Copies of a note across git worktrees are one record, built from the most recently written copy, so an edited note replaces itself in search instead of appearing beside its older copies. A root marked `newest_only` treats every same-named file below it as one rolling note. Off by default; see `docs/handoff-notes.md`.
 - Opt-in OpenCode SQLite session capture for Pocket OpenRouter conversations, with actual per-response model/provider provenance, retryable polling and shared MemStem MCP setup instructions (ADR 0055).
 
 ### Fixed
