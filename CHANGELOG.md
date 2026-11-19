@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Opt-in handoff-note ingestion (ADR 0057). With `adapters.handoff.enabled: true` and one or more `roots`, the daemon polls those project directories for handoff notes (`*handoff*.md` by default) and keeps one searchable record per note, titled with the project and the note's date and tagged `handoff` and `project:<name>`. Copies of a note across git worktrees are one record, built from the most recently written copy, so an edited note replaces itself in search instead of appearing beside its older copies. A root marked `newest_only` treats every same-named file below it as one rolling note. Off by default; see `docs/handoff-notes.md`.
 - Opt-in OpenCode SQLite session capture for Pocket OpenRouter conversations, with actual per-response model/provider provenance, retryable polling and shared MemStem MCP setup instructions (ADR 0055).
+- Vector dedupe (ADR 0056, schema v16). The vector table now stores each distinct vector once: a chunk whose embedding is byte-equal to an existing row's is recorded as an alias of that row, so every search scans fewer vectors. Results are unchanged except for the order of exact ties, and nothing is re-embedded. New vectors are deduped on write; run `memstem vec-dedupe` once to dedupe an existing index (batched and resumable; it compacts afterwards). `memstem vec-dedupe --undo`, run with the daemon stopped, reverses it before a downgrade.
+
+### Changed
+- Vector compaction now copies live rows that appeared during the copy without an `embed_state` change, instead of aborting the swap on the count mismatch (needed for ADR 0056 alias promotion).
 
 ### Fixed
 - Served Jev searches (ADR 0047) with a `limit` above `search.jev_shadow.pool_size` (default 20) returned only `pool_size` results. Jev's order is now followed by the remaining hits in their normal order, so the caller gets the number it asked for.

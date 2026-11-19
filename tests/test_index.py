@@ -104,7 +104,8 @@ class TestSchema:
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
         ).fetchone()["version"]
         # Bumped to 14 for the memories.deleted_at source-deletion tombstone (ADR 0026).
-        assert version == 15
+        # Bumped to 16 for the vec_aliases / vec_canon tables (ADR 0056).
+        assert version == 16
 
     def test_connect_is_idempotent(self, index: Index) -> None:
         # Second connect on the same instance should be a no-op.
@@ -121,7 +122,7 @@ class TestSchema:
         idx.connect()
         try:
             rows = idx.db.execute("SELECT version FROM schema_version").fetchall()
-            assert [r["version"] for r in rows] == [15]
+            assert [r["version"] for r in rows] == [16]
         finally:
             idx.close()
 

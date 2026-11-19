@@ -56,7 +56,8 @@ def _fragment(index: Index) -> None:
     both chunks allocated while ~99% of the slots are dead."""
     _upsert(index, "filler-1", 700)
     _upsert(index, "keep-1", 1, seed=10_000)  # pinned in chunk 1
-    _upsert(index, "filler-2", 800)
+    # Distinct seeds: equal vectors would be deduped into aliases (ADR 0056).
+    _upsert(index, "filler-2", 800, seed=50_000)
     _upsert(index, "keep-2", 1, seed=20_000)  # pinned in chunk 2
     _upsert(index, "filler-1", 0)  # mass delete
     _upsert(index, "filler-2", 0)
@@ -309,30 +310,51 @@ class TestAtomicSwap:
         index.upsert_vectors("post", ["x"], [_vec(4242)])
         assert index.query_vec(_vec(4242), limit=1)[0].memory_id == "post"
 
-    def test_mismatch_aborts_keeps_live_table_and_drops_build(self, index: Index) -> None:
+    def test_row_added_mid_copy_without_embed_state_is_carried_over(self, index: Index) -> None:
         for m in range(3):
             _upsert(index, f"m{m}", 2, seed=m * 100)
-        checksum = _vector_checksum(index)
         fired = {"done": False}
 
         def sneak_insert() -> None:
             # A vec row that lands mid-copy WITHOUT an embed_state record is
-            # invisible to the delta pass -> counts disagree -> must abort.
+            # invisible to the embed_state delta. Alias promotion (ADR 0056)
+            # does exactly this, so the swap copies live rows missing from
+            # the build table instead of aborting (it aborted before 0056).
             if fired["done"]:
                 return
             fired["done"] = True
             _upsert(index, "ghost", 1, seed=99_000)
 
-        with pytest.raises(RuntimeError, match="rolling back"):
-            index.compact_vectors(batch_size=2, _after_batch=sneak_insert)
+        index.compact_vectors(batch_size=2, _after_batch=sneak_insert)
 
-        # Live table untouched (still has the ghost row too), build table gone.
-        assert _vector_checksum(index) == _vector_checksum(index)
         live, _ = index.vec_occupancy()
         assert live == 7
         assert index.query_vec(_vec(99_000), limit=1)[0].memory_id == "ghost"
         assert not any(n.startswith("memories_vec_new") for n in self._tables(index))
-        assert checksum != _vector_checksum(index)  # ghost was added; nothing lost
+        assert not any(n.startswith("memories_vec_old") for n in self._tables(index))
+
+    def test_mismatch_aborts_keeps_live_table_and_drops_build(
+        self, index: Index, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for m in range(3):
+            _upsert(index, f"m{m}", 2, seed=m * 100)
+        checksum = _vector_checksum(index)
+
+        def fail_swap(base: str) -> list[str]:
+            raise RuntimeError("forced failure in the swap: rolling back")
+
+        # Any failure inside the swap transaction must leave the live table
+        # as it was and drop the half-built table.
+        monkeypatch.setattr(index, "_vec_shadow_names", fail_swap)
+        with pytest.raises(RuntimeError, match="rolling back"):
+            index.compact_vectors(batch_size=2)
+        monkeypatch.undo()
+
+        # Live table untouched, build table gone.
+        assert _vector_checksum(index) == checksum
+        live, _ = index.vec_occupancy()
+        assert live == 6
+        assert not any(n.startswith("memories_vec_new") for n in self._tables(index))
 
     def test_shadow_names_exclude_sibling_vec_tables(self, index: Index) -> None:
         _upsert(index, "m1", 1)

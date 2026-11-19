@@ -759,27 +759,9 @@ class Search:
         (~0.4s per call on a 68k-chunk 4096-dim index; over N MMR
         candidates it was the bulk of a measured ~10s daemon search).
         """
-        if db is not None:
-            row = db.execute(
-                """
-                SELECT embedding FROM memories_vec
-                WHERE chunk_id = ?
-                """,
-                (f"{memory_id}:0",),
-            ).fetchone()
-        else:
-            with self.index._lock:
-                row = self.index.db.execute(
-                    """
-                    SELECT embedding FROM memories_vec
-                    WHERE chunk_id = ?
-                    """,
-                    (f"{memory_id}:0",),
-                ).fetchone()
-        if row is None:
-            return None
-        blob = row[0]
-        if not isinstance(blob, bytes | bytearray):
+        # An alias chunk (ADR 0056) resolves to its canonical row's vector.
+        blob = self.index.vector_blob(f"{memory_id}:0", db=db)
+        if blob is None:
             return None
         n_floats = len(blob) // 4
         if n_floats == 0:
