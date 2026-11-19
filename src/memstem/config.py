@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 PROVIDER_PROFILES: dict[str, dict[str, object]] = {
     "ollama": {
@@ -686,6 +687,38 @@ class OpenCodeAdapterConfig(BaseModel):
     max_session_bytes: int = Field(default=16 * 1024 * 1024, ge=1024)
 
 
+class HandoffRoot(BaseModel):
+    """One directory to scan for handoff notes (ADR 0057).
+
+    In YAML a root is either a plain path or a mapping with ``path``."""
+
+    path: Path
+    newest_only: bool = False
+    """Treat every file of the same name below this root as one note and keep
+    only the most recently modified. For a project that writes a fresh copy of
+    its rolling note into a new directory each session."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_plain_path(cls, value: Any) -> Any:
+        return {"path": value} if isinstance(value, str | Path) else value
+
+
+class HandoffAdapterConfig(BaseModel):
+    """Opt-in ingestion of project handoff notes (ADR 0057)."""
+
+    enabled: bool = False
+    roots: list[HandoffRoot] = Field(default_factory=list)
+    patterns: list[str] = Field(default_factory=lambda: ["*handoff*.md"])
+    """File-name globs, matched case-insensitively."""
+    exclude_patterns: list[str] = Field(default_factory=lambda: ["*template*"])
+    exclude_dirs: list[str] = Field(default_factory=list)
+    """Directory names to skip, in addition to hidden, dependency and build directories."""
+    max_depth: int = Field(default=8, ge=0)
+    max_file_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
+    poll_seconds: float = Field(default=300, ge=1)
+
+
 class AdaptersConfig(BaseModel):
     """Per-adapter configuration block."""
 
@@ -693,6 +726,7 @@ class AdaptersConfig(BaseModel):
     claude_code: ClaudeCodeAdapterConfig = Field(default_factory=ClaudeCodeAdapterConfig)
     codex: CodexAdapterConfig = Field(default_factory=CodexAdapterConfig)
     opencode: OpenCodeAdapterConfig = Field(default_factory=OpenCodeAdapterConfig)
+    handoff: HandoffAdapterConfig = Field(default_factory=HandoffAdapterConfig)
 
     reconcile_interval_seconds: int = Field(default=6 * 3600, ge=0)
     """Cadence of the periodic catch-up reconcile (B4 self-heal).

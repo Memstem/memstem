@@ -20,6 +20,7 @@ import memstem
 from memstem.adapters.base import Adapter, MemoryRecord
 from memstem.adapters.claude_code import ClaudeCodeAdapter, is_subagent_transcript
 from memstem.adapters.codex import CodexAdapter, is_subagent_rollout
+from memstem.adapters.handoff import HandoffAdapter
 from memstem.adapters.openclaw import OpenClawAdapter
 from memstem.adapters.opencode import OpenCodeAdapter
 from memstem.client import (
@@ -1951,6 +1952,22 @@ def _build_opencode_adapter(cfg: Config) -> OpenCodeAdapter | None:
     )
 
 
+def _build_handoff_adapter(cfg: Config) -> HandoffAdapter | None:
+    """Build the handoff-note adapter (ADR 0057); ``None`` unless enabled with roots."""
+    hc = cfg.adapters.handoff
+    if not hc.enabled or not hc.roots:
+        return None
+    return HandoffAdapter(
+        roots=list(hc.roots),
+        patterns=list(hc.patterns),
+        exclude_patterns=list(hc.exclude_patterns),
+        exclude_dirs=list(hc.exclude_dirs),
+        max_depth=hc.max_depth,
+        max_file_bytes=hc.max_file_bytes,
+        poll_seconds=hc.poll_seconds,
+    )
+
+
 async def _run_daemon(
     vault_obj: Vault,
     index: Index,
@@ -1970,6 +1987,7 @@ async def _run_daemon(
     openclaw_scheduled_session_ttl_days: int | None = None,
     updates_config: Any = None,
     opencode_adapter: OpenCodeAdapter | None = None,
+    handoff_adapter: HandoffAdapter | None = None,
 ) -> None:
     # Build the boot-echo hash set up front: walk every watched workspace +
     # extra-files location for system-prompt files (CLAUDE.md, MEMORY.md,
@@ -2011,6 +2029,8 @@ async def _run_daemon(
             streams.append((codex_adapter.reconcile([]), "codex"))
         if opencode_adapter is not None:
             streams.append((opencode_adapter.reconcile([]), "opencode"))
+        if handoff_adapter is not None:
+            streams.append((handoff_adapter.reconcile([]), "handoff"))
         return streams
 
     live_ingest = asyncio.Lock()
@@ -2033,6 +2053,14 @@ async def _run_daemon(
             asyncio.create_task(
                 _drain_into_pipeline(
                     pipeline, opencode_adapter.watch([]), live_ingest, skip_unchanged=True
+                )
+            )
+        )
+    if handoff_adapter is not None:
+        tasks.append(
+            asyncio.create_task(
+                _drain_into_pipeline(
+                    pipeline, handoff_adapter.watch([]), live_ingest, skip_unchanged=True
                 )
             )
         )
@@ -2061,6 +2089,8 @@ async def _run_daemon(
             adapters.append(codex_adapter)
         if opencode_adapter is not None:
             adapters.append(opencode_adapter)
+        if handoff_adapter is not None:
+            adapters.append(handoff_adapter)
         tasks.append(
             asyncio.create_task(
                 serve_http(
@@ -2102,6 +2132,8 @@ async def _run_daemon(
 
     if opencode_adapter is not None:
         adapters_by_source[opencode_adapter.name] = opencode_adapter
+    if handoff_adapter is not None:
+        adapters_by_source[handoff_adapter.name] = handoff_adapter
 
     # Startup catch-up runs last and in the background so it never delays
     # the server/watchers/workers coming up (see make_reconcile_streams above).
@@ -2652,6 +2684,7 @@ def daemon(
                 claude_paths=claude_paths,
                 codex_adapter=codex_adapter,
                 opencode_adapter=_build_opencode_adapter(cfg),
+                handoff_adapter=_build_handoff_adapter(cfg),
                 embedding_signature=_embedding_signature(cfg),
                 http_config=cfg.http,
                 search_config=cfg.search,
