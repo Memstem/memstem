@@ -95,9 +95,9 @@ provenance:
   ref: "project:home-user-northwind-quotes"
   ingested_at: 2026-05-01T03:00:00Z
 links:
-  - "memory://sessions/b7972233-e434-42fb-b55a-1736bd17e211"
-  - "memory://sessions/abc1234-e434-42fb-b55a-…"
-  - "memory://distillations/claude-code/b7972233-…"
+  - "memory://sessions/5e1d8c47-2b9a-4f63-8d10-a7c3e9f2b6d4"
+  - "memory://sessions/9a0b7e12-6c3d-4f58-…"
+  - "memory://distillations/claude-code/5e1d8c47-…"
   - "memory://distillations/claude-code/abc1234-…"
 tags:
   - "home-user-northwind-quotes"

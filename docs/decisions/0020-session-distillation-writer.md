@@ -138,7 +138,7 @@ provenance:
   ref: "session-distillation:<source-session-id>"
   ingested_at: 2026-05-01T03:00:00Z
 links:
-  - "memory://sessions/b7972233-e434-42fb-b55a-1736bd17e211"
+  - "memory://sessions/5e1d8c47-2b9a-4f63-8d10-a7c3e9f2b6d4"
 tags:
   - "agent:atlas"                    # inherited from source
   - "home-user-northwind-quotes" # inherited from source

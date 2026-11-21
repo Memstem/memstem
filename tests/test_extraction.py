@@ -601,7 +601,7 @@ def _session(
         metadata={
             "type": type_,
             "created": created or "2026-04-27T10:00:00+00:00",
-            "session_id": "d8bc35c3-f25e-4d5d-b1e0-6503e3c6d5b8",
+            "session_id": "2c6f0a93-8e41-4b7d-9f25-d1a8b3e60c74",
         },
     )
 
