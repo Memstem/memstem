@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 SNIPPET_CHARS = 240
 
+# What /health reports when a diagnostic read fails; the detail is logged.
+_HEALTH_ERROR = "unreadable; see the daemon log"
+
 
 class SearchRequest(BaseModel):
     """Body of `POST /search`. All fields except ``query`` are optional;
@@ -280,9 +283,12 @@ def build_app(
         hygiene_block: dict[str, Any] = {"loop_enabled": hc.loop_enabled}
         try:
             hygiene_block.update(hygiene_snapshot(index.db, lock=index.lock))
-        except Exception as exc:
+        except Exception:
             # A state read shouldn't fail, but if it does, don't 500 — report it.
-            hygiene_block["error"] = f"{type(exc).__name__}: {exc}"
+            # /health is unauthenticated even when a bearer token is set, so
+            # the exception text (paths, SQL) goes to the daemon log only.
+            logger.warning("health: hygiene state unreadable", exc_info=True)
+            hygiene_block["error"] = _HEALTH_ERROR
             problems.append("hygiene_state_unreadable")
 
         embed_block: dict[str, Any] = {"configured": embedder is not None}
@@ -291,8 +297,9 @@ def build_app(
             embed_block.update(stats)
             if stats.get("failed", 0) > 0:
                 problems.append("embed_failures")
-        except Exception as exc:
-            embed_block["error"] = f"{type(exc).__name__}: {exc}"
+        except Exception:
+            logger.warning("health: embed queue unreadable", exc_info=True)
+            embed_block["error"] = _HEALTH_ERROR
             problems.append("embed_queue_unreadable")
 
         # Source files the adapters could not ingest (bad frontmatter,

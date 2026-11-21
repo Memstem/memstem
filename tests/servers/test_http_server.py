@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -480,3 +481,26 @@ def test_lightweight_health_does_not_acquire_writer_lock(
     assert "embed_queue" not in response.json()
     # Full health still detects the diagnostic failure.
     assert "embed_queue_unreadable" in client.get("/health").json()["problems"]
+
+
+def test_health_does_not_expose_exception_text(
+    client: TestClient,
+    index: Index,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """/health is open even with bearer auth on, so a failed diagnostic read
+    reports a generic error; the exception detail goes to the daemon log."""
+    detail = "no such table: /home/someone/vault/_meta/index.db"
+
+    def broken() -> dict[str, int]:
+        raise RuntimeError(detail)
+
+    monkeypatch.setattr(index, "queue_stats", broken)
+    with caplog.at_level(logging.WARNING, logger="memstem.servers.http_server"):
+        response = client.get("/health")
+    body = response.json()
+    assert "embed_queue_unreadable" in body["problems"]
+    assert detail not in response.text
+    assert "RuntimeError" not in response.text
+    assert detail in caplog.text
