@@ -27,7 +27,7 @@ from memstem.core.storage import Vault
 
 
 def _record(
-    body: str = "Some legitimate memory content about Brad's project.",
+    body: str = "Some legitimate memory content about the user's project.",
     *,
     source: str = "openclaw",
     ref: str = "/tmp/test.md",
@@ -334,7 +334,7 @@ class TestIsBootEcho:
     def test_match_drops(self, tmp_path: Path) -> None:
         # Set up a fake CLAUDE.md, hash it, then verify a record with that
         # exact body matches.
-        prompt_body = "# Brad's CLAUDE.md\nUse the project conventions documented here.\n"
+        prompt_body = "# The user's CLAUDE.md\nUse the project conventions documented here.\n"
         claude_md = tmp_path / "CLAUDE.md"
         claude_md.write_text(prompt_body)
         hashes = build_boot_echo_hashes([tmp_path])

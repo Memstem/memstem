@@ -666,7 +666,7 @@ optional HTTP bearer auth, Gemini key header. Plus docs/CI housekeeping.
   `connect-clients` wiring details from README to the new
   [docs/install.md](./docs/install.md); README quickstart slimmed accordingly
 - README now asks for a star once, without the star-history chart
-- Maintainer-specific references ("Brad's box", `~/atlas` example paths,
+- Maintainer-specific references (host names, personal example paths,
   personal workspace names) genericized across ADRs, docs, README examples,
   ARCHITECTURE, and ROADMAP — the docs now read for any operator
 - CLAUDE.md rewritten as contributor guidance (was stale Phase-1 session
@@ -1332,7 +1332,7 @@ budget and surfaces as worker crashes in stderr.
 
 ## [0.9.1] — 2026-05-01
 
-Two cutover hotfixes from PR #96, found running 0.9.0 against Brad's
+Two cutover hotfixes from PR #96, found running 0.9.0 against the maintainer's
 live vault. Both are blocking for any user pointing the new W8/W9
 writers at OpenAI; both are silently corrupting if not for our
 "empty-summary skips the candidate" failure mode.
@@ -1452,7 +1452,7 @@ both writers; non-canonical, drop-and-rebuild safe).
   with HTTP 400 (`unsupported_parameter`), and the newer field name
   is also accepted by the older `gpt-4o-mini` family — so the
   switch is universal and forward-compatible. Surfaced during the
-  cutover smoke test on Brad's box: every summarizer call returned
+  cutover smoke test on the maintainer's box: every summarizer call returned
   400 until the field was renamed. Test fixtures updated to assert
   the new field.
 
@@ -1461,7 +1461,7 @@ both writers; non-canonical, drop-and-rebuild safe).
 - 1087 tests pass on Linux 3.11/3.12 (114 new in PRs #91–#93).
   Cross-platform CI matrix unchanged: macOS + Windows continue-on-
   error.
-- Brad's Atlas vault should not see any of this until the upgrade pass
+- The maintainer's Atlas vault should not see any of this until the upgrade pass
   documented in `docs/distillation-verification.md` runs explicitly.
 - Cost at typical MemStem volumes for a one-shot backfill of ~356
   Claude Code sessions on `gpt-5.4-mini`: ~$5 one time, ~$3-4/month
@@ -1525,7 +1525,7 @@ rebuild safe).
 
 - **Rerank API 400 errors on oversized memory bodies.** Two
   multi-megabyte ``Infrastructure — Extended Context`` memories in
-  Brad's vault (1.7 MB and 1.5 MB bodies) blew past every chat
+  the maintainer's vault (1.7 MB and 1.5 MB bodies) blew past every chat
   model's context window, causing every rerank score on those
   candidates to fail with HTTP 400 from OpenAI (and silent context
   overflow with Ollama). Failed candidates returned 0.0 and fell
@@ -1543,7 +1543,7 @@ rebuild safe).
 
 - **First end-to-end W5/W6 eval results** at
   ``docs/recall-eval-results.md``. Both features fail their default-on
-  gates on Brad's vault as configured (W5 -12% aggregate MRR vs
+  gates on the maintainer's vault as configured (W5 -12% aggregate MRR vs
   ≥15% required; W6 -10% on procedural class vs ≥20% required).
   Per-class breakdown surfaces asymmetric effects: W5 helps
   conceptual (+25%) but breaks historical (-44%); W6 helps factual
@@ -1784,7 +1784,7 @@ Stages shipped:
   the supported way to call this from Python.
 - **Why:** the function issues one `query_vec` per indexed memory,
   and `query_vec` is a vec0 k-NN MATCH that scans all of
-  `memories_vec`. On a ~1k-memory vault that's ~30s; on Brad's
+  `memories_vec`. On a ~1k-memory vault that's ~30s; on the maintainer's
   production vault that exceeded a 45-second smoke timeout even with
   `--neighbors 1 --limit 1`. `--limit` only caps the *report*, not
   the work; the new flag caps the *work*.
@@ -2014,7 +2014,7 @@ Stages shipped:
   signature is unchanged; existing tests and the daemon's in-process
   embed continue to work without modification.
 - **Trade-off:** the first tool call after spawning a fresh MCP
-  subprocess pays the load cost (~30 s on Brad's vault), where it used
+  subprocess pays the load cost (~30 s on the maintainer's vault), where it used
   to be paid up-front. After that, queries are fast and the
   subprocess stays warm until `cfg.mcp.idle_timeout_seconds` elapses.
   Net effect: the connection timeout class of failure goes away
@@ -2646,7 +2646,7 @@ Code releases actually read.
 
 - **Path collisions across agents.** Daily logs and skills with the
   same title/date from different agents collapsed into one record on
-  disk. On Brad's box, 326 daily files reduced to 80, and ~130
+  disk. On the maintainer's box, 326 daily files reduced to 80, and ~130
   OpenClaw records were silently lost during the first cutover.
   Pipeline now extracts `agent:<tag>` from record tags and produces
   agent-scoped paths: `daily/<agent>/<date>.md`, `skills/<agent>/<slug>.md`,
@@ -2715,7 +2715,7 @@ Code releases actually read.
 First tagged release. Phase 1 v0.1 — running on the live EC2 box,
 ingesting from Claude Code + multi-agent OpenClaw, exposing MCP
 search, with FlipClaw retired. Tag date is filled in at release
-time after Brad validates the cutover.
+time after the maintainer validates the cutover.
 
 ### Added
 
@@ -2822,7 +2822,7 @@ time after Brad validates the cutover.
 - ADR 0007: remote-machine ingestion is out of scope until Phase 3+;
   documented sync-and-watch as the recommended workaround
 - ADR 0008: tiered-memory design (importance scoring, distillations,
-  hygiene worker) for v0.2. Status proposed; no code lands until Brad
+  hygiene worker) for v0.2. Status proposed; no code lands until the maintainer
   reviews
 
 ### Changed

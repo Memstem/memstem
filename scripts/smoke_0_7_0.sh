@@ -195,7 +195,7 @@ run_with_timeout 'memstem hygiene distill --min-cluster-size 5' \
 # --- 5. dedup candidates (bounded preview) ----------------------------------
 
 step "5/6: dedup-candidates bounded preview (--max-memories $DEDUP_MAX_MEMORIES)"
-# A full scan is roughly O(N^2) in indexed memories — on Brad's vault
+# A full scan is roughly O(N^2) in indexed memories — on the maintainer's vault
 # that exceeds the default 30-second timeout easily. The bounded preview
 # caps the outer loop so the sweep always finishes inside the smoke
 # window. The `--limit` flag only caps the *report*; the work is bounded

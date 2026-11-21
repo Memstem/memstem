@@ -87,7 +87,7 @@ MAX_RERANK_BODY_CHARS = 4000
 
 Cross-encoders judge relevance from the first ~1k tokens of a
 document; sending more wastes tokens and (on small-context models)
-overflows the context window outright. Brad's vault contains
+overflows the context window outright. The maintainer's vault contains
 multi-megabyte ``Infrastructure — Extended Context``-style memories
 that dwarf any model's context window — without truncation those
 candidates uniformly return 400 Bad Request from OpenAI and

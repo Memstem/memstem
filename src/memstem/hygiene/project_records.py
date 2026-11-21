@@ -72,7 +72,7 @@ close ties."""
 DEFAULT_MAX_INPUT_CHARS = 12000
 """Cap on combined source-input length sent to the project summarizer.
 
-Brad's Northwind project today is ~5 sessions of mixed length. As
+The maintainer's Northwind project today is ~5 sessions of mixed length. As
 projects grow we don't want to blow past the LLM's context window.
 This cap is per-prompt; the prompt template includes a continuation
 marker so the LLM knows when input was truncated. 12k chars ≈ 3k

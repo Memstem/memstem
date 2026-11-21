@@ -369,7 +369,7 @@ class TestFormatBodyForPrompt:
         assert "document continues" in out
 
     def test_huge_body_truncates_to_bounded_size(self) -> None:
-        # The 1.7 MB Brad-vault case: must produce something well under
+        # The 1.7 MB maintainer-vault case: must produce something well under
         # any provider's context window.
         body = "x" * 1_700_000
         out = _format_body_for_prompt(body)

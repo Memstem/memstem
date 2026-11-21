@@ -147,11 +147,11 @@ class TestSearchTool:
 
 class TestGetTool:
     async def test_get_by_path(self, vault: Vault, index: Index) -> None:
-        memory = _make_memory(title="brad", vault=vault, index=index)
+        memory = _make_memory(title="jordan", vault=vault, index=index)
         mcp = build_server(vault, index)
         result = await _call_tool(mcp, "memstem_get", {"id_or_path": str(memory.path)})
         assert result["id"] == str(memory.id)
-        assert result["title"] == "brad"
+        assert result["title"] == "jordan"
         assert result["body"] == "hello world"
 
     async def test_get_by_id(self, vault: Vault, index: Index) -> None:

@@ -26,7 +26,7 @@ but nothing bounded the scan itself, so a caller got nothing at all.
 Run the semantic leg — query embedding plus vector scan — in a small worker
 pool (4 threads), on a borrowed read-only connection of its own, while BM25
 runs on the caller's connection. Wait at most `semantic_timeout_seconds`
-(default 15 s, Brad's choice after reviewing the numbers above). On overrun:
+(default 15 s, the owner's choice after reviewing the numbers above). On overrun:
 
 - return the BM25 results with `degraded=True` and
   `degraded_reason="semantic search exceeded 15s; keyword-only results"`,

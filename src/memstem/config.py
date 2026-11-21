@@ -292,7 +292,7 @@ class SearchConfig(BaseModel):
     the daemon / MCP / CLI search path. ``None`` (default) disables MMR —
     the RRF + importance order is final. A float in ``[0, 1]`` activates
     the diversifier: ``0.7`` is the literature default, ``0.5`` trades a
-    little relevance for more topic spread (the value validated on Brad's
+    little relevance for more topic spread (the value validated on the maintainer's
     corpus), ``1.0`` reduces to identity. See :meth:`Search.search`."""
 
     rerank_top_n: int | None = Field(default=None, ge=1)

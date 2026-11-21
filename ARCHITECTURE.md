@@ -52,7 +52,7 @@
 ~/memstem-vault/
 ├── memories/
 │   ├── people/
-│   │   └── brad-besner.md
+│   │   └── jordan-avery.md
 │   ├── decisions/
 │   │   └── 2026-04-25-deploy-via-cloudflare.md
 │   └── facts/

@@ -73,8 +73,8 @@ def index(tmp_path: Path) -> Iterator[Index]:
 
 class TestExtractWikilinks:
     def test_finds_simple_links(self) -> None:
-        body = "See [[Brad Besner]] and [[Cloudflare]]."
-        assert extract_wikilinks(body) == ["Brad Besner", "Cloudflare"]
+        body = "See [[Jordan Avery]] and [[Cloudflare]]."
+        assert extract_wikilinks(body) == ["Jordan Avery", "Cloudflare"]
 
     def test_returns_empty_for_plain_text(self) -> None:
         assert extract_wikilinks("no links here") == []
@@ -129,14 +129,14 @@ class TestSchema:
 
 class TestUpsert:
     def test_round_trip_basic_fields(self, index: Index) -> None:
-        memory = _make_memory(title="brad", body="hello", importance=0.7)
+        memory = _make_memory(title="jordan", body="hello", importance=0.7)
         index.upsert(memory)
         row = index.db.execute(
             "SELECT id, title, body, importance FROM memories WHERE id = ?",
             (str(memory.id),),
         ).fetchone()
         assert row["id"] == str(memory.id)
-        assert row["title"] == "brad"
+        assert row["title"] == "jordan"
         assert row["body"] == "hello"
         assert row["importance"] == 0.7
 

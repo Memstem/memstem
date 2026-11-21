@@ -216,7 +216,7 @@ def fixture_search(tmp_path: Path) -> Search:
             "id": "22222222-2222-2222-2222-222222222222",
             "type": "skill",
             "title": "Send Telegram",
-            "body": "Use bash ~/scripts/tg-send to message Brad.",
+            "body": "Use bash ~/scripts/tg-send to message the owner.",
             "path": "skills/send-telegram.md",
         },
         {
@@ -318,7 +318,7 @@ def test_run_eval_aggregates_metrics(fixture_search: Search) -> None:
         EvalQuery(
             id="hit2",
             class_="procedural",
-            query="tg-send Telegram Brad",
+            query="tg-send Telegram owner",
             expect=ExpectMatcher(body_contains=("tg-send",)),
         ),
         EvalQuery(
