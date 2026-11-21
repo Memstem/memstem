@@ -563,8 +563,8 @@ class TestSubagentRollouts:
     """ADR 0046: a Codex subagent/forked rollout replays its parent's
     session_meta after its own; only the first one describes the file."""
 
-    PARENT = "01a07d98-f49b-7f13-8139-57d41cd8dfd3"
-    CHILD = "01a07d99-701f-7e21-8e69-1ef43a94dffe"
+    PARENT = "01a1c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d"
+    CHILD = "01a1c2d4-5f60-7b7c-9d0e-1f2a3b4c5d6e"
 
     def _child_rollout(self, path: Path, thread_source: str) -> Path:
         own = _session_meta_line(session_id=self.CHILD, cwd="/tmp/council")

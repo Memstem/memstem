@@ -579,9 +579,9 @@ class TestPipelineIntegration:
 # --- ADR 0049: OpenClaw scheduled-job sessions ---
 
 _CRON_BODY = (
-    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Atlas Full Heartbeat — overnight "
-    "hourly email/calendar check] Run Atlas's full heartbeat checklist from HEARTBEAT.md.\n\n"
-    "**Assistant:** Calendars clear; nothing to report."
+    "**User:** [cron:7c4e19b2-3a5f-4d81-9e6c-0b2f8a5d1e47 Atlas Inbox Sweep — morning "
+    "summary of new mail] Run Atlas's inbox sweep checklist.\n\n"
+    "**Assistant:** Inbox clear; nothing to report."
 )
 
 
@@ -633,7 +633,7 @@ class TestOpenClawScheduledSession:
         "body",
         [
             # a real chat that only mentions a cron job
-            "**User:** why did [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Atlas Full Heartbeat] fail?",
+            "**User:** why did [cron:7c4e19b2-3a5f-4d81-9e6c-0b2f8a5d1e47 Atlas Inbox Sweep] fail?",
             "**User:** Please look at the heartbeat cron job tonight.",
             # marker without a uuid
             "**User:** [cron:nightly] run the report",

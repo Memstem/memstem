@@ -14,7 +14,7 @@ from memstem.core.pipeline import Pipeline
 from memstem.core.storage import Vault
 
 ROOT = "/home/u/.claude/projects/-home-u"
-SID = "0c052502-2041-481d-9713-c84abda649ff"
+SID = "3f8a2d61-9c4b-4e07-a5d2-7b1e6c0f4a93"
 
 
 @pytest.fixture
