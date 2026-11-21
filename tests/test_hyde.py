@@ -225,7 +225,7 @@ class TestOllamaExpander:
         assert expander.name == f"ollama:{DEFAULT_OLLAMA_MODEL}"
 
     def test_expand_returns_passage(self) -> None:
-        passage = "To send a Telegram message, run bash ~/scripts/tg-send 'msg'."
+        passage = "To send a Telegram message, run bash ~/scripts/notify-send 'msg'."
         client = _MockHttpClient(_MockHttpResponse(body={"response": passage}))
         expander = OllamaExpander(client=client)
         result = expander.expand("how do I send a Telegram message")
@@ -309,7 +309,7 @@ class TestOpenAIExpander:
         assert expander.name == "openai:gpt-4o"
 
     def test_expand_returns_passage(self) -> None:
-        passage = "To send a Telegram message, run bash ~/scripts/tg-send 'msg'."
+        passage = "To send a Telegram message, run bash ~/scripts/notify-send 'msg'."
         client = _MockHttpClient(_openai_response(passage))
         expander = OpenAIExpander(client=client)
         result = expander.expand("how do I send a Telegram message")

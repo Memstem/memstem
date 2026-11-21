@@ -4,7 +4,7 @@ The bi-encoder embeds query and document independently, so vec
 retrieval works only when the query and the answer share embedding-
 space neighbors. The classic failure is the procedural-query /
 declarative-answer mismatch: "how do I send a Telegram message"
-doesn't share vocabulary with "use ``bash ~/scripts/tg-send 'msg'``"
+doesn't share vocabulary with "use ``bash ~/scripts/notify-send 'msg'``"
 even though one is the literal answer to the other.
 
 HyDE (Hypothetical Document Embeddings) routes around this by asking

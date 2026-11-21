@@ -118,8 +118,8 @@ old rule got wrong.
 
 **Directories deeper than the project root can still tag separately** when the
 launch directory is a hub. A session launched from `~` and run entirely in
-`projects/tpv-cloud/api` tags as that path, not as `tpv-cloud` — 6 of 602
-transcripts in the observed vault. Resolving this needs a notion of where project
+`projects/example-app/api` tags as that path, not as `example-app` — about one
+transcript in a hundred in the vault we measured. Resolving this needs a notion of where project
 roots live for arbitrary hub layouts, which is per-installation config; deferred
 until there is evidence it matters. It is a strictly smaller error than the one
 being fixed: a real subdirectory rather than an unrelated project.

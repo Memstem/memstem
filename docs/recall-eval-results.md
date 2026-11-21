@@ -62,7 +62,7 @@ what ADR 0015's per-class breakdown was designed to surface.
 - Wins on **factual** (+6%) — opposite of the original hypothesis,
   which expected procedural to benefit most.
 - Loses on **historical** (-25%) and **procedural** (-10%). The LLM
-  doesn't know Memstem-specific vocabulary (`tg-send`, agent names,
+  doesn't know Memstem-specific vocabulary (`notify-send`, agent names,
   internal commands), so its hypothesis pulls vec retrieval toward
   generic-Telegram-app territory rather than the right answer.
 

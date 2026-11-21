@@ -2,8 +2,8 @@
 #
 # This file shows the shape of an eval set; it is not a set you can run
 # against your own vault and expect hits. Every name, host, number and
-# date below is invented (example.com, 555-01xx numbers, "Acme",
-# "Northwind"). A real eval set names your own hosts, people and
+# date below is invented (example.com, 555-01xx numbers, port 12345,
+# "Acme", "Northwind"). A real eval set names your own hosts, people and
 # projects, so keep it outside the repo — e.g. copy this file to
 # `<vault>/_meta/eval/queries.yaml`, replace the queries with questions
 # your vault can actually answer, and run:
@@ -46,13 +46,13 @@ queries:
     class: factual
     query: what gateway port does the assistant run on
     expect:
-      body_contains: ["18789"]
+      body_contains: ["12345"]
 
   - id: factual_owner_phone
     class: factual
     query: what is the office phone number
     expect:
-      body_contains: ["555) 010-0142", "555-010-0142"]
+      body_contains: ["(202) 555-0142", "202-555-0142"]
 
   - id: factual_deliverables_folder
     class: factual
@@ -111,13 +111,13 @@ queries:
     class: historical
     query: when did we move the team notes into the wiki
     expect:
-      body_contains: ["2026-04-09", "Wiki Migration"]
+      body_contains: ["2025-01-15", "Wiki Migration"]
 
   - id: historical_vector_backfill
     class: historical
     query: when was the vector store backfill done
     expect:
-      body_contains: ["2026-03-14", "Vector Store Backfill", "10,313"]
+      body_contains: ["2025-02-20", "Vector Store Backfill", "1,234"]
 
   # ─── PROJECT-GRAIN (W8/W9: distillation + project records) ──────────
   # These queries exercise the recall failure mode that motivated ADRs

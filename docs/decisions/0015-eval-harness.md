@@ -166,7 +166,7 @@ optimize the harness, not the system.
   becomes interesting after we cap recall.
 - Substring matchers are forgiving — a query that surfaces a wrong
   record containing the substring still scores. Mitigation: substrings
-  are chosen specifically (e.g., "18789" not "port"); false matches
+  are chosen specifically (e.g., "12345" not "port"); false matches
   are rare in practice.
 
 ## Open questions

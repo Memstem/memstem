@@ -615,7 +615,7 @@ class TestSearchHyde:
         # commands/files the user would expect.
         stub.set_hypothesis(
             "how do I send a Telegram message",
-            "Use bash ~/scripts/tg-send 'message' to send via the relay bot.",
+            "Use bash ~/scripts/notify-send 'message' to send via the relay bot.",
         )
         search = Search(
             vault=vault,
@@ -627,7 +627,7 @@ class TestSearchHyde:
         search.search("how do I send a Telegram message", limit=1, use_hyde=True)
         # The hypothesis is what gets embedded for vec retrieval.
         assert embedder.embedded == [
-            "Use bash ~/scripts/tg-send 'message' to send via the relay bot."
+            "Use bash ~/scripts/notify-send 'message' to send via the relay bot."
         ]
 
     def test_hyde_skips_when_should_expand_rejects(self, vault: Vault, index: Index) -> None:
@@ -719,12 +719,12 @@ class TestHybridRecallAgainstOllama:
             "fts5_notes": "FTS5 is SQLite's full-text search engine; pairs with sqlite-vec for hybrid retrieval.",
             "rrf_def": "Reciprocal Rank Fusion blends two ranked lists by 1/(k+rank).",
             "skill_storage": "Skills live in their own folder with title, scope, and verification fields.",
-            "person_jordan": "Jordan Avery runs Acme Security and three related businesses.",
-            "person_atlas": "Atlas is the existing OpenClaw assistant powering Jordan's daily workflow.",
+            "person_jordan": "Jordan Avery runs a bakery and two coffee carts.",
+            "person_atlas": "Atlas is the assistant that drafts Jordan's supplier orders.",
             "weather": "It rained all afternoon and the wind picked up around dusk.",
             "deploy_steps": "Run pytest, then push to main, then PM2 restart for the affected service.",
             "auth_arch": "OpenClaw agents use OAuth tokens from shared profiles; Claude Code has its own creds.",
-            "twilio_voice": "Sarah voice runs on ConversationRelay over webhooks via Cloudflare tunnel.",
+            "voice_agent": "The front-desk voice agent answers calls over webhooks via a tunnel.",
             "pricing_note": "Cloudflare Registrar charges at-cost; competitor pricing is roughly 2x.",
             "test_marker": "Custom pytest marker requires_ollama gates live integration tests.",
         }
