@@ -38,6 +38,7 @@ paths so symlinks and relative paths don't produce false negatives.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,9 +117,13 @@ class DaemonClient:
         base_url: str,
         *,
         timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        token: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        # A daemon with bearer auth on refuses /search without the token and
+        # leaves the vault path out of /health, so discovery needs it too.
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers=headers)
 
     def close(self) -> None:
         self._client.close()
@@ -239,7 +244,10 @@ def find_daemon(
     1. The HTTP server config says HTTP is enabled.
     2. ``GET /health`` answers within ``timeout``.
     3. The daemon's reported `vault` path resolves to the same
-       absolute path the CLI is configured against.
+       absolute path the CLI is configured against. A daemon with bearer
+       auth on reports its vault only to a caller with the token, which
+       the client sends when the env var named by
+       ``http.auth_token_env`` is set.
 
     Any failure returns ``None`` and the caller is expected to fall
     back to direct-DB. The vault-mismatch case is logged at info-
@@ -251,7 +259,10 @@ def find_daemon(
         return None
 
     base_url = f"http://{http.host}:{http.port}"
-    client = DaemonClient(base_url)
+    # Same env var the daemon reads; unset means the daemon has auth off
+    # (or this shell lacks the token, and the CLI falls back to direct-DB).
+    token = os.environ.get(http.auth_token_env, "") if http.auth_token_env else ""
+    client = DaemonClient(base_url, token=token or None)
     health = client.health(timeout=timeout)
     if health is None:
         client.close()
