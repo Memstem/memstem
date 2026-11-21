@@ -54,6 +54,7 @@ from uuid import uuid4
 
 from memstem.core.frontmatter import MemoryType, validate
 from memstem.core.index import Index
+from memstem.core.recency import as_utc
 from memstem.core.storage import Memory, Vault
 from memstem.core.summarizer import Summarizer
 
@@ -112,6 +113,11 @@ that check: a wording-only edit (a typo, a different example name) must
 not make every install re-summarize every project. Bump this when a
 template change is meant to change the records, so existing records are
 rewritten under the new template on the next run."""
+
+_INPUT_HASH_PROMPT_VERSION = 1
+"""The :data:`PROJECT_PROMPT_VERSION` at which :data:`PROVENANCE_INPUT_HASH`
+was introduced. A record without the hash was written under this version;
+see :func:`_legacy_record_is_current`. Never change it."""
 
 PROVENANCE_INPUT_HASH = "input_hash"
 """Provenance extra key on a project record: :func:`project_input_hash`
@@ -449,7 +455,14 @@ def _legacy_record_is_current(
     exactly the candidate's sessions and distillations, and no source
     was updated after that output was cached. One check per record: the
     next write stamps the hash.
+
+    Only while :data:`PROJECT_PROMPT_VERSION` is still
+    :data:`_INPUT_HASH_PROMPT_VERSION`: a legacy record was written
+    under that version, so after a bump it is out of date by definition
+    and must be regenerated like a hashed one.
     """
+    if PROJECT_PROMPT_VERSION != _INPUT_HASH_PROMPT_VERSION:
+        return False
     if not isinstance(db, sqlite3.Connection) or not existing.body:
         return False
     if sorted(existing.frontmatter.links) != sorted(_project_links(candidate)):
@@ -463,17 +476,16 @@ def _legacy_record_is_current(
     except sqlite3.Error as exc:
         logger.warning("project_records: summarizer_cache lookup failed: %s", exc)
         return False
-    raw_ts = row[0] if row is not None else None
-    if not isinstance(raw_ts, str):
+    cached_at = as_utc(row[0] if row is not None else None)
+    if cached_at is None:
         return False
-    try:
-        cached_at = datetime.fromisoformat(raw_ts)
-    except ValueError:
-        return False
-    if cached_at.tzinfo is None:
-        cached_at = cached_at.replace(tzinfo=UTC)
-    sources = [*candidate.sessions, *candidate.distillations]
-    return all(m.frontmatter.updated <= cached_at for m in sources)
+    # Either side may lack a time zone (hand-written or older frontmatter);
+    # comparing naive with aware raises, so both are read as UTC.
+    for source in (*candidate.sessions, *candidate.distillations):
+        updated = as_utc(source.frontmatter.updated)
+        if updated is None or updated > cached_at:
+            return False
+    return True
 
 
 # ─── Existing record + manual flag ────────────────────────────────

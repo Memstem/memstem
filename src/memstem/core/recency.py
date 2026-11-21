@@ -94,7 +94,11 @@ def policy_for_query(policy: RecencyPolicy | None, query: str) -> RecencyPolicy 
     return policy
 
 
-def _as_utc(value: Any) -> datetime | None:
+def as_utc(value: Any) -> datetime | None:
+    """A datetime or ISO string as an aware datetime; naive values are UTC.
+
+    Returns ``None`` for anything else, including an unparseable string.
+    """
     if isinstance(value, datetime):
         moment = value
     elif isinstance(value, str) and value:
@@ -113,10 +117,10 @@ def content_date(memory: Memory) -> datetime:
     """When the content itself was last current (see module docstring)."""
     fm = memory.frontmatter
     if fm.provenance is not None:
-        source_updated = _as_utc(getattr(fm.provenance, "source_updated", None))
+        source_updated = as_utc(getattr(fm.provenance, "source_updated", None))
         if source_updated is not None:
             return source_updated
-    updated = _as_utc(fm.updated)
+    updated = as_utc(fm.updated)
     return updated if updated is not None else fm.updated
 
 

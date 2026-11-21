@@ -192,6 +192,88 @@ def test_legacy_record_with_a_later_source_update_is_regenerated(
     assert _run(loop, summarizer) == (0, 1)
 
 
+def test_legacy_record_is_regenerated_after_a_version_bump(
+    loop: HygieneLoop,
+    summarizer: CountingSummarizer,
+    templates: dict[str, str],
+    vault: Vault,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding: a record from before the input hash used to be kept
+    # and stamped with the new hash whatever the version said.
+    _run(loop, summarizer)
+    _strip_input_hash(vault)
+    bodies = {r.path: r.body for r in _project_records(vault)}
+    templates["project"] = _reworded(PROJECT_TEMPLATE)
+    monkeypatch.setattr(pr, "PROJECT_PROMPT_VERSION", pr.PROJECT_PROMPT_VERSION + 1)
+    assert _run(loop, summarizer) == (0, 3)
+    after = {r.path: r.body for r in _project_records(vault)}
+    assert all(after[path] != body for path, body in bodies.items())
+
+
+def test_legacy_record_is_not_kept_as_unchanged_after_a_version_bump(
+    loop: HygieneLoop,
+    summarizer: CountingSummarizer,
+    vault: Vault,
+    index: Index,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run(loop, summarizer)
+    _strip_input_hash(vault)
+    monkeypatch.setattr(pr, "PROJECT_PROMPT_VERSION", pr.PROJECT_PROMPT_VERSION + 1)
+    plan = pr.compute_project_record_plan(vault, summarizer, db=index.db, lock=index.lock)
+    assert not any(p.unchanged for p in plan.proposals)
+
+
+def _stamp(when: datetime, naive: bool) -> str:
+    return (when.replace(tzinfo=None) if naive else when).isoformat()
+
+
+def _set_source_updated(vault: Vault, when: datetime, *, naive: bool) -> None:
+    """Set ``updated`` on every session and distillation."""
+    for kind in ("session", "distillation"):
+        for record in vault.walk(types=[kind]):
+            data = record.frontmatter.model_dump(mode="json", exclude_none=True)
+            data["updated"] = _stamp(when, naive)
+            fm = validate(data)
+            assert (fm.updated.tzinfo is None) == naive
+            vault.write(Memory(frontmatter=fm, body=record.body, path=record.path))
+
+
+def _set_cache_ts(index: Index, when: datetime, *, naive: bool) -> None:
+    with index.db:
+        index.db.execute("UPDATE summarizer_cache SET ts = ?", (_stamp(when, naive),))
+
+
+@pytest.mark.parametrize(
+    ("naive_source", "naive_cache"), [(True, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("source_is_later", [False, True])
+def test_legacy_check_compares_naive_and_aware_timestamps(
+    loop: HygieneLoop,
+    summarizer: CountingSummarizer,
+    templates: dict[str, str],
+    vault: Vault,
+    index: Index,
+    naive_source: bool,
+    naive_cache: bool,
+    source_is_later: bool,
+) -> None:
+    # Review finding: a naive ``updated`` against an aware cache time (or
+    # the reverse) raised TypeError on every run. Naive values are UTC.
+    _run(loop, summarizer)
+    _strip_input_hash(vault)
+    cached_at = datetime.now(tz=UTC) + timedelta(hours=1)
+    offset = timedelta(minutes=5) if source_is_later else -timedelta(days=1)
+    _set_cache_ts(index, cached_at, naive=naive_cache)
+    _set_source_updated(vault, cached_at + offset, naive=naive_source)
+    templates["project"] = _reworded(PROJECT_TEMPLATE)
+    # Only the project stage: the session stage is not part of this check.
+    start = len(summarizer.prompts)
+    loop._run_project_records()
+    assert len(summarizer.prompts) - start == (3 if source_is_later else 0)
+
+
 def test_new_input_still_regenerates_its_project(
     loop: HygieneLoop,
     summarizer: CountingSummarizer,
