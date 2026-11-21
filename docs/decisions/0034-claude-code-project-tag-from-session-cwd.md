@@ -79,7 +79,7 @@ back to the launch directory.
 Rejected: **normalizing every candidate to its enclosing project root.**
 It reads as the more principled version of rule 5 and is strictly worse:
 a workspace that is itself a repo but contains independent project
-directories (`~/ari` with `.git` and `~/ari/projects/*` beneath it) would
+directories (`~/atlas` with `.git` and `~/atlas/projects/*` beneath it) would
 collapse all of them back into one tag. Measured on the motivating vault,
 that variant cut 68 tags to 56 and re-merged four distinct projects into
 their parent — reintroducing the bug for a third of them. Rule 5 only ever

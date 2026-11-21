@@ -9,7 +9,7 @@ Vec retrieval ranks documents by their semantic distance to the query
 in embedding space. The bi-encoder embeds query and document
 independently, so retrieval quality depends on the two sides sharing
 embedding-space neighbors. Most queries do — "what gateway port does
-Ari run on" lands close to documents that mention "Ari port" or "18789"
+Atlas run on" lands close to documents that mention "Atlas port" or "18789"
 because the bi-encoder learned those associations during training.
 
 But some queries don't share embedding-space neighbors with their
@@ -112,7 +112,7 @@ HyDE adds latency to every query it fires on. The gate prunes queries
 that don't benefit:
 
 - **Length gate**: queries shorter than 3 words are typically exact
-  lookups ("ari port", "rrf k") where the original query already
+  lookups ("atlas port", "rrf k") where the original query already
   shares vocabulary with the answer. HyDE adds noise.
 - **Quoted-string gate**: queries containing `"..."` signal user
   intent for exact-string match. HyDE's hypothesis would dilute that.

@@ -672,7 +672,7 @@ class TestSkills:
         assert rec.ref == str(root / "pocket-files" / "SKILL.md")
 
     async def test_symlinked_skills_are_skipped(self, tmp_path: Path) -> None:
-        canonical = tmp_path / "ari" / "skills"
+        canonical = tmp_path / "atlas" / "skills"
         _write_skill(canonical, "council")
         root = tmp_path / "skills"
         root.mkdir()

@@ -69,7 +69,7 @@ top-K results matches its expect block.
 The four classes mirror the failure modes observed in the research
 that produced the recall plan:
 
-- **factual**: "what gateway port does Ari run on" → expects an exact
+- **factual**: "what gateway port does Atlas run on" → expects an exact
   string surfaced. Today's vec retrieval struggles because
   unstructured prose contains the answer alongside other tokens that
   outrank the answer.

@@ -7,7 +7,7 @@
 ## Context
 
 Every vector search is an exact brute-force KNN over the whole vec0 table,
-so its cost is the table's size. On main-server (Ari vault, 2026-11-17
+so its cost is the table's size. On main-server (Atlas vault, 2026-11-17
 sizing) the table holds **224,472 vectors, of which only 144,405 are
 distinct**: 80,067 (36%) are byte-for-byte copies of another row, and the
 largest group has 1,517 copies. The July prototype measured the same share

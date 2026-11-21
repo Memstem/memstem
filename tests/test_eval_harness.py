@@ -48,8 +48,8 @@ def _build_result(
 
 def test_expect_matcher_title_substring_case_insensitive() -> None:
     matcher = ExpectMatcher(title_contains=("Memory Architecture",))
-    assert matcher.matches(_build_result(title="Ari Memory Architecture v3"))
-    assert matcher.matches(_build_result(title="ARI MEMORY ARCHITECTURE V3"))
+    assert matcher.matches(_build_result(title="Atlas Memory Architecture v3"))
+    assert matcher.matches(_build_result(title="ATLAS MEMORY ARCHITECTURE V3"))
     assert not matcher.matches(_build_result(title="Other Title"))
 
 
@@ -209,7 +209,7 @@ def fixture_search(tmp_path: Path) -> Search:
             "id": "11111111-1111-1111-1111-111111111111",
             "type": "memory",
             "title": "Server Environment Reference",
-            "body": "Ari runs on port 18789. Fleet runs on port 3021.",
+            "body": "Atlas runs on port 18789. Fleet runs on port 3021.",
             "path": "memories/server-env.md",
         },
         {
@@ -273,7 +273,7 @@ def test_run_query_finds_match(fixture_search: Search) -> None:
     query = EvalQuery(
         id="q1",
         class_="factual",
-        query="Ari port 18789",
+        query="Atlas port 18789",
         expect=ExpectMatcher(body_contains=("18789",)),
     )
     result = run_query(fixture_search, query)
@@ -312,7 +312,7 @@ def test_run_eval_aggregates_metrics(fixture_search: Search) -> None:
         EvalQuery(
             id="hit1",
             class_="factual",
-            query="Ari port 18789",
+            query="Atlas port 18789",
             expect=ExpectMatcher(body_contains=("18789",)),
         ),
         EvalQuery(
@@ -364,7 +364,7 @@ def test_format_report_includes_aggregate_and_per_class(fixture_search: Search) 
         EvalQuery(
             id="hit1",
             class_="factual",
-            query="Ari port 18789",
+            query="Atlas port 18789",
             expect=ExpectMatcher(body_contains=("18789",)),
         ),
         EvalQuery(
@@ -391,7 +391,7 @@ def test_report_to_json_round_trip(fixture_search: Search) -> None:
         EvalQuery(
             id="q1",
             class_="factual",
-            query="Ari port 18789",
+            query="Atlas port 18789",
             expect=ExpectMatcher(body_contains=("18789",)),
         ),
     ]

@@ -272,11 +272,11 @@ class TestFindSessionCandidates:
             vault,
             session_id="s1",
             turns=12,
-            tags=["agent:ari", "topic:foo"],
+            tags=["agent:atlas", "topic:foo"],
             source="openclaw",
         )
         candidates, _ = find_session_candidates(vault, recency_days=None)
-        assert candidates[0].agent == "ari"
+        assert candidates[0].agent == "atlas"
 
 
 def test_find_distilled_session_ids_handles_empty_vault(vault: Vault) -> None:
@@ -684,7 +684,7 @@ def _make_candidate(**overrides: object) -> SessionCandidate:
         "memory_id": "mem-id",
         "title": "Title",
         "body": "Body content",
-        "tags": ["agent:ari", "home-user-northwind-quotes"],
+        "tags": ["agent:atlas", "home-user-northwind-quotes"],
         "source": "claude-code",
         "agent": None,
         "session_id": "sess-id",
@@ -700,12 +700,12 @@ def _make_candidate(**overrides: object) -> SessionCandidate:
 def test_build_session_prompt_interpolates_title_tags_body() -> None:
     candidate = _make_candidate(
         title="Northwind Logistics forklift proposal",
-        tags=["agent:ari", "home-user-northwind-quotes"],
+        tags=["agent:atlas", "home-user-northwind-quotes"],
         body="**User:** can you build a proposal\n\n**Assistant:** sure",
     )
     prompt = build_session_prompt(candidate)
     assert "Northwind Logistics forklift proposal" in prompt
-    assert "agent:ari, home-user-northwind-quotes" in prompt
+    assert "agent:atlas, home-user-northwind-quotes" in prompt
     assert "can you build a proposal" in prompt
 
 
@@ -784,9 +784,9 @@ class TestMaterializeDistillation:
         assert prov_extra.get("summarizer") == "stub"
 
     def test_inherits_tags_and_adds_distillation_marker(self) -> None:
-        candidate = _make_candidate(tags=["agent:ari", "home-user-northwind-quotes"])
+        candidate = _make_candidate(tags=["agent:atlas", "home-user-northwind-quotes"])
         memory = materialize_distillation(candidate, summary="x", summarizer_name="stub")
-        assert "agent:ari" in memory.frontmatter.tags
+        assert "agent:atlas" in memory.frontmatter.tags
         assert "home-user-northwind-quotes" in memory.frontmatter.tags
         assert DISTILLATION_KIND_TAG in memory.frontmatter.tags
 
@@ -803,9 +803,9 @@ class TestMaterializeDistillation:
         assert memory.frontmatter.importance == 0.95
 
     def test_agent_in_path_when_present(self) -> None:
-        candidate = _make_candidate(source="openclaw", agent="ari", session_id="xyz")
+        candidate = _make_candidate(source="openclaw", agent="atlas", session_id="xyz")
         memory = materialize_distillation(candidate, summary="x", summarizer_name="stub")
-        assert memory.path == Path("distillations/openclaw/ari/xyz.md")
+        assert memory.path == Path("distillations/openclaw/atlas/xyz.md")
 
     def test_explicit_memory_id_preserved_for_force_overwrite(self) -> None:
         candidate = _make_candidate()

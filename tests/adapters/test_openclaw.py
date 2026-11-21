@@ -191,11 +191,11 @@ class TestDailyScope:
     """ADR 0033 — dated files outside the memory root get their own namespace."""
 
     async def test_reconcile_scopes_dated_subdirectory_files(self, tmp_path: Path) -> None:
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "memory/2026-04-15.md", "# 2026-04-15\n\nthe real journal")
         _write(ws_root / "memory/dreaming/rem/2026-04-15.md", "# 2026-04-15\n\nrem artifact")
         _write(ws_root / "memory/voice-reviews/2026-04-15.md", "# 2026-04-15\n\ncall review")
-        ws = OpenClawWorkspace(path=ws_root, tag="ari")
+        ws = OpenClawWorkspace(path=ws_root, tag="atlas")
 
         records = await _drain(OpenClawAdapter(workspaces=[ws]).reconcile([]))
         scopes = {r.ref: r.metadata.get("daily_scope") for r in records}
@@ -205,9 +205,9 @@ class TestDailyScope:
         assert scopes[str(ws_root / "memory/voice-reviews/2026-04-15.md")] == "voice-reviews"
 
     async def test_non_daily_files_get_no_scope(self, tmp_path: Path) -> None:
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "memory/dreaming/rem/notes.md", "# Notes")
-        ws = OpenClawWorkspace(path=ws_root, tag="ari")
+        ws = OpenClawWorkspace(path=ws_root, tag="atlas")
 
         records = await _drain(OpenClawAdapter(workspaces=[ws]).reconcile([]))
         assert len(records) == 1
@@ -216,69 +216,71 @@ class TestDailyScope:
 
 class TestClassifyWorkspacePath:
     def test_memory_md(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        (tmp_path / "ari").mkdir()
-        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "MEMORY.md", ws)
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        (tmp_path / "atlas").mkdir()
+        interesting, extra = _classify_workspace_path(tmp_path / "atlas" / "MEMORY.md", ws)
         assert interesting is True
         assert extra == ["core"]
 
     def test_claude_md(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        (tmp_path / "ari").mkdir()
-        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "CLAUDE.md", ws)
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        (tmp_path / "atlas").mkdir()
+        interesting, extra = _classify_workspace_path(tmp_path / "atlas" / "CLAUDE.md", ws)
         assert interesting is True
         assert extra == ["instructions"]
 
     def test_memory_subdir_file(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        (tmp_path / "ari" / "memory").mkdir(parents=True)
-        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "memory" / "people.md", ws)
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        (tmp_path / "atlas" / "memory").mkdir(parents=True)
+        interesting, extra = _classify_workspace_path(
+            tmp_path / "atlas" / "memory" / "people.md", ws
+        )
         assert interesting is True
         assert extra == []
 
     def test_skill_md(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        (tmp_path / "ari" / "skills" / "deploy").mkdir(parents=True)
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        (tmp_path / "atlas" / "skills" / "deploy").mkdir(parents=True)
         interesting, extra = _classify_workspace_path(
-            tmp_path / "ari" / "skills" / "deploy" / "SKILL.md", ws
+            tmp_path / "atlas" / "skills" / "deploy" / "SKILL.md", ws
         )
         assert interesting is True
         assert extra == []
 
     def test_random_file_in_workspace_ignored(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        (tmp_path / "ari").mkdir()
-        interesting, _ = _classify_workspace_path(tmp_path / "ari" / "openclaw.json", ws)
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        (tmp_path / "atlas").mkdir()
+        interesting, _ = _classify_workspace_path(tmp_path / "atlas" / "openclaw.json", ws)
         assert interesting is False
 
     def test_extra_files_recognized(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(
-            path=tmp_path / "ari",
-            tag="ari",
+            path=tmp_path / "atlas",
+            tag="atlas",
             layout=OpenClawLayout(extra_files=["SOUL.md", "USER.md"]),
         )
-        (tmp_path / "ari").mkdir()
-        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "SOUL.md", ws)
+        (tmp_path / "atlas").mkdir()
+        interesting, extra = _classify_workspace_path(tmp_path / "atlas" / "SOUL.md", ws)
         assert interesting is True
         assert extra == []
-        interesting, extra = _classify_workspace_path(tmp_path / "ari" / "USER.md", ws)
+        interesting, extra = _classify_workspace_path(tmp_path / "atlas" / "USER.md", ws)
         assert interesting is True
         assert extra == []
 
     def test_extra_files_path_not_listed_ignored(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(
-            path=tmp_path / "ari",
-            tag="ari",
+            path=tmp_path / "atlas",
+            tag="atlas",
             layout=OpenClawLayout(extra_files=["SOUL.md"]),
         )
-        (tmp_path / "ari").mkdir()
+        (tmp_path / "atlas").mkdir()
         # AGENTS.md isn't listed → should not be picked up as a top-level extra.
-        interesting, _ = _classify_workspace_path(tmp_path / "ari" / "AGENTS.md", ws)
+        interesting, _ = _classify_workspace_path(tmp_path / "atlas" / "AGENTS.md", ws)
         assert interesting is False
 
     def test_path_outside_workspace(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        (tmp_path / "ari").mkdir()
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        (tmp_path / "atlas").mkdir()
         interesting, _ = _classify_workspace_path(tmp_path / "elsewhere.md", ws)
         assert interesting is False
 
@@ -294,42 +296,42 @@ class TestWorkspaceMode:
         return ws_root
 
     async def test_emits_records_per_workspace_with_agent_tag(self, tmp_path: Path) -> None:
-        ari_root = self._seed_workspace(tmp_path, "ari")
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = self._seed_workspace(tmp_path, "atlas")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         records = await _drain(adapter.reconcile([]))
         # 5 files: MEMORY.md, CLAUDE.md, 2 memory/, 1 skill
         assert len(records) == 5
         for r in records:
-            assert "agent:ari" in r.tags
+            assert "agent:atlas" in r.tags
 
     async def test_memory_md_gets_core_tag(self, tmp_path: Path) -> None:
-        ari_root = self._seed_workspace(tmp_path, "ari")
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = self._seed_workspace(tmp_path, "atlas")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         records = await _drain(adapter.reconcile([]))
         memory_md = next(r for r in records if r.ref.endswith("MEMORY.md"))
         assert "core" in memory_md.tags
-        assert "agent:ari" in memory_md.tags
+        assert "agent:atlas" in memory_md.tags
 
     async def test_claude_md_gets_instructions_tag(self, tmp_path: Path) -> None:
-        ari_root = self._seed_workspace(tmp_path, "ari")
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = self._seed_workspace(tmp_path, "atlas")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         records = await _drain(adapter.reconcile([]))
         claude_md = next(r for r in records if r.ref.endswith("CLAUDE.md"))
         assert "instructions" in claude_md.tags
 
     async def test_multi_agent_records_tagged_distinctly(self, tmp_path: Path) -> None:
-        self._seed_workspace(tmp_path, "ari")
+        self._seed_workspace(tmp_path, "atlas")
         self._seed_workspace(tmp_path, "sarah")
         adapter = OpenClawAdapter(
             workspaces=[
-                OpenClawWorkspace(path=tmp_path / "ari", tag="ari"),
+                OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas"),
                 OpenClawWorkspace(path=tmp_path / "sarah", tag="sarah"),
             ]
         )
         records = await _drain(adapter.reconcile([]))
-        ari_only = [r for r in records if "agent:ari" in r.tags]
+        atlas_only = [r for r in records if "agent:atlas" in r.tags]
         sarah_only = [r for r in records if "agent:sarah" in r.tags]
-        assert len(ari_only) == 5
+        assert len(atlas_only) == 5
         assert len(sarah_only) == 5
         # No record should carry both agent tags.
         for r in records:
@@ -449,18 +451,18 @@ class TestWorkspaceLayout:
     async def test_default_layout_unchanged(self, tmp_path: Path) -> None:
         # Constructing OpenClawWorkspace without `layout=` should preserve
         # the canonical behavior — important for backwards compat.
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "MEMORY.md", "# core")
         _write(ws_root / "CLAUDE.md", "# rules")
         _write(ws_root / "memory" / "people.md", "# people")
         _write(ws_root / "skills" / "x" / "SKILL.md", "# skill")
 
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="ari")])
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="atlas")])
         records = await _drain(adapter.reconcile([]))
         assert len(records) == 4
 
     async def test_extra_files_ingested_with_agent_tag(self, tmp_path: Path) -> None:
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "MEMORY.md", "# core")
         _write(ws_root / "SOUL.md", "# Soul\n\nIdentity content")
         _write(ws_root / "USER.md", "# User\n\nOperator profile")
@@ -471,7 +473,7 @@ class TestWorkspaceLayout:
             workspaces=[
                 OpenClawWorkspace(
                     path=ws_root,
-                    tag="ari",
+                    tag="atlas",
                     layout=OpenClawLayout(extra_files=["SOUL.md", "USER.md"]),
                 )
             ]
@@ -483,18 +485,18 @@ class TestWorkspaceLayout:
         assert str(ws_root / "AGENTS.md") not in refs
         # Tagged with the workspace's agent tag, not `shared`.
         soul = next(r for r in records if r.ref.endswith("SOUL.md"))
-        assert "agent:ari" in soul.tags
+        assert "agent:atlas" in soul.tags
         assert "shared" not in soul.tags
 
     async def test_extra_files_missing_silently_skipped(self, tmp_path: Path) -> None:
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "MEMORY.md", "# core")
 
         adapter = OpenClawAdapter(
             workspaces=[
                 OpenClawWorkspace(
                     path=ws_root,
-                    tag="ari",
+                    tag="atlas",
                     layout=OpenClawLayout(extra_files=["NONEXISTENT.md"]),
                 )
             ]
@@ -542,7 +544,7 @@ class TestTrajectoryParser:
                     "type": "session.started",
                     "ts": "2026-04-26T23:00:00.000Z",
                     "sessionId": "abc123",
-                    "workspaceDir": "/home/user/ari",
+                    "workspaceDir": "/home/user/atlas",
                     "data": {"agentId": "main"},
                 },
                 {
@@ -579,7 +581,7 @@ class TestTrajectoryParser:
         assert parsed["title"] == "Hello, can you help?"
         assert parsed["first_timestamp"] == "2026-04-26T23:00:00.000Z"
         assert parsed["last_timestamp"] == "2026-04-26T23:00:07.000Z"
-        assert parsed["workspace_dir"] == "/home/user/ari"
+        assert parsed["workspace_dir"] == "/home/user/atlas"
         assert parsed["agent_id"] == "main"
 
     def test_ws_path_recovers_turns_from_messages_snapshot(self, tmp_path: Path) -> None:
@@ -766,41 +768,41 @@ class TestTrajectoryParser:
 class TestTrajectoryClassification:
     def test_classifies_trajectory_inside_session_dir(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(
-            path=tmp_path / "ari",
-            tag="ari",
+            path=tmp_path / "atlas",
+            tag="atlas",
             layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
         )
-        traj = tmp_path / "ari" / "agents" / "main" / "sessions" / "x.trajectory.jsonl"
+        traj = tmp_path / "atlas" / "agents" / "main" / "sessions" / "x.trajectory.jsonl"
         traj.parent.mkdir(parents=True)
         traj.write_text("")
         assert _classify_trajectory_path(traj, ws) is True
 
     def test_rejects_md_file(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(
-            path=tmp_path / "ari",
-            tag="ari",
+            path=tmp_path / "atlas",
+            tag="atlas",
             layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
         )
-        md = tmp_path / "ari" / "agents" / "main" / "sessions" / "note.md"
+        md = tmp_path / "atlas" / "agents" / "main" / "sessions" / "note.md"
         md.parent.mkdir(parents=True)
         md.write_text("# note")
         assert _classify_trajectory_path(md, ws) is False
 
     def test_rejects_trajectory_outside_session_dirs(self, tmp_path: Path) -> None:
         ws = OpenClawWorkspace(
-            path=tmp_path / "ari",
-            tag="ari",
+            path=tmp_path / "atlas",
+            tag="atlas",
             layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
         )
         # Trajectory file but in a different directory than configured.
-        traj = tmp_path / "ari" / "elsewhere" / "x.trajectory.jsonl"
+        traj = tmp_path / "atlas" / "elsewhere" / "x.trajectory.jsonl"
         traj.parent.mkdir(parents=True)
         traj.write_text("")
         assert _classify_trajectory_path(traj, ws) is False
 
     def test_default_session_dirs_empty_means_no_match(self, tmp_path: Path) -> None:
-        ws = OpenClawWorkspace(path=tmp_path / "ari", tag="ari")
-        traj = tmp_path / "ari" / "agents" / "main" / "sessions" / "x.trajectory.jsonl"
+        ws = OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas")
+        traj = tmp_path / "atlas" / "agents" / "main" / "sessions" / "x.trajectory.jsonl"
         traj.parent.mkdir(parents=True)
         traj.write_text("")
         # With default empty session_dirs, the trajectory is invisible.
@@ -817,7 +819,7 @@ class TestWorkspaceTrajectoryReconcile:
         return path
 
     async def test_emits_trajectory_records_with_agent_tag(self, tmp_path: Path) -> None:
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "MEMORY.md", "# core")
         self._write_trajectory(
             ws_root / "agents" / "main" / "sessions" / "abc.trajectory.jsonl",
@@ -838,7 +840,7 @@ class TestWorkspaceTrajectoryReconcile:
             workspaces=[
                 OpenClawWorkspace(
                     path=ws_root,
-                    tag="ari",
+                    tag="atlas",
                     layout=OpenClawLayout(session_dirs=["agents/main/sessions"]),
                 )
             ]
@@ -847,14 +849,14 @@ class TestWorkspaceTrajectoryReconcile:
         # 1 MEMORY.md + 1 trajectory
         assert len(records) == 2
         traj_record = next(r for r in records if r.metadata.get("type") == "session")
-        assert "agent:ari" in traj_record.tags
+        assert "agent:atlas" in traj_record.tags
         assert "**User:** hello" in traj_record.body
         assert "**Assistant:** hi" in traj_record.body
 
     async def test_default_layout_skips_trajectories(self, tmp_path: Path) -> None:
         # Without session_dirs configured, trajectory files are not ingested
         # — even if they exist on disk.
-        ws_root = tmp_path / "ari"
+        ws_root = tmp_path / "atlas"
         _write(ws_root / "MEMORY.md", "# core")
         self._write_trajectory(
             ws_root / "agents" / "main" / "sessions" / "abc.trajectory.jsonl",
@@ -866,7 +868,7 @@ class TestWorkspaceTrajectoryReconcile:
                 },
             ],
         )
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="ari")])
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ws_root, tag="atlas")])
         records = await _drain(adapter.reconcile([]))
         assert len(records) == 1
         assert records[0].metadata.get("type") != "session"
@@ -877,9 +879,9 @@ class TestWorkspaceWatch:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MEMSTEM_WATCH_DEBOUNCE_SECONDS", "0")
-        ari_root = tmp_path / "ari"
-        ari_root.mkdir()
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = tmp_path / "atlas"
+        atlas_root.mkdir()
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         watcher = adapter.watch([])
 
         async def grab_first() -> MemoryRecord:
@@ -887,21 +889,21 @@ class TestWorkspaceWatch:
 
         task = asyncio.create_task(grab_first())
         await asyncio.sleep(0.1)
-        _write(ari_root / "MEMORY.md", "# Core\n\nbody")
+        _write(atlas_root / "MEMORY.md", "# Core\n\nbody")
         try:
             record = await asyncio.wait_for(task, timeout=5.0)
         finally:
             await watcher.aclose()
-        assert "agent:ari" in record.tags
+        assert "agent:atlas" in record.tags
         assert "core" in record.tags
 
     async def test_ignores_unrelated_files_in_workspace(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MEMSTEM_WATCH_DEBOUNCE_SECONDS", "0")
-        ari_root = tmp_path / "ari"
-        ari_root.mkdir()
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = tmp_path / "atlas"
+        atlas_root.mkdir()
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         watcher = adapter.watch([])
 
         async def grab_first() -> MemoryRecord:
@@ -910,10 +912,10 @@ class TestWorkspaceWatch:
         task = asyncio.create_task(grab_first())
         await asyncio.sleep(0.1)
         # Write an unrelated file first, then a real one. Only the real one should arrive.
-        _write(ari_root / "notes.txt", "irrelevant")  # not .md
-        _write(ari_root / "openclaw.json", "{}")
+        _write(atlas_root / "notes.txt", "irrelevant")  # not .md
+        _write(atlas_root / "openclaw.json", "{}")
         await asyncio.sleep(0.1)
-        _write(ari_root / "MEMORY.md", "# Core")
+        _write(atlas_root / "MEMORY.md", "# Core")
         try:
             record = await asyncio.wait_for(task, timeout=5.0)
         finally:
@@ -933,7 +935,7 @@ class TestTrajectorySizeCap:
                 "type": "session.started",
                 "ts": "2026-04-26T23:00:00.000Z",
                 "sessionId": "cap123",
-                "workspaceDir": "/home/user/ari",
+                "workspaceDir": "/home/user/atlas",
                 "data": {"agentId": "main"},
             },
             {
@@ -993,9 +995,9 @@ class TestParsesOffEventLoop:
 
         monkeypatch.setattr(openclaw_adapter, "_file_to_record", spy)
 
-        ari_root = tmp_path / "ari"
-        _write(ari_root / "MEMORY.md", "# Core")
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = tmp_path / "atlas"
+        _write(atlas_root / "MEMORY.md", "# Core")
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         records = await _drain(adapter.reconcile([]))
 
         assert len(records) == 1
@@ -1015,9 +1017,9 @@ class TestParsesOffEventLoop:
 
         monkeypatch.setattr(openclaw_adapter, "_file_to_record", spy)
 
-        ari_root = tmp_path / "ari"
-        ari_root.mkdir()
-        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=ari_root, tag="ari")])
+        atlas_root = tmp_path / "atlas"
+        atlas_root.mkdir()
+        adapter = OpenClawAdapter(workspaces=[OpenClawWorkspace(path=atlas_root, tag="atlas")])
         watcher = adapter.watch([])
 
         async def grab_first() -> MemoryRecord:
@@ -1025,7 +1027,7 @@ class TestParsesOffEventLoop:
 
         task = asyncio.create_task(grab_first())
         await asyncio.sleep(0.1)
-        _write(ari_root / "MEMORY.md", "# Core\n\nbody")
+        _write(atlas_root / "MEMORY.md", "# Core\n\nbody")
         try:
             record = await asyncio.wait_for(task, timeout=5.0)
         finally:

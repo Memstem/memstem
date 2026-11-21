@@ -25,18 +25,18 @@ production:
 **1. Off-by-one date shift.** An agent in America/New_York that appends to
 `memory/2026-02-01.md` at 19:00 ET stamps an mtime of `2026-02-02T00:00Z`. The record
 is written to `daily/<agent>/2026-02-02.md`, displacing the *actual* Feb 2 log, which
-in turn displaces Feb 3, cascading through the run. In the production Ari vault, 31 of
-182 top-level daily files carried an mtime hour of 21:00–23:00 UTC; `daily/ari/2026-02-02.md`
-was verified to hold the body of `/home/user/ari/memory/2026-02-01.md`.
+in turn displaces Feb 3, cascading through the run. In the production Atlas vault, 31 of
+182 top-level daily files carried an mtime hour of 21:00–23:00 UTC; `daily/atlas/2026-02-02.md`
+was verified to hold the body of `/home/user/atlas/memory/2026-02-01.md`.
 
 **2. Cross-directory collision.** `YYYY-MM-DD.md` is not unique within a workspace.
-Ari's workspace also emits dated files under `memory/dreaming/rem/`,
+Atlas's workspace also emits dated files under `memory/dreaming/rem/`,
 `memory/dreaming/light/`, `memory/dreaming/deep/` and `memory/voice-reviews/`. All of
 them target the same `daily/<agent>/<date>.md` slot and the last writer wins —
-`daily/ari/2026-04-15.md` held a dreaming artifact, not the day's journal.
+`daily/atlas/2026-04-15.md` held a dreaming artifact, not the day's journal.
 
-Measured impact on the production Ari vault before the fix: **250 dated source files
-collapsed into 159 vault slots**, and the bodies of **39 of Ari's 182 daily journal
+Measured impact on the production Atlas vault before the fix: **250 dated source files
+collapsed into 159 vault slots**, and the bodies of **39 of Atlas's 182 daily journal
 files appeared nowhere in the vault** — unrecoverable through search even though the
 source markdown was intact on disk. Surviving entries were largely shifted by one day,
 so date-scoped recall returned the wrong day's log.

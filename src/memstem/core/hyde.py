@@ -70,7 +70,7 @@ recommended-models ladder and upgrade path."""
 
 MIN_QUERY_TOKENS = 3
 """Minimum query token count for ``should_expand``. Queries shorter
-than this are typically exact lookups (``"ari port"``,
+than this are typically exact lookups (``"atlas port"``,
 ``"rrf k"``) where the original query already shares vocabulary
 with the answer. HyDE adds noise, not signal."""
 
@@ -153,7 +153,7 @@ def should_expand(query: str) -> bool:
     gates check four common "exact lookup" patterns:
 
     1. Length: queries with fewer than :data:`MIN_QUERY_TOKENS` words
-       are typically exact lookups (``"ari port"``, ``"rrf k"``).
+       are typically exact lookups (``"atlas port"``, ``"rrf k"``).
     2. Quoted strings: the user signaled exact-match intent.
     3. Boolean operators: structured queries don't compose with
        hypothesis-based expansion.

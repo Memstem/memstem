@@ -12,7 +12,7 @@ expose two limits:
 
 1. **Search noise.** A query like *"what did we decide about pricing?"*
    retrieves 17 partial discussions across daily logs, session
-   transcripts, and Ari's MEMORY.md. Hybrid ranking helps, but the
+   transcripts, and Atlas's MEMORY.md. Hybrid ranking helps, but the
    results are still a stack of source material that the agent has to
    re-read every time. There is no concept of "this 2-paragraph rollup
    is the answer; the 17 sources are the citations."

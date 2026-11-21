@@ -107,14 +107,14 @@ class TestPathForMemory:
     def test_agent_tag_disambiguates_skill_path(self, vault: Vault, index: Index) -> None:
         """Two agents with the same skill title must not collide on disk."""
         pipe = Pipeline(vault, index)
-        ari = _processed(
+        atlas = _processed(
             pipe,
             _record(
-                body="Ari's deploy procedure (different content from Sarah's).",
-                ref="/home/user/ari/skills/deploy/SKILL.md",
+                body="Atlas's deploy procedure (different content from Sarah's).",
+                ref="/home/user/atlas/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={
                     "raw_frontmatter": {"scope": "universal", "verification": "ok"},
                 },
@@ -123,7 +123,7 @@ class TestPathForMemory:
         sarah = _processed(
             pipe,
             _record(
-                body="Sarah's deploy procedure (different content from Ari's).",
+                body="Sarah's deploy procedure (different content from Atlas's).",
                 ref="/home/user/sarah/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
@@ -133,28 +133,28 @@ class TestPathForMemory:
                 },
             ),
         )
-        assert ari.path == Path("skills/ari/deploy.md")
+        assert atlas.path == Path("skills/atlas/deploy.md")
         assert sarah.path == Path("skills/sarah/deploy.md")
-        assert ari.path != sarah.path
+        assert atlas.path != sarah.path
 
     def test_agent_tag_disambiguates_daily_path(self, vault: Vault, index: Index) -> None:
         """Daily logs from different agents on the same date must not collide."""
         pipe = Pipeline(vault, index)
-        ari = _processed(
+        atlas = _processed(
             pipe,
             _record(
-                body="Ari's notes for 2026-04-26 (distinct from Sarah's).",
-                ref="/home/user/ari/memory/2026-04-26.md",
+                body="Atlas's notes for 2026-04-26 (distinct from Sarah's).",
+                ref="/home/user/atlas/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
             ),
         )
         sarah = _processed(
             pipe,
             _record(
-                body="Sarah's notes for 2026-04-26 (distinct from Ari's).",
+                body="Sarah's notes for 2026-04-26 (distinct from Atlas's).",
                 ref="/home/user/sarah/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
@@ -162,7 +162,7 @@ class TestPathForMemory:
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
             ),
         )
-        assert ari.path == Path("daily/ari/2026-04-26.md")
+        assert atlas.path == Path("daily/atlas/2026-04-26.md")
         assert sarah.path == Path("daily/sarah/2026-04-26.md")
 
     def test_no_agent_tag_keeps_legacy_path(self, vault: Vault, index: Index) -> None:
@@ -203,18 +203,18 @@ class TestPathForMemory:
         daily = _processed(
             pipe,
             _record(
-                body="Ari's journal entry written on the evening of Feb 1 ET.",
-                ref="/home/user/ari/memory/2026-02-01.md",
+                body="Atlas's journal entry written on the evening of Feb 1 ET.",
+                ref="/home/user/atlas/memory/2026-02-01.md",
                 title="2026-02-01",
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={
                     "created": "2026-02-02T00:14:00+00:00",
                     "daily_date": "2026-02-01",
                 },
             ),
         )
-        assert daily.path == Path("daily/ari/2026-02-01.md")
+        assert daily.path == Path("daily/atlas/2026-02-01.md")
 
     def test_daily_scope_namespaces_dated_subdirectories(self, vault: Vault, index: Index) -> None:
         """ADR 0033: dated files in different sub-dirs get their own slots."""
@@ -223,10 +223,10 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="The actual journal entry for 2026-04-15.",
-                ref="/home/user/ari/memory/2026-04-15.md",
+                ref="/home/user/atlas/memory/2026-04-15.md",
                 title="2026-04-15",
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={"daily_date": "2026-04-15"},
             ),
         )
@@ -234,18 +234,18 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="A REM-phase dreaming artifact generated for 2026-04-15.",
-                ref="/home/user/ari/memory/dreaming/rem/2026-04-15.md",
+                ref="/home/user/atlas/memory/dreaming/rem/2026-04-15.md",
                 title="2026-04-15",
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={
                     "daily_date": "2026-04-15",
                     "daily_scope": "dreaming/rem",
                 },
             ),
         )
-        assert journal.path == Path("daily/ari/2026-04-15.md")
-        assert dreaming.path == Path("daily/ari/dreaming/rem/2026-04-15.md")
+        assert journal.path == Path("daily/atlas/2026-04-15.md")
+        assert dreaming.path == Path("daily/atlas/dreaming/rem/2026-04-15.md")
         assert journal.path != dreaming.path
 
     @pytest.mark.parametrize(
@@ -261,17 +261,17 @@ class TestPathForMemory:
             pipe,
             _record(
                 body=f"Daily body probing scope {bad_scope!r} for traversal.",
-                ref="/home/user/ari/memory/2026-04-15.md",
+                ref="/home/user/atlas/memory/2026-04-15.md",
                 title="2026-04-15",
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={
                     "daily_date": "2026-04-15",
                     "daily_scope": bad_scope,
                 },
             ),
         )
-        assert daily.path == Path("daily/ari/2026-04-15.md")
+        assert daily.path == Path("daily/atlas/2026-04-15.md")
 
     def test_malformed_daily_date_falls_back_to_created(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
@@ -279,17 +279,17 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Daily body with an unusable filename-derived date.",
-                ref="/home/user/ari/memory/nope.md",
+                ref="/home/user/atlas/memory/nope.md",
                 title="nope",
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 extra_metadata={
                     "created": "2026-04-26T00:00:00+00:00",
                     "daily_date": "../../../etc/passwd",
                 },
             ),
         )
-        assert daily.path == Path("daily/ari/2026-04-26.md")
+        assert daily.path == Path("daily/atlas/2026-04-26.md")
 
 
 class TestProcess:

@@ -248,7 +248,7 @@ class TestIsTransientTask:
 
 class TestIsAutomationLog:
     def test_heartbeat_path(self) -> None:
-        assert is_automation_log("/home/user/ari/agents/main/heartbeat/2026-04-27.md") is True
+        assert is_automation_log("/home/user/atlas/agents/main/heartbeat/2026-04-27.md") is True
 
     def test_monitoring_path(self) -> None:
         assert is_automation_log("/var/log/monitoring/check.md") is True
@@ -260,8 +260,8 @@ class TestIsAutomationLog:
         assert is_automation_log("/var/cron/logs/nightly.md") is True
 
     def test_legitimate_path_not_caught(self) -> None:
-        assert is_automation_log("/home/user/ari/MEMORY.md") is False
-        assert is_automation_log("/home/user/ari/skills/deploy/SKILL.md") is False
+        assert is_automation_log("/home/user/atlas/MEMORY.md") is False
+        assert is_automation_log("/home/user/atlas/skills/deploy/SKILL.md") is False
 
     def test_empty_ref(self) -> None:
         assert is_automation_log("") is False
@@ -271,7 +271,7 @@ class TestNoiseFilterTagTransient:
     def test_automation_log_path_tagged_transient(self) -> None:
         rec = _record(
             body="some heartbeat snapshot content",
-            ref="/home/user/ari/agents/main/heartbeat/2026-04-27.md",
+            ref="/home/user/atlas/agents/main/heartbeat/2026-04-27.md",
         )
         decision = noise_filter(rec)
         assert decision.action is NoiseAction.TAG_TRANSIENT
@@ -312,7 +312,7 @@ class TestPipelineTagTransient:
         memory = pipe.process(
             _record(
                 body="agent reported status=ok",
-                ref="/home/user/ari/agents/main/heartbeat/2026-04-27.md",
+                ref="/home/user/atlas/agents/main/heartbeat/2026-04-27.md",
             )
         )
         assert memory is not None
@@ -579,8 +579,8 @@ class TestPipelineIntegration:
 # --- ADR 0049: OpenClaw scheduled-job sessions ---
 
 _CRON_BODY = (
-    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat — overnight "
-    "hourly email/calendar check] Run Ari's full heartbeat checklist from HEARTBEAT.md.\n\n"
+    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Atlas Full Heartbeat — overnight "
+    "hourly email/calendar check] Run Atlas's full heartbeat checklist from HEARTBEAT.md.\n\n"
     "**Assistant:** Calendars clear; nothing to report."
 )
 
@@ -594,7 +594,7 @@ def _session(
 ) -> MemoryRecord:
     return MemoryRecord(
         source=source,
-        ref="/home/user/ari/agents/main/agent/openclaw-agent.sqlite#session=abc",
+        ref="/home/user/atlas/agents/main/agent/openclaw-agent.sqlite#session=abc",
         title=body[:80],
         body=body,
         tags=[],
@@ -633,7 +633,7 @@ class TestOpenClawScheduledSession:
         "body",
         [
             # a real chat that only mentions a cron job
-            "**User:** why did [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat] fail?",
+            "**User:** why did [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Atlas Full Heartbeat] fail?",
             "**User:** Please look at the heartbeat cron job tonight.",
             # marker without a uuid
             "**User:** [cron:nightly] run the report",

@@ -46,7 +46,7 @@ def _is_foreign_key_violation(exc: sqlite3.Error) -> bool:
     :class:`sqlite3.IntegrityError`, which would be caught by a narrow
     ``except sqlite3.IntegrityError:`` clause. But in some
     version/transaction-state combinations (observed on Python 3.12 +
-    SQLite 3.45 in Ari's deployment) the same violation is raised as the
+    SQLite 3.45 in Atlas's deployment) the same violation is raised as the
     parent :class:`sqlite3.DatabaseError` instead. Handlers that need to
     swallow the FK case specifically should match by extended error code
     when available, falling back to a message check for the few cases

@@ -14,8 +14,8 @@ form OpenClaw scheduled jobs actually take: an isolated agent session whose firs
 `[cron:<job uuid> <job name>] <job prompt>`. Those sessions are ingested as ordinary
 `type=session` records and never expire.
 
-Measured on the Ari vault (2026-10-03): **7,970 of 13,476 session records (59%; 38% of all
-records)** are scheduled-job runs — mostly Ari's heartbeats, then the fleet task monitor, report
+Measured on the Atlas vault (2026-10-03): **7,970 of 13,476 session records (59%; 38% of all
+records)** are scheduled-job runs — mostly Atlas's heartbeats, then the fleet task monitor, report
 jobs and health checks — accruing ~1,400–2,100 a month since April. They are 20.7 MB of 338 MB of
 body text and 18,964 of 218,810 vector chunks (~9%). Their outcomes already live where people
 look for them (emailed reports, the agent's daily log); the raw transcripts mostly crowd

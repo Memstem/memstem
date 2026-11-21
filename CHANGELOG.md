@@ -94,7 +94,7 @@ Minor release: searches no longer hang when the vector scan stalls on a cold pag
 
 ### Added
 
-- Searches from the daemon and MCP server now have a deadline on their semantic half (ADR 0048). If query embedding plus the vector scan take longer than `search.semantic_timeout_seconds` (default 15 s), the search returns its keyword results flagged `degraded` instead of hanging, and the overrunning scan is interrupted. Cold page-cache scans had been stalling Ari's searches past the 60 s client timeout. Set the option to `null` to restore the unbounded behaviour.
+- Searches from the daemon and MCP server now have a deadline on their semantic half (ADR 0048). If query embedding plus the vector scan take longer than `search.semantic_timeout_seconds` (default 15 s), the search returns its keyword results flagged `degraded` instead of hanging, and the overrunning scan is interrupted. Cold page-cache scans had been stalling Atlas's searches past the 60 s client timeout. Set the option to `null` to restore the unbounded behaviour.
 
 ## [0.26.0] - 2026-09-30
 
@@ -666,7 +666,7 @@ optional HTTP bearer auth, Gemini key header. Plus docs/CI housekeeping.
   `connect-clients` wiring details from README to the new
   [docs/install.md](./docs/install.md); README quickstart slimmed accordingly
 - README now asks for a star once, without the star-history chart
-- Maintainer-specific references ("Brad's box", `~/ari` example paths,
+- Maintainer-specific references ("Brad's box", `~/atlas` example paths,
   personal workspace names) genericized across ADRs, docs, README examples,
   ARCHITECTURE, and ROADMAP — the docs now read for any operator
 - CLAUDE.md rewritten as contributor guidance (was stale Phase-1 session
@@ -1212,7 +1212,7 @@ failure-visibility fixes across the storage, serving, and hygiene paths.
 ## [0.10.0] — 2026-05-07
 
 The "embed worker resilience" release. Two production bugs spotted on
-Ari's deployment after 0.9.1, plus the previously unreleased hygiene
+Atlas's deployment after 0.9.1, plus the previously unreleased hygiene
 verify + type-bias work. Both bug fixes are blocking for any user
 running the daemon against OpenAI under real network conditions —
 without them, every cluster of OpenAI hiccups burns through retry
@@ -1261,7 +1261,7 @@ budget and surfaces as worker crashes in stderr.
   narrowed to `sqlite3.IntegrityError`. SQLite + Python 3.12 + sqlite
   3.45 surface the same FK violation as the parent
   `sqlite3.DatabaseError` in some transaction-state combinations
-  (observed on Ari's deployment), and the worker would crash through
+  (observed on Atlas's deployment), and the worker would crash through
   the original handler. The catch now matches by extended error code
   (`SQLITE_CONSTRAINT_FOREIGNKEY = 787`) with a message-string
   fallback for older bindings, via a new `_is_foreign_key_violation`
@@ -1461,7 +1461,7 @@ both writers; non-canonical, drop-and-rebuild safe).
 - 1087 tests pass on Linux 3.11/3.12 (114 new in PRs #91–#93).
   Cross-platform CI matrix unchanged: macOS + Windows continue-on-
   error.
-- Brad's Ari vault should not see any of this until the upgrade pass
+- Brad's Atlas vault should not see any of this until the upgrade pass
   documented in `docs/distillation-verification.md` runs explicitly.
 - Cost at typical MemStem volumes for a one-shot backfill of ~356
   Claude Code sessions on `gpt-5.4-mini`: ~$5 one time, ~$3-4/month
@@ -1618,7 +1618,7 @@ rebuild safe).
   the worker came back and called `record_embed_state`, the FK on
   `embed_state.memory_id` rejected the INSERT with
   `sqlite3.IntegrityError: FOREIGN KEY constraint failed`, crashing
-  the worker iteration. Surfaced on the busiest vault (Ari, 1.3 GB
+  the worker iteration. Surfaced on the busiest vault (Atlas, 1.3 GB
   index) during the v0.7 → v0.8 embedder migration; never observed
   on smaller vaults (a small hosted vault, 79 MB) where the race window almost
   never opens. `Index.record_embed_state` now treats the FK
@@ -1689,7 +1689,7 @@ microseconds on already-stamped vaults).
 - **`OpenClawLayout.extra_files`** — workspace-relative top-level files
   beyond `MEMORY.md` / `CLAUDE.md` that the OpenClaw adapter ingests
   with the workspace's `agent:<tag>` tag. Closes a coverage gap on
-  agents like Ari with foundational system files (`SOUL.md`,
+  agents like Atlas with foundational system files (`SOUL.md`,
   `USER.md`, `AGENTS.md`, `IDENTITY.md`, `TOOLS.md`, etc.) that
   previously needed to be added to `shared_files` (wrong tag) or stay
   unindexed. See ADR 0013.
@@ -2262,7 +2262,7 @@ removes the friction that was blocking external use.
 
 - **The boot-echo discovery walk now skips `__pycache__`, `.git`,
   `node_modules`, `.venv`, etc., and prunes at `max_depth = 8`**.
-  On a vault with the live Ari + Claude Code corpus the walk dropped
+  On a vault with the live Atlas + Claude Code corpus the walk dropped
   from ~3.6s to ~20ms — about 180× faster — which kept the noise
   filter from being the long pole on daemon boot.
 
@@ -2301,7 +2301,7 @@ transcript install.
 ### Changed — OpenClaw discovery is now opt-in
 
 - **`memstem init` no longer auto-includes every OpenClaw workspace it
-  finds.** On a multi-agent host (Ari + Blake + Charlie + …) the
+  finds.** On a multi-agent host (Atlas + Blake + Charlie + …) the
   installer used to silently index all of them, mixing every agent's
   memory into one vault. The wizard now defaults each discovered agent
   to "no" — the user opts in explicitly, agent by agent. Shared files
@@ -2741,7 +2741,7 @@ time after Brad validates the cutover.
   `Result` records (memory + score + per-source ranks) from the vault.
   Sanitizes FTS5-special characters from natural-language queries; falls
   back to BM25-only if the embedder errors so the daemon never goes mute
-- `memstem.adapters.openclaw`: `OpenClawAdapter` reads Ari/OpenClaw
+- `memstem.adapters.openclaw`: `OpenClawAdapter` reads OpenClaw
   markdown files (memory, daily logs, skills) into normalized
   `MemoryRecord` objects. Reconcile walks paths once; watch streams
   records via `watchdog` inotify. Classifies files by name (`SKILL.md`,

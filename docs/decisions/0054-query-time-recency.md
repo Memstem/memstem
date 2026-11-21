@@ -83,7 +83,7 @@ falls back (timeout, budget, filtered query: 2.3% at the 0047 trial, plus
 `min_limit`/sensitive-query skips). The prompt variant is what changes
 Jev's own judgement. Both are needed; neither alone covers the case.
 
-## Evaluation (main-server Ari vault, 2026-10-22)
+## Evaluation (main-server Atlas vault, 2026-10-22)
 
 `scripts/run_eval.py` gained `--production-ranking` (the vault's own
 importance, type bias and MMR), `--recency/--no-recency`,
@@ -150,7 +150,7 @@ wanted, since its effect is small either way.
 - `hygiene.decay_half_life_days` stays in the schema for config
   compatibility and is documented as unused.
 
-## Live trial (main-server Ari vault, 2026-10-22 → 2026-10-29)
+## Live trial (main-server Atlas vault, 2026-10-22 → 2026-10-29)
 
 `prefer_recent` served all Jev traffic on one vault for a week (4,387
 runs, 0.36% fallback, cost unchanged). Traffic changed during the trial,

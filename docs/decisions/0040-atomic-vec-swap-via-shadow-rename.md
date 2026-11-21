@@ -8,7 +8,7 @@
 
 ADR 0039 made the bulk copy of `compact_vectors` lock-free but kept the
 final step — `DROP TABLE memories_vec`, recreate, `INSERT ... SELECT` every
-live row back — inside one locked transaction. On the 149k-row ari vault that
+live row back — inside one locked transaction. On the 149k-row atlas vault that
 refill held `Index._lock` for ~20 minutes (2026-09-03 08:04–08:24 UTC): search
 froze, the watchdog logged four consecutive 60 s timeouts, and Mission
 Control's heartbeat emailed "MemStem Main DOWN". Because 0039 also moved the

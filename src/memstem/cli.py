@@ -893,7 +893,7 @@ def migrate(
         ),
     ] = 25,
 ) -> None:
-    """One-shot import of FlipClaw / Ari memory into the Memstem vault.
+    """One-shot import of FlipClaw / OpenClaw memory into the Memstem vault.
 
     Default mode is dry-run (counts + sample preview, no writes). Pass
     `--apply` to actually persist. Re-runs are safe — the pipeline

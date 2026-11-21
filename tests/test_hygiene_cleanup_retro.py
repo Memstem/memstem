@@ -381,7 +381,7 @@ def test_search_include_deprecated_returns_them(vault: Vault, index: Index) -> N
 # ─── ADR 0049: OpenClaw scheduled-job sessions ───────────────────────
 
 _CRON_BODY = (
-    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat — overnight "
+    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Atlas Full Heartbeat — overnight "
     "hourly email/calendar check] Run the checklist.\n\n**Assistant:** Nothing to report."
 )
 

@@ -32,7 +32,7 @@ def _make_workspace(home: Path, name: str, *, content: bool = False) -> Path:
 
 class TestDiscoverOpenClawCandidates:
     def test_finds_workspaces_with_openclaw_json(self, tmp_path: Path) -> None:
-        _make_workspace(tmp_path, "ari", content=True)
+        _make_workspace(tmp_path, "atlas", content=True)
         _make_workspace(tmp_path, "blake")
         # A non-agent dir without openclaw.json
         (tmp_path / "scratch").mkdir()
@@ -40,7 +40,7 @@ class TestDiscoverOpenClawCandidates:
 
         candidates = discover_openclaw_candidates(tmp_path)
         tags = {c.tag for c in candidates}
-        assert tags == {"ari", "blake"}
+        assert tags == {"atlas", "blake"}
 
     def test_returns_empty_for_empty_home(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty"
@@ -51,9 +51,9 @@ class TestDiscoverOpenClawCandidates:
         assert discover_openclaw_candidates(tmp_path / "nope") == []
 
     def test_candidate_counts_files(self, tmp_path: Path) -> None:
-        _make_workspace(tmp_path, "ari", content=True)
+        _make_workspace(tmp_path, "atlas", content=True)
         candidates = discover_openclaw_candidates(tmp_path)
-        cand = next(c for c in candidates if c.tag == "ari")
+        cand = next(c for c in candidates if c.tag == "atlas")
         assert cand.has_memory_md is True
         assert cand.has_claude_md is True
         assert cand.memory_files == 1
@@ -70,7 +70,7 @@ class TestDiscoverOpenClawCandidates:
         assert cand.has_content is True
 
     def test_describe_format(self, tmp_path: Path) -> None:
-        _make_workspace(tmp_path, "ari", content=True)
+        _make_workspace(tmp_path, "atlas", content=True)
         cand = discover_openclaw_candidates(tmp_path)[0]
         described = cand.describe()
         assert "MEMORY.md ✓" in described
@@ -81,7 +81,7 @@ class TestDiscoverOpenClawCandidates:
 
 class TestDiscoverSharedFiles:
     def test_finds_hard_rules(self, tmp_path: Path) -> None:
-        ws = _make_workspace(tmp_path, "ari")
+        ws = _make_workspace(tmp_path, "atlas")
         rules = ws / "HARD-RULES.md"
         rules.write_text("# rules\n")
         assert discover_shared_files(tmp_path) == [rules]
@@ -113,14 +113,14 @@ class TestBuildDefaultAdaptersConfig:
     def test_does_not_auto_include_openclaw_workspaces(self, tmp_path: Path) -> None:
         # Two workspaces with full content — neither should auto-include.
         # Discovery is opt-in via the wizard, not via the default config.
-        _make_workspace(tmp_path, "ari", content=True)
+        _make_workspace(tmp_path, "atlas", content=True)
         _make_workspace(tmp_path, "blake", content=True)
 
         cfg = build_default_adapters_config(tmp_path)
         assert cfg.openclaw.agent_workspaces == []
 
     def test_does_not_auto_include_shared_files(self, tmp_path: Path) -> None:
-        ws = _make_workspace(tmp_path, "ari", content=True)
+        ws = _make_workspace(tmp_path, "atlas", content=True)
         (ws / "HARD-RULES.md").write_text("# rules\n")
 
         cfg = build_default_adapters_config(tmp_path)
@@ -170,7 +170,7 @@ class TestDiscoverWorkspaceExtras:
                 path.write_text(content, encoding="utf-8")
 
     def test_returns_curated_top_level_md(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         self._seed(
             ws,
             {
@@ -186,14 +186,14 @@ class TestDiscoverWorkspaceExtras:
         assert extras == ["AGENTS.md", "SOUL.md", "USER.md"]
 
     def test_skips_dated_snapshots(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         self._seed(
             ws,
             {
                 "AGENTS_FULL_2026-03-11.md": "# snapshot",
                 "MEMORY_FULL_2026-03-11.md": "# snapshot",
                 "TOOLS_REFERENCE_2026-03-11.md": "# snapshot",
-                "ari-status-report-2026-03-11.md": "# status",
+                "atlas-status-report-2026-03-11.md": "# status",
                 "INCIDENT-2026-02-23.md": "# incident",
                 "RECOVERY-OPENCLAW-UPDATE.md": "# recovery",
                 "SOUL.md": "# keep",
@@ -202,7 +202,7 @@ class TestDiscoverWorkspaceExtras:
         assert discover_workspace_extras(ws) == ["SOUL.md"]
 
     def test_skips_oversize_logs(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         self._seed(
             ws,
             {
@@ -214,7 +214,7 @@ class TestDiscoverWorkspaceExtras:
         assert discover_workspace_extras(ws) == ["SOUL.md"]
 
     def test_at_size_cap_included(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         self._seed(
             ws,
             {
@@ -225,7 +225,7 @@ class TestDiscoverWorkspaceExtras:
         assert discover_workspace_extras(ws) == ["BIG_BUT_OK.md"]
 
     def test_ignores_non_md_and_subdirs(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         self._seed(ws, {"SOUL.md": "# soul", "openclaw.json": "{}", "README.txt": "x"})
         # A subdirectory with a markdown file should NOT be picked up.
         (ws / "memory").mkdir()
@@ -236,7 +236,7 @@ class TestDiscoverWorkspaceExtras:
         assert discover_workspace_extras(tmp_path / "nonexistent") == []
 
     def test_returns_empty_for_workspace_with_only_skipped_files(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         self._seed(
             ws,
             {

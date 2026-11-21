@@ -410,7 +410,7 @@ class TestEmbedState:
         """Regression: when the parent ``memories`` row is deleted
         between ``upsert_vectors`` and ``record_embed_state`` (the
         race that triggered ``sqlite3.IntegrityError: FOREIGN KEY
-        constraint failed`` on Ari's box during the v0.7 → v0.8
+        constraint failed`` on Atlas's box during the v0.7 → v0.8
         embedder migration), the worker must not crash. The cascade
         has already cleaned ``embed_queue`` / ``embed_state``;
         ``record_embed_state`` should silently no-op rather than
@@ -506,7 +506,7 @@ class TestEmbedState:
         """The FK race handler must catch the violation regardless of
         whether SQLite surfaces it as :class:`sqlite3.IntegrityError`
         (the usual case) or as the parent
-        :class:`sqlite3.DatabaseError` (observed on Ari's Python 3.12 +
+        :class:`sqlite3.DatabaseError` (observed on Atlas's Python 3.12 +
         SQLite 3.45 deployment after the original PR #78 fix shipped —
         the narrow ``except IntegrityError`` clause didn't fire and the
         embed worker crashed).
@@ -537,7 +537,7 @@ class TestEmbedState:
             class _RaisingDB:
                 """Proxy that intercepts the embed_state INSERT and
                 raises ``sqlite3.DatabaseError`` (parent class), the
-                shape Ari's box surfaced. Everything else falls
+                shape Atlas's box surfaced. Everything else falls
                 through to the real connection."""
 
                 def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:

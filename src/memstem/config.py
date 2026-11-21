@@ -619,7 +619,7 @@ class OpenClawAdapterConfig(BaseModel):
     `agent:<tag>`."""
 
     shared_files: list[Path] = Field(default_factory=list)
-    """Agent-agnostic files (e.g. `~/ari/HARD-RULES.md`). Emitted with a
+    """Agent-agnostic files (e.g. `~/atlas/HARD-RULES.md`). Emitted with a
     `shared` tag instead of an `agent:*` tag."""
 
     scheduled_session_ttl_days: int | None = Field(default=None, ge=0)

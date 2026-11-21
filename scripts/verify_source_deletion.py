@@ -86,7 +86,7 @@ def main() -> int:
     search = Search(vault=vault, index=index, embedder=None)
 
     # --- seed a realistic OpenClaw workspace ---------------------------------
-    ws_root = tmp / "ari"
+    ws_root = tmp / "atlas"
     mem_file = ws_root / "memory" / "deploy-notes.md"
     daily_file = ws_root / "memory" / "2026-04-25.md"
     skill_file = ws_root / "skills" / "deploy" / "SKILL.md"
@@ -133,7 +133,7 @@ def main() -> int:
         workspaces=[
             OpenClawWorkspace(
                 path=ws_root,
-                tag="ari",
+                tag="atlas",
                 # session_dirs is opt-in (empty by default); enable it so the
                 # session log is really ingested and the type-guard is exercised.
                 layout=OpenClawLayout(session_dirs=["sessions"]),

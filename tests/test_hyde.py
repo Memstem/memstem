@@ -53,11 +53,11 @@ class TestShouldExpand:
         [
             # Real questions — should expand.
             ("how do I send a Telegram message", True),
-            ("what gateway port does Ari run on", True),
+            ("what gateway port does Atlas run on", True),
             ("memory consolidation strategy", True),
             # Too short — exact lookups, skip.
-            ("ari", False),
-            ("ari port", False),
+            ("atlas", False),
+            ("atlas port", False),
             # Quoted strings — exact match intent.
             ('alpha "exact phrase" query', False),
             # Boolean operators.
@@ -86,7 +86,7 @@ class TestShouldExpand:
         # subclasses can override but the default must match.
         expander = NoOpExpander()
         assert expander.should_expand("how do I send a message") is True
-        assert expander.should_expand("ari") is False
+        assert expander.should_expand("atlas") is False
 
 
 # ─── cache helpers ────────────────────────────────────────────────

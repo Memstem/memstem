@@ -111,7 +111,7 @@ A session is eligible for distillation iff:
 2. The body is not a system-prompt boot echo (already filtered at
    ingest by ADR 0011 PR-C; we re-check defensively), **and**
 3. The body word count is at least 100 (so a 10-turn session of
-   one-line replies still gets skipped — the typical "hi ari, what
+   one-line replies still gets skipped — the typical "hi atlas, what
    time" / "thanks" / "ok" exchange).
 
 Both gates are deterministic and config-tunable
@@ -140,7 +140,7 @@ provenance:
 links:
   - "memory://sessions/b7972233-e434-42fb-b55a-1736bd17e211"
 tags:
-  - "agent:ari"                    # inherited from source
+  - "agent:atlas"                    # inherited from source
   - "home-user-northwind-quotes" # inherited from source
   - "distillation:session"
 importance: 0.8

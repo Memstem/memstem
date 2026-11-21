@@ -7,9 +7,9 @@
 ## Context
 
 The vector half of a search is a brute-force vec0 scan over every stored
-chunk (3.96 GB on the Ari vault). It answers in ~1 s while those pages are in
+chunk (3.96 GB on the Atlas vault). It answers in ~1 s while those pages are in
 the page cache. When something else on the host evicts them, the next scan
-re-reads the table from disk and can run for minutes. The Ari search watchdog
+re-reads the table from disk and can run for minutes. The Atlas search watchdog
 (one real search every 5 minutes) recorded this on main-server: of 1,645
 probes between 2026-09-27 and 2026-10-03, 16 took longer than 10 s; 3 came
 back with results (13.5, 18.5, 47.7 s) and 13 never answered within the

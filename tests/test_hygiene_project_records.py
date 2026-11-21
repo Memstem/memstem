@@ -137,7 +137,7 @@ class TestProjectTagForSession:
         assert project_tag_for_session(m) == "home-user-northwind-quotes"
 
     def test_skips_agent_prefix(self, vault: Vault) -> None:
-        m = _write_session(vault, session_id="s2", tags=["agent:ari"])
+        m = _write_session(vault, session_id="s2", tags=["agent:atlas"])
         assert project_tag_for_session(m) is None
 
     def test_skips_topic_prefix(self, vault: Vault) -> None:
@@ -156,7 +156,7 @@ class TestProjectTagForSession:
         m = _write_session(
             vault,
             session_id="s6",
-            tags=["agent:ari", "home-user-stuff"],
+            tags=["agent:atlas", "home-user-stuff"],
         )
         assert project_tag_for_session(m) == "home-user-stuff"
 

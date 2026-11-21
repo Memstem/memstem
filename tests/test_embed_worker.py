@@ -231,11 +231,11 @@ class TestTransientHandling:
     timeout) must NOT bump the record's ``retry_count`` and must drive
     the worker's exponential backoff streak. Otherwise a 30-second
     OpenAI hiccup permanently fails every record in flight (the
-    behaviour observed on Ari's box pre-fix).
+    behaviour observed on Atlas's box pre-fix).
     """
 
     def test_transient_does_not_bump_retry_count(self, vault: Vault, index: Index) -> None:
-        """The classic Ari shape: OpenAI returns peer-closed-connection
+        """The classic Atlas shape: OpenAI returns peer-closed-connection
         twice in a row, then succeeds. Permanent error handling would
         burn through retries; transient handling shouldn't touch
         ``retry_count`` at all and the eventual success cleans the
@@ -592,7 +592,7 @@ class TestEmbedStateOnSuccess:
     ) -> None:
         """Regression for the FK race that caused
         ``sqlite3.IntegrityError: FOREIGN KEY constraint failed`` and
-        crashed the worker on Ari's box during the v0.7 → v0.8
+        crashed the worker on Atlas's box during the v0.7 → v0.8
         embedder migration: the parent ``memories`` row gets deleted
         while the worker is round-tripping the embedder, then the
         worker comes back and tries to ``record_embed_state`` for an

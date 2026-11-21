@@ -6,7 +6,7 @@ Status: Accepted
 ## Context
 
 Memstem ingests memories, sessions, and skills from each AI client that
-drops files on disk. Adapters exist for Claude Code and OpenClaw / Ari.
+drops files on disk. Adapters exist for Claude Code and OpenClaw.
 OpenAI's Codex CLI is the next first-class client: it stores rich
 session logs and a growing user-skills directory, and — as of the
 0.130 series — the Codex desktop app can launch the remote `codex`

@@ -5,7 +5,7 @@ Status: Accepted
 
 ## Context
 
-The current "FlipClaw" pipeline uses a `SessionEnd` hook in Claude Code that runs `claude-code-bridge.py` to push session data into Ari's memory store. This pattern has broken across multiple Claude Code updates because:
+The current "FlipClaw" pipeline uses a `SessionEnd` hook in Claude Code that runs `claude-code-bridge.py` to push session data into Atlas's memory store. This pattern has broken across multiple Claude Code updates because:
 
 - Hook config schema changes silently
 - Hook timeout behavior changes silently

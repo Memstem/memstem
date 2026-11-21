@@ -59,7 +59,7 @@ expectation by more than 0.03 while both were otherwise valid.
   is written inside the retrieval step. The ledger holds both orders.
 - The candidate objects Jev reorders are the search's own `Result`s, so
   scores shown to the caller are the fused retrieval scores, not Jev's.
-- Rollout: main-server first (Ari vault), the shadow report after a few
+- Rollout: main-server first (Atlas vault), the shadow report after a few
   days, then other hosts with the usual notice. Rollback: `serve: false`
   (shadow continues) or `enabled: false`, then restart the daemon; MCP
   sessions pick the change up on restart.

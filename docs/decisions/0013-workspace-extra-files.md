@@ -15,7 +15,7 @@ Plus `OpenClawAdapterConfig.shared_files` for cross-agent files like
 `HARD-RULES.md` (tagged `shared`, no `agent:*` tag).
 
 Real workspaces grow more top-level system files than the two the
-layout knows about. Ari has 23 top-level `.md` files including
+layout knows about. Atlas has 23 top-level `.md` files including
 `SOUL.md` (identity), `USER.md` (operator profile), `AGENTS.md` (the
 agent fleet), `IDENTITY.md`, `TOOLS.md`, `RELATIONSHIPS.md`,
 `PRIORITIES.md`, `COMMUNICATION.md`, `ESCALATION.md`, plus dated
@@ -27,9 +27,9 @@ real recall gap on the agent's own foundational files.
 
 `shared_files` works around it but tags content as `shared`, which is
 semantically wrong for agent-specific identity files and breaks any
-future filter that asks "give me everything for `agent:ari`".
+future filter that asks "give me everything for `agent:atlas`".
 
-This is a toolkit gap, not just an Ari config gap. Every fresh
+This is a toolkit gap, not just an Atlas config gap. Every fresh
 `memstem init` install for any OpenClaw agent produces the same
 coverage hole.
 
@@ -44,8 +44,8 @@ should ingest as a memory record, tagged with the workspace's
 adapters:
   openclaw:
     agent_workspaces:
-      - path: /home/user/ari
-        tag: ari
+      - path: /home/user/atlas
+        tag: atlas
         layout:
           extra_files:
             - SOUL.md
@@ -70,7 +70,7 @@ through the same way `MEMORY.md` edits do.
 - Watcher extends naturally — no separate code path for these files.
 - Layout stays the single place describing "what counts as a
   ingestable file in this workspace."
-- Setup is unblocked for Ari today, and the same field will serve
+- Setup is unblocked for Atlas today, and the same field will serve
   Daymond, Fleet, and any future agent without a code change.
 
 **Cons:**
@@ -78,7 +78,7 @@ through the same way `MEMORY.md` edits do.
 - Each operator has to enumerate the files they want indexed.
   Auto-discovery of "every top-level `.md`" was rejected — a workspace
   often has dated snapshots, incident reports, and append-only logs
-  (e.g. Ari's `DREAMS.md`, 286 KB and growing) that would either churn
+  (e.g. Atlas's `DREAMS.md`, 286 KB and growing) that would either churn
   the index or add noise. Explicit > implicit here.
 
 **Mitigations:**

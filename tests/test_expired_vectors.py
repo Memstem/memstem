@@ -92,7 +92,7 @@ def test_pipeline_does_not_enqueue_expired_record(vault: Vault, index: Index) ->
         ref="/x.sqlite#session=s1",
         title="[cron:…]",
         body=(
-            "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat] run.\n\n"
+            "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Atlas Full Heartbeat] run.\n\n"
             "**Assistant:** ok"
         ),
         metadata={"type": "session", "created": "2026-04-27T10:00:00+00:00", "session_id": "s1"},

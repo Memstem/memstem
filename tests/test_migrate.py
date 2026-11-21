@@ -96,9 +96,9 @@ class TestCli:
         runner = CliRunner()
         runner.invoke(cli_app, ["init", str(vault_path)])
 
-        # Seed a FlipClaw-style ari directory.
-        ari = tmp_path / "ari"
-        _write(ari / "memory" / "people.md", "# People\n\nbrad")
+        # Seed a FlipClaw-style atlas directory.
+        atlas = tmp_path / "atlas"
+        _write(atlas / "memory" / "people.md", "# People\n\nbrad")
 
         result = runner.invoke(
             app,
@@ -106,9 +106,9 @@ class TestCli:
                 "--vault",
                 str(vault_path),
                 "--openclaw",
-                str(ari / "memory"),
+                str(atlas / "memory"),
                 "--openclaw",
-                str(ari / "skills"),
+                str(atlas / "skills"),
                 "--claude-root",
                 str(tmp_path / "no-claude"),
             ],
@@ -126,9 +126,9 @@ class TestCli:
         runner = CliRunner()
         runner.invoke(cli_app, ["init", str(vault_path)])
 
-        ari = tmp_path / "ari"
-        _write(ari / "memory" / "people.md", "# People\n\nbrad")
-        _write(ari / "memory" / "decisions.md", "# Decisions\n\nstuff")
+        atlas = tmp_path / "atlas"
+        _write(atlas / "memory" / "people.md", "# People\n\nbrad")
+        _write(atlas / "memory" / "decisions.md", "# Decisions\n\nstuff")
 
         result = runner.invoke(
             app,
@@ -137,9 +137,9 @@ class TestCli:
                 "--vault",
                 str(vault_path),
                 "--openclaw",
-                str(ari / "memory"),
+                str(atlas / "memory"),
                 "--openclaw",
-                str(ari / "skills"),
+                str(atlas / "skills"),
                 "--claude-root",
                 str(tmp_path / "no-claude"),
             ],

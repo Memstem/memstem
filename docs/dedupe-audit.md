@@ -46,7 +46,7 @@ human + machine report, and has no mutation surface at all.
 |------------------------------|--------------|-----------|-------------------------------------------------------------|
 | `memories/claude-code/`      | `memory`     | varies    | UUID-named files; ingested from `~/.claude/projects/...`    |
 | `memories/openclaw/<agent>/` | `memory`     | varies    | UUID-named files; ingested from agent workspace             |
-| `memories/projects/`         | `project`    | small     | Slug-named files (e.g. `home-user-ari.md`); curated       |
+| `memories/projects/`         | `project`    | small     | Slug-named files (e.g. `home-user-atlas.md`); curated       |
 | `sessions/`                  | `session`    | largest   | UUID-named; one per ingested session transcript             |
 | `distillations/<source>/`    | `distillation` | medium  | UUID-named; LLM digest records — derivative by design       |
 | `daily/<agent>/`             | `daily`      | small     | Date-named (`2026-04-15.md`); date-bucketed logs            |

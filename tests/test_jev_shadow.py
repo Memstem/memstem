@@ -89,7 +89,7 @@ class TestSelectPassages:
         rng = random.Random(7)
         vocab = [
             "memstem", "jev", "rerank", "gateway", "stop-sign", "warehouse", "pm2", "crm",
-            "quote", "template", "the", "and", "ari", "deploy", "rollback", "ß", "naïve",
+            "quote", "template", "the", "and", "atlas", "deploy", "rollback", "ß", "naïve",
         ]  # fmt: skip
         mismatches = 0
         for trial in range(300):
