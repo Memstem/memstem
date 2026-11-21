@@ -312,7 +312,7 @@ Vec compaction is lock-free (ADR 0039/0040) and its gate now scales with the vau
   or reopened session was never rewritten — and because distillations are
   deliberately boosted in search, the stale summary outranked the fresh
   transcript (the follow-up ADR 0020 deferred; reported from observed recall
-  lapses by Brad Snape). Every distillation now records a snapshot of its
+  lapses by a customer). Every distillation now records a snapshot of its
   source transcript (`provenance.source_word_count` / `source_turn_count` /
   `source_updated`), and the default scan re-distills a session once its
   transcript outgrows that snapshot by ≥ 500 words or ≥ 10 turns

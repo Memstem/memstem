@@ -125,7 +125,7 @@ The `/health` endpoint gains a `hygiene` block:
 
 ## Rollout
 
-Native PM2 installs (Atlas, Daymond's tenant-a, Skyler's tenant-b):
+Native PM2 installs (Atlas, a second operator's tenant-a, a third operator's tenant-b):
 `pipx upgrade memstem && pm2 restart memstem`. Loop starts automatically.
 
 Hosted customer containers (customer-a, customer-b, customer-c, et al.):

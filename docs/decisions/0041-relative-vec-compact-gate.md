@@ -23,7 +23,7 @@ the stage outright. Measured on 2026-09-10/11 across the fleet (all on
 | vault | live | dead | dead % | stage decision |
 |---|---|---|---|---|
 | small-server | 30,816 | 19,360 | 39% | skip — dead < 25,000 |
-| Damon | 17,930 | 12,790 | 42% | skip |
+| operator-b | 17,930 | 12,790 | 42% | skip |
 | E1 | 13,534 | 16,162 | 54% | skip |
 | customer-a (hosted) | 69,100 | 10,772 | 14% | skip (correctly) |
 
@@ -55,7 +55,7 @@ Operators who want the old behaviour set `hygiene.vec_compact_min_dead_slots:
 ## Consequences
 
 - Small vaults compact themselves once they pass 20% dead: small-server,
-  Damon and E1 are picked up on the first daily check after upgrading.
+  operator-b and E1 are picked up on the first daily check after upgrading.
 - Cost on a small vault: a lock-free build of a few hundred MB plus a
   ~10 s swap. On the 4-vCPU small-server that is roughly a minute of
   slightly slower searches once a day at most.

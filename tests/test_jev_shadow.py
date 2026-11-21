@@ -117,7 +117,7 @@ class TestSelectPassages:
 class TestRedaction:
     def test_common_secret_shapes(self) -> None:
         text = (
-            "tsql -S host -U damon -P 'hunter22x' -D db\n"
+            "tsql -S host -U dbuser -P 'hunter22x' -D db\n"
             "password: s3cretvalue\napi_key=abcd1234efgh\n"
             "https://user:pa55word@example.com/x\nsk-or-v1-" + "a" * 30
         )

@@ -8,7 +8,7 @@
 
 Shadow mode ran on main-server from 2026-09-26. After four days (348 runs)
 a seeded sample of 60 distinct real queries was relevance-labelled blind by
-Gil with the pilot's rubric, and Jev's would-be order was compared with the
+an LLM judge with the pilot's rubric, and Jev's would-be order was compared with the
 order actually served:
 
 | | served | Jev |
@@ -23,7 +23,7 @@ Jev was better on 54 queries, worse on 3 (largest loss −0.11), same on 1.
 The wider pool alone gave +0.11 and a word-overlap reorder +0.21, so part of
 the gain is looking past MMR's cut; Jev adds +0.12 over the best model-free
 control with far fewer regressions (3 vs 13). This agrees with the pilot
-(+0.15 on 50 held-out queries with Gil + Gemini labels).
+(+0.15 on 50 held-out queries with LLM-judge + Gemini labels).
 
 Operations: prep + Jev p50 0.46 s, p95 0.91 s; $0.35 per 1,000 searches;
 fallback 2.3% (gate 1%): four 2 s timeouts in one two-hour window and four

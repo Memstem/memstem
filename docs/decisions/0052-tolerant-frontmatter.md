@@ -13,7 +13,7 @@ then absent from search over a punctuation mark in its header.
 
 The failure is not rare and it is not random. Agents write memory notes with a one-line
 prose `description:` (Claude Code's auto-memory format has exactly this field), and
-prose contains `: ` — `Browser support: Chrome 114+`, `(Skyler: "All 5")`, `Skyler: lead
+prose contains `: ` — `Browser support: Chrome 114+`, `(Robin: "All 5")`, `Robin: lead
 designer`. YAML reads the unquoted value as a nested mapping and fails with `mapping
 values are not allowed in this context`. One fleet host (E1) produced seven daily health
 warnings for this between 2026-09-19 and 2026-10-11, ten files in all, each repaired by
