@@ -10,8 +10,10 @@ to reach `127.0.0.1:7821` already has filesystem access to the vault.
 Binding to a non-loopback address is allowed by config; for that case
 an optional bearer token can be required on every endpoint except
 `/health` (set the env var named by ``HttpServerConfig.auth_token_env``,
-default ``MEMSTEM_HTTP_TOKEN``). Non-loopback binds without a token are
-still allowed but explicitly logged as a footgun on startup.
+default ``MEMSTEM_HTTP_TOKEN``); with a token set, `/health` without it
+reports status and counts only, no paths or error text. Non-loopback
+binds without a token are still allowed but explicitly logged as a
+footgun on startup.
 
 Endpoint shapes mirror the MCP tool list one-to-one so the two surfaces
 stay in lockstep:
@@ -59,6 +61,9 @@ from memstem.servers.request_limits import clamp_limit, clamp_rerank_top_n
 logger = logging.getLogger(__name__)
 
 SNIPPET_CHARS = 240
+
+# What /health reports when a diagnostic read fails; the detail is logged.
+_HEALTH_ERROR = "unreadable; see the daemon log"
 
 
 class SearchRequest(BaseModel):
@@ -168,9 +173,10 @@ def build_app(
 
     ``auth_token``, when non-empty, requires ``Authorization: Bearer
     <token>`` on every endpoint except ``/health`` (kept open so
-    monitoring keeps working when auth is turned on; it exposes counts
-    and version, never vault content). ``None``/empty disables auth —
-    the loopback default.
+    monitoring keeps working when auth is turned on; without the token it
+    reports status, codes, counts and version only — no paths, no error
+    text, never vault content). ``None``/empty disables auth — the
+    loopback default.
     """
     app = FastAPI(
         title="Memstem",
@@ -189,19 +195,24 @@ def build_app(
         allow_headers=["*"],
     )
 
+    def _authorized(request: Request) -> bool:
+        """True when no token is configured or the caller presented it."""
+        if not auth_token:
+            return True
+        supplied = request.headers.get("authorization", "")
+        expected = f"Bearer {auth_token}"
+        # bytes, not str: compare_digest raises on non-ASCII str input,
+        # and a malformed header must yield 401, not 500.
+        return _secrets.compare_digest(supplied.encode(), expected.encode())
+
     if auth_token:
 
         @app.middleware("http")
         async def _bearer_auth(
             request: Request, call_next: Callable[[Request], Awaitable[Response]]
         ) -> Response:
-            if request.url.path != "/health":
-                supplied = request.headers.get("authorization", "")
-                expected = f"Bearer {auth_token}"
-                # bytes, not str: compare_digest raises on non-ASCII str input,
-                # and a malformed header must yield 401, not 500.
-                if not _secrets.compare_digest(supplied.encode(), expected.encode()):
-                    return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            if request.url.path != "/health" and not _authorized(request):
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
             return await call_next(request)
 
     sc = search_config or SearchConfig()
@@ -230,7 +241,7 @@ def build_app(
     log_client = "http" if hc.query_log_enabled else None
 
     @app.get("/health")
-    def health(detail: bool = True) -> dict[str, Any]:
+    def health(request: Request, detail: bool = True) -> dict[str, Any]:
         """Health probe: version, embed-queue state, watcher liveness, hygiene.
 
         ``status`` is computed, not hardcoded: it reports ``"degraded"`` when
@@ -256,15 +267,26 @@ def build_app(
         process started: ``{count, files: [{path, source, kind, reason,
         since, last_seen}, ...]}`` (first 20). Informational — it never
         degrades ``status``.
+
+        ``/health`` answers without the bearer token so monitoring keeps
+        working when auth is on. When a token is configured and the caller
+        has not presented it, the response carries status, codes and counts
+        only: no ``vault`` path, ``skipped_files`` is ``{count}`` without the
+        per-file paths and error text, and an accelerated sqlite-vec build is
+        reported as ``"accelerated"`` instead of its path. A caller with the
+        token, or any caller when no token is configured, gets everything.
         """
+        full = _authorized(request)
         # Discovery needs identity, not diagnostics behind the writer lock.
         # Keep the default full health response for monitoring and old clients.
         if not detail:
-            return {
+            identity: dict[str, Any] = {
                 "version": memstem.__version__,
-                "vault": str(vault.root),
                 "embedder": embedder is not None,
             }
+            if full:
+                identity["vault"] = str(vault.root)
+            return identity
 
         from memstem.hygiene.state import snapshot as hygiene_snapshot
 
@@ -280,9 +302,12 @@ def build_app(
         hygiene_block: dict[str, Any] = {"loop_enabled": hc.loop_enabled}
         try:
             hygiene_block.update(hygiene_snapshot(index.db, lock=index.lock))
-        except Exception as exc:
+        except Exception:
             # A state read shouldn't fail, but if it does, don't 500 — report it.
-            hygiene_block["error"] = f"{type(exc).__name__}: {exc}"
+            # /health answers without the bearer token, so
+            # the exception text (paths, SQL) goes to the daemon log only.
+            logger.warning("health: hygiene state unreadable", exc_info=True)
+            hygiene_block["error"] = _HEALTH_ERROR
             problems.append("hygiene_state_unreadable")
 
         embed_block: dict[str, Any] = {"configured": embedder is not None}
@@ -291,29 +316,44 @@ def build_app(
             embed_block.update(stats)
             if stats.get("failed", 0) > 0:
                 problems.append("embed_failures")
-        except Exception as exc:
-            embed_block["error"] = f"{type(exc).__name__}: {exc}"
+        except Exception:
+            logger.warning("health: embed queue unreadable", exc_info=True)
+            embed_block["error"] = _HEALTH_ERROR
             problems.append("embed_queue_unreadable")
 
         # Source files the adapters could not ingest (bad frontmatter,
         # unreadable). Informational: one broken file must not flip the
         # daemon to "degraded" (monitors treat that as the daemon being
         # down) — but it must be visible, which it was not before 0.24.0.
-        skipped_block = {"count": SKIPPED.count(), "files": SKIPPED.snapshot(limit=20)}
+        # The per-file entries hold full paths and up to 300 characters of
+        # parser/OS error text, so they are for authorized callers only.
+        skipped_block: dict[str, Any] = {"count": SKIPPED.count()}
+        if full:
+            skipped_block["files"] = SKIPPED.snapshot(limit=20)
 
-        return {
+        vec_info = index.sqlite_vec_info
+        if vec_info is not None and not full and vec_info.get("extension") != "bundled":
+            vec_info = {**vec_info, "extension": "accelerated"}
+
+        body: dict[str, Any] = {
             "status": "degraded" if problems else "ok",
             "problems": problems,
             "version": memstem.__version__,
-            "vault": str(vault.root),
-            "embedder": embedder is not None,
-            "embed_queue": embed_block,
-            "watchers": watchers_block,
-            "hygiene": hygiene_block,
-            "skipped_files": skipped_block,
-            "sqlite_vec": index.sqlite_vec_info,
-            "update": _update_block(),
         }
+        if full:
+            body["vault"] = str(vault.root)
+        body.update(
+            {
+                "embedder": embedder is not None,
+                "embed_queue": embed_block,
+                "watchers": watchers_block,
+                "hygiene": hygiene_block,
+                "skipped_files": skipped_block,
+                "sqlite_vec": vec_info,
+                "update": _update_block(),
+            }
+        )
+        return body
 
     def _update_block() -> dict[str, Any] | None:
         """ADR 0050: last cached update check (informational; never degrades status)."""

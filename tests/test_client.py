@@ -258,6 +258,74 @@ class TestSearch:
             client.close()
 
 
+class TestToken:
+    """With bearer auth on, the daemon reports its vault on /health only to
+    a caller with the token; the client sends it when the env var is set."""
+
+    def test_client_sends_bearer_header(self, tmp_path: Path) -> None:
+        seen: list[str | None] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("authorization"))
+            return httpx.Response(
+                200, json={"version": "test", "vault": str(tmp_path), "embedder": True}
+            )
+
+        client = DaemonClient("http://127.0.0.1:7821", token="sekrit")
+        transport_client = httpx.Client(
+            base_url=client.base_url,
+            headers=client._client.headers,
+            transport=httpx.MockTransport(respond),
+        )
+        client._client.close()
+        client._client = transport_client
+        try:
+            assert client.health() is not None
+        finally:
+            client.close()
+        assert seen == ["Bearer sekrit"]
+
+    def test_no_token_sends_no_header(self) -> None:
+        client = DaemonClient("http://127.0.0.1:7821")
+        try:
+            assert "authorization" not in client._client.headers
+        finally:
+            client.close()
+
+    def test_find_daemon_reads_the_configured_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MEMSTEM_TEST_TOKEN", "sekrit")
+        cfg = Config(
+            vault_path=tmp_path,
+            http=HttpServerConfig(auth_token_env="MEMSTEM_TEST_TOKEN"),
+        )
+        tokens: list[str | None] = []
+
+        def fake_factory(
+            base_url: str, *, timeout: float = 30.0, token: str | None = None
+        ) -> DaemonClient:
+            tokens.append(token)
+            return _client_with_responder(_ok_health(str(tmp_path)), base_url=base_url)
+
+        with patch("memstem.client.DaemonClient", side_effect=fake_factory):
+            client = find_daemon(cfg)
+        assert client is not None
+        client.close()
+        assert tokens == ["sekrit"]
+
+    def test_unauthenticated_probe_of_auth_daemon_falls_back(self, tmp_path: Path) -> None:
+        # What a token-protected daemon answers without the token: no vault.
+        def respond(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"version": "test", "embedder": True})
+
+        client = _client_with_responder(respond)
+        try:
+            assert client.health() is None
+        finally:
+            client.close()
+
+
 # ---------------------------------------------------------------------------
 # find_daemon — discovery + vault verification
 # ---------------------------------------------------------------------------
@@ -290,7 +358,9 @@ class TestFindDaemon:
         cfg = self._config(tmp_path)
         responder = _ok_health(str(tmp_path))
 
-        def fake_factory(base_url: str, *, timeout: float = 30.0) -> DaemonClient:
+        def fake_factory(
+            base_url: str, *, timeout: float = 30.0, token: str | None = None
+        ) -> DaemonClient:
             return _client_with_responder(responder, base_url=base_url)
 
         with patch("memstem.client.DaemonClient", side_effect=fake_factory):
@@ -307,7 +377,9 @@ class TestFindDaemon:
         wrong_vault.mkdir()
         responder = _ok_health(str(wrong_vault))
 
-        def fake_factory(base_url: str, *, timeout: float = 30.0) -> DaemonClient:
+        def fake_factory(
+            base_url: str, *, timeout: float = 30.0, token: str | None = None
+        ) -> DaemonClient:
             return _client_with_responder(responder, base_url=base_url)
 
         with patch("memstem.client.DaemonClient", side_effect=fake_factory):
@@ -324,7 +396,9 @@ class TestFindDaemon:
         # `./` segment to keep the lexical form different).
         responder = _ok_health(f"{tmp_path}/./")
 
-        def fake_factory(base_url: str, *, timeout: float = 30.0) -> DaemonClient:
+        def fake_factory(
+            base_url: str, *, timeout: float = 30.0, token: str | None = None
+        ) -> DaemonClient:
             return _client_with_responder(responder, base_url=base_url)
 
         with patch("memstem.client.DaemonClient", side_effect=fake_factory):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -355,6 +356,81 @@ class TestBearerAuth:
         assert auth_client.get("/health").status_code == 200
 
 
+class TestHealthDetailNeedsToken:
+    """M-2: /health answers without the token, but with a token configured
+    only an authorized caller sees paths and error text."""
+
+    PATH_MARKER = "pathmarker-7f3a"
+    ERROR_MARKER = "errmarker-c91e"
+
+    @pytest.fixture(autouse=True)
+    def _skipped_entry(self, tmp_path: Path) -> Iterator[None]:
+        from memstem.core.skipped import SKIPPED
+
+        SKIPPED.reset()
+        SKIPPED.record(
+            tmp_path / self.PATH_MARKER / "broken.md",
+            f"mapping values are not allowed here: {self.ERROR_MARKER}",
+            source="openclaw",
+        )
+        yield
+        SKIPPED.reset()
+
+    def _leaks(self, text: str, vault: Vault) -> list[str]:
+        markers = (self.PATH_MARKER, self.ERROR_MARKER, str(vault.root))
+        return [m for m in markers if m in text]
+
+    def test_unauthenticated_gets_status_and_counts_only(self, vault: Vault, index: Index) -> None:
+        client = TestClient(build_app(vault, index, auth_token="sekrit"))
+        for headers in ({}, {"Authorization": "Bearer wrong"}):
+            r = client.get("/health", headers=headers)
+            assert r.status_code == 200
+            assert self._leaks(r.text, vault) == []
+            body = r.json()
+            assert body["status"] == "ok"
+            assert "vault" not in body
+            assert body["skipped_files"] == {"count": 1}
+
+            light = client.get("/health?detail=false", headers=headers)
+            assert light.status_code == 200
+            assert self._leaks(light.text, vault) == []
+            assert "vault" not in light.json()
+
+    def test_authenticated_gets_detail(self, vault: Vault, index: Index) -> None:
+        client = TestClient(build_app(vault, index, auth_token="sekrit"))
+        headers = {"Authorization": "Bearer sekrit"}
+        body = client.get("/health", headers=headers).json()
+        assert body["vault"] == str(vault.root)
+        assert body["skipped_files"]["count"] == 1
+        (entry,) = body["skipped_files"]["files"]
+        assert self.PATH_MARKER in entry["path"]
+        assert self.ERROR_MARKER in entry["reason"]
+        light = client.get("/health?detail=false", headers=headers).json()
+        assert light["vault"] == str(vault.root)
+
+    def test_no_token_configured_gets_detail(self, client: TestClient, vault: Vault) -> None:
+        # Auth off (the loopback default): every endpoint, /search and
+        # /memory included, is open to the caller, so /health hides nothing.
+        body = client.get("/health").json()
+        assert body["vault"] == str(vault.root)
+        assert self.ERROR_MARKER in body["skipped_files"]["files"][0]["reason"]
+        assert client.get("/health?detail=false").json()["vault"] == str(vault.root)
+
+    def test_accelerated_extension_path_hidden(
+        self, vault: Vault, index: Index, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ext = f"/opt/{self.PATH_MARKER}/vec0.so"
+        monkeypatch.setattr(
+            index, "_vec_info", {"version": "v0", "build_flags": "", "extension": ext}
+        )
+        client = TestClient(build_app(vault, index, auth_token="sekrit"))
+        r = client.get("/health")
+        assert r.json()["sqlite_vec"]["extension"] == "accelerated"
+        assert self._leaks(r.text, vault) == []
+        authed = client.get("/health", headers={"Authorization": "Bearer sekrit"})
+        assert authed.json()["sqlite_vec"]["extension"] == ext
+
+
 class TestRequestClamps:
     """Caller-supplied limit / rerank_top_n are clamped at the edge."""
 
@@ -480,3 +556,26 @@ def test_lightweight_health_does_not_acquire_writer_lock(
     assert "embed_queue" not in response.json()
     # Full health still detects the diagnostic failure.
     assert "embed_queue_unreadable" in client.get("/health").json()["problems"]
+
+
+def test_health_does_not_expose_exception_text(
+    client: TestClient,
+    index: Index,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """/health is open even with bearer auth on, so a failed diagnostic read
+    reports a generic error; the exception detail goes to the daemon log."""
+    detail = "no such table: /home/someone/vault/_meta/index.db"
+
+    def broken() -> dict[str, int]:
+        raise RuntimeError(detail)
+
+    monkeypatch.setattr(index, "queue_stats", broken)
+    with caplog.at_level(logging.WARNING, logger="memstem.servers.http_server"):
+        response = client.get("/health")
+    body = response.json()
+    assert "embed_queue_unreadable" in body["problems"]
+    assert detail not in response.text
+    assert "RuntimeError" not in response.text
+    assert detail in caplog.text

@@ -174,7 +174,9 @@ def _is_real_openai_host(base_url: str) -> bool:
     from urllib.parse import urlparse
 
     host = (urlparse(base_url).hostname or "").lower()
-    return host.endswith("openai.com") or host.endswith("openai.azure.com")
+    # Exact host or a dot-delimited subdomain: a bare suffix check would
+    # also match look-alikes such as ``notopenai.com``.
+    return host == "openai.com" or host.endswith((".openai.com", ".openai.azure.com"))
 
 
 class Embedder(ABC):

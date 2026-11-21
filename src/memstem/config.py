@@ -486,8 +486,12 @@ class HttpServerConfig(BaseModel):
     daemon reachable across a Docker network) an optional bearer token
     can be required: set the environment variable named by
     ``auth_token_env`` and every endpoint except ``/health`` demands
-    ``Authorization: Bearer <token>``. Unset (the default) means no
-    auth, which is fine on loopback and warned about on anything else.
+    ``Authorization: Bearer <token>``. ``/health`` still answers without
+    the token, but then reports status and counts only (no paths, no error
+    text); with the token it reports full detail. The CLI sends the token
+    when the same environment variable is set in its shell. Unset (the
+    default) means no auth, which is fine on loopback and warned about on
+    anything else.
     """
 
     enabled: bool = True
