@@ -2713,7 +2713,7 @@ Code releases actually read.
 
 ## [0.1.0] - 2026-04-XX
 
-First tagged release. Phase 1 v0.1 — running on the live EC2 box,
+First tagged release. Phase 1 v0.1 — running on the maintainer's server,
 ingesting from Claude Code + multi-agent OpenClaw, exposing MCP
 search, with FlipClaw retired. Tag date is filled in at release
 time after the maintainer validates the cutover.

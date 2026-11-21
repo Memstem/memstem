@@ -708,7 +708,7 @@ class TestHybridRecallAgainstOllama:
     ) -> dict[str, Memory]:
         corpus = {
             "cloudflare_decision": "Decided to use Cloudflare Registrar for new domains because at-cost pricing saves money.",
-            "ollama_install": "Installed Ollama on the EC2 box for local embeddings via nomic-embed-text.",
+            "ollama_install": "Installed Ollama on the server for local embeddings via nomic-embed-text.",
             "merge_freeze": "Mobile team is cutting a release branch; we're freezing non-critical merges through Friday.",
             "feline_obs": "The cat sat on the mat and watched the rain fall outside.",
             "rug_obs": "A small feline rested on the rug while the storm passed.",

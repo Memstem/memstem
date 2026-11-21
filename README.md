@@ -335,7 +335,7 @@ adapters:
   openclaw:
     agent_workspaces:
       - { path: ~/assistant, tag: assistant }
-      - { path: ~/support-agent, tag: support }
+      - { path: ~/helpdesk, tag: helpdesk }
     shared_files:
       - ~/assistant/RULES.md
   claude_code:
