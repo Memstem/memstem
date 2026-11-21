@@ -12,7 +12,7 @@ the SQLite index is cheap enough to pay on every CLI invocation.
 ### Symptom
 
 After the maintainer migrated the embedder from Gemini 768-dim to OpenAI
-3072-dim, `memstem search "Kinsta"` from the shell began timing out at
+3072-dim, `memstem search "staging"` from the shell began timing out at
 30 s. The MCP tool surface and the daemon's HTTP `/search` endpoint
 returned in milliseconds. Same query, same code, same vault — the
 difference was per-process lifecycle, not query complexity.
@@ -133,7 +133,7 @@ talks to the existing HTTP server (`POST /search`, `GET /memory/{id}`,
 `GET /health`). The CLI uses it on read paths:
 
 ```text
-memstem search "Kinsta"
+memstem search "staging"
   → probe GET /health (250ms timeout)
   → if up and serving the same vault path:
       POST /search           → render results, exit

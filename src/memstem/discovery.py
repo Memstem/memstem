@@ -40,7 +40,7 @@ _EXTRA_FILES_NOISY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^RECOVERY-.+\.md$"),
 )
 
-# Files larger than this are presumed to be append-only logs (e.g. Ari's
+# Files larger than this are presumed to be append-only logs (e.g. Atlas's
 # ``DREAMS.md`` at 286 KB, ``MAINTENANCE.md`` at 35 KB). Indexing them
 # churns embeddings on every edit and produces coarse search hits.
 # Operators who actually want them indexed can add them manually.

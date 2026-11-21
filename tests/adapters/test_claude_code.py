@@ -207,11 +207,11 @@ class TestSessionToRecord:
         assert record is None
 
     def test_extracts_project_tag_from_dot_prefix(self, tmp_path: Path) -> None:
-        # Real Claude Code paths look like /home/.../projects/-home-ubuntu-foo/<uuid>.jsonl
-        path = _write_session(tmp_path / "-home-ubuntu-foo/session.jsonl")
+        # Real Claude Code paths look like /home/.../projects/-home-user-foo/<uuid>.jsonl
+        path = _write_session(tmp_path / "-home-user-foo/session.jsonl")
         record = _session_to_record(path)
         assert record is not None
-        assert "home-ubuntu-foo" in record.tags
+        assert "home-user-foo" in record.tags
 
 
 def _cwd_line(cwd: str, text: str = "more work") -> dict[str, Any]:
@@ -230,14 +230,14 @@ class TestProjectTagFromCwd:
     @pytest.fixture(autouse=True)
     def isolate_fixture_launch_directory(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # These fixture sessions describe a home-directory hub. A developer's
-        # real /home/ubuntu/package.json must not change their expected tags.
+        # real /home/user/package.json must not change their expected tags.
         import memstem.adapters.claude_code as adapter
 
         original = adapter._is_project_root
         monkeypatch.setattr(
             adapter,
             "_is_project_root",
-            lambda path: False if path == "/home/ubuntu" else original(path),
+            lambda path: False if path == "/home/user" else original(path),
         )
 
     def test_prefers_worked_in_cwd_over_more_frequent_launch_dir(self, tmp_path: Path) -> None:
@@ -245,47 +245,47 @@ class TestProjectTagFromCwd:
         # session cd'd into — the project must still win, otherwise every
         # session launched from $HOME collapses into one bucket.
         path = _write_session(
-            tmp_path / "-home-ubuntu/session.jsonl",
-            cwd="/home/ubuntu",
-            extra_lines=[_cwd_line("/home/ubuntu/projects/foo")],
+            tmp_path / "-home-user/session.jsonl",
+            cwd="/home/user",
+            extra_lines=[_cwd_line("/home/user/projects/foo")],
         )
         record = _session_to_record(path)
         assert record is not None
-        assert record.tags == ["home-ubuntu-projects-foo"]
-        assert record.metadata["project"] == "-home-ubuntu-projects-foo"
+        assert record.tags == ["home-user-projects-foo"]
+        assert record.metadata["project"] == "-home-user-projects-foo"
 
     def test_falls_back_to_launch_dir_when_session_never_leaves(self, tmp_path: Path) -> None:
-        path = _write_session(tmp_path / "-home-ubuntu/session.jsonl", cwd="/home/ubuntu")
+        path = _write_session(tmp_path / "-home-user/session.jsonl", cwd="/home/user")
         record = _session_to_record(path)
         assert record is not None
-        assert record.tags == ["home-ubuntu"]
+        assert record.tags == ["home-user"]
 
     def test_busiest_project_wins(self, tmp_path: Path) -> None:
         path = _write_session(
-            tmp_path / "-home-ubuntu/session.jsonl",
-            cwd="/home/ubuntu",
+            tmp_path / "-home-user/session.jsonl",
+            cwd="/home/user",
             extra_lines=[
-                _cwd_line("/home/ubuntu/projects/foo"),
-                _cwd_line("/home/ubuntu/projects/bar"),
-                _cwd_line("/home/ubuntu/projects/bar"),
+                _cwd_line("/home/user/projects/foo"),
+                _cwd_line("/home/user/projects/bar"),
+                _cwd_line("/home/user/projects/bar"),
             ],
         )
         record = _session_to_record(path)
         assert record is not None
-        assert record.tags == ["home-ubuntu-projects-bar"]
+        assert record.tags == ["home-user-projects-bar"]
 
     def test_tie_broken_by_most_recent(self, tmp_path: Path) -> None:
         path = _write_session(
-            tmp_path / "-home-ubuntu/session.jsonl",
-            cwd="/home/ubuntu",
+            tmp_path / "-home-user/session.jsonl",
+            cwd="/home/user",
             extra_lines=[
-                _cwd_line("/home/ubuntu/projects/foo"),
-                _cwd_line("/home/ubuntu/projects/bar"),
+                _cwd_line("/home/user/projects/foo"),
+                _cwd_line("/home/user/projects/bar"),
             ],
         )
         record = _session_to_record(path)
         assert record is not None
-        assert record.tags == ["home-ubuntu-projects-bar"]
+        assert record.tags == ["home-user-projects-bar"]
 
     def test_subdir_of_project_launch_dir_does_not_split(self, tmp_path: Path) -> None:
         # Launching inside a repo and cd-ing into src/ is the common layout for
@@ -337,10 +337,10 @@ class TestProjectTagFromCwd:
 
     def test_no_cwd_entries_preserves_legacy_tag(self, tmp_path: Path) -> None:
         # Pre-cwd transcripts (and other clients) must keep working.
-        path = _write_session(tmp_path / "-home-ubuntu-foo/session.jsonl")
+        path = _write_session(tmp_path / "-home-user-foo/session.jsonl")
         record = _session_to_record(path)
         assert record is not None
-        assert record.tags == ["home-ubuntu-foo"]
+        assert record.tags == ["home-user-foo"]
 
 
 class TestSubagentTranscripts:
@@ -350,17 +350,17 @@ class TestSubagentTranscripts:
     @pytest.mark.parametrize(
         "rel",
         [
-            "-home-ubuntu/abc12345/subagents/agent-a1.jsonl",
-            "-home-ubuntu/abc12345/subagents/workflows/wf_2492d8d5/agent-a2.jsonl",
-            "-home-ubuntu/wf_2492d8d5/agent-1.jsonl",
+            "-home-user/abc12345/subagents/agent-a1.jsonl",
+            "-home-user/abc12345/subagents/workflows/wf_2492d8d5/agent-a2.jsonl",
+            "-home-user/wf_2492d8d5/agent-1.jsonl",
         ],
     )
     def test_subagent_paths_are_skipped(self, tmp_path: Path, rel: str) -> None:
-        path = _write_session(tmp_path / rel, cwd="/home/ubuntu")
+        path = _write_session(tmp_path / rel, cwd="/home/user")
         assert _session_to_record(path) is None
 
     def test_sidechain_transcript_is_skipped_anywhere(self, tmp_path: Path) -> None:
-        path = _write_session(tmp_path / "-home-ubuntu/agent-x.jsonl")
+        path = _write_session(tmp_path / "-home-user/agent-x.jsonl")
         lines = path.read_text().splitlines()
         first = json.loads(lines[0])
         first["isSidechain"] = True
@@ -368,7 +368,7 @@ class TestSubagentTranscripts:
         assert _session_to_record(path) is None
 
     def test_main_transcript_with_sidechain_false_is_kept(self, tmp_path: Path) -> None:
-        path = _write_session(tmp_path / "-home-ubuntu/abc12345.jsonl")
+        path = _write_session(tmp_path / "-home-user/abc12345.jsonl")
         first, *rest = path.read_text().splitlines()
         entry = json.loads(first)
         entry["isSidechain"] = False
@@ -377,10 +377,10 @@ class TestSubagentTranscripts:
 
     async def test_reconcile_emits_only_the_parent(self, tmp_path: Path) -> None:
         sid = "abc12345-0000-0000-0000-000000000000"
-        _write_session(tmp_path / f"-home-ubuntu/{sid}.jsonl", session_id=sid)
-        _write_session(tmp_path / f"-home-ubuntu/{sid}/subagents/agent-a1.jsonl", session_id=sid)
+        _write_session(tmp_path / f"-home-user/{sid}.jsonl", session_id=sid)
+        _write_session(tmp_path / f"-home-user/{sid}/subagents/agent-a1.jsonl", session_id=sid)
         records = await _drain(ClaudeCodeAdapter().reconcile([tmp_path]))
-        assert [r.ref for r in records] == [str(tmp_path / f"-home-ubuntu/{sid}.jsonl")]
+        assert [r.ref for r in records] == [str(tmp_path / f"-home-user/{sid}.jsonl")]
 
     def test_watcher_ignores_subagent_events(self, tmp_path: Path) -> None:
         from memstem.adapters.claude_code import _EventHandler
@@ -390,8 +390,8 @@ class TestSubagentTranscripts:
             queue: asyncio.Queue[Path] = asyncio.Queue()
             handler = _EventHandler(loop=loop, queue=queue)
             handler._debounce_seconds = 0
-            handler._enqueue(str(tmp_path / "-home-ubuntu/s/subagents/agent-a1.jsonl"))
-            handler._enqueue(str(tmp_path / "-home-ubuntu/s.jsonl"))
+            handler._enqueue(str(tmp_path / "-home-user/s/subagents/agent-a1.jsonl"))
+            handler._enqueue(str(tmp_path / "-home-user/s.jsonl"))
             loop.run_until_complete(asyncio.sleep(0))
             assert queue.qsize() == 1
         finally:
@@ -559,7 +559,7 @@ class TestParsesOffEventLoop:
     """A transcript can be many MB; parsing it inline on the event loop
     blocked the daemon's HTTP/MCP server for the duration of the parse (a
     single reconcile parse was observed holding the loop for 18.5s, per a
-    py-spy capture on brads-server). reconcile() and watch() now run the
+    py-spy capture on main-server). reconcile() and watch() now run the
     per-file parse in a worker thread via ``asyncio.to_thread`` — these
     tests assert the parse function actually executes off the loop's
     thread, not just that records still come out correctly (already
@@ -657,22 +657,22 @@ async def _collect(gen: AsyncGenerator[MemoryRecord, None]) -> list[MemoryRecord
 class TestSkills:
     async def test_reconcile_indexes_plain_skills_tagged_claude_code(self, tmp_path: Path) -> None:
         root = tmp_path / "skills"
-        _write_skill(root, "pocket-files")
+        _write_skill(root, "team-files")
         _write_skill(root, ".system/vendor")
         _write_skill(root, ".trash/old")
         _write_skill(root / "synced" / "8e15-6dc4", "docx")
         _write_skill(root / "synced" / "f749-9971", "docx")
         adapter = ClaudeCodeAdapter(skills_root=root)
         records = await _collect(adapter.reconcile([]))
-        assert [r.title for r in records] == ["pocket-files"]
+        assert [r.title for r in records] == ["team-files"]
         rec = records[0]
         assert rec.metadata["type"] == "skill"
         assert rec.source == "claude-code"
         assert "agent:claude-code" in rec.tags
-        assert rec.ref == str(root / "pocket-files" / "SKILL.md")
+        assert rec.ref == str(root / "team-files" / "SKILL.md")
 
     async def test_symlinked_skills_are_skipped(self, tmp_path: Path) -> None:
-        canonical = tmp_path / "ari" / "skills"
+        canonical = tmp_path / "atlas" / "skills"
         _write_skill(canonical, "council")
         root = tmp_path / "skills"
         root.mkdir()
@@ -686,12 +686,12 @@ class TestSkills:
 
     async def test_identical_codex_copy_is_not_indexed_twice(self, tmp_path: Path) -> None:
         root, codex = tmp_path / "claude", tmp_path / "codex"
-        _write_skill(root, "pocket-projects", "same")
-        _write_skill(codex, "pocket-projects", "same")
-        _write_skill(root, "pocket-files", "claude wording")
-        _write_skill(codex, "pocket-files", "codex wording")
+        _write_skill(root, "team-projects", "same")
+        _write_skill(codex, "team-projects", "same")
+        _write_skill(root, "team-files", "claude wording")
+        _write_skill(codex, "team-files", "codex wording")
         adapter = ClaudeCodeAdapter(skills_root=root, codex_skills_roots=[codex])
-        assert [r.title for r in await _collect(adapter.reconcile([]))] == ["pocket-files"]
+        assert [r.title for r in await _collect(adapter.reconcile([]))] == ["team-files"]
 
     async def test_codex_symlink_to_this_skill_is_not_a_duplicate(self, tmp_path: Path) -> None:
         # Seen on a real install: ~/.codex/skills/<name> -> ~/.claude/skills/<name>.

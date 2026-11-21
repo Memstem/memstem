@@ -365,9 +365,11 @@ class HygieneLoop:
             return
         result = apply_project_records(self.vault, self.index, plan)
         logger.info(
-            "hygiene[project_records]: wrote %d, updated %d, skipped_no_summary=%d, errors=%d",
+            "hygiene[project_records]: wrote %d, updated %d, unchanged %d, "
+            "skipped_no_summary=%d, errors=%d",
             result.written,
             result.updated,
+            result.unchanged,
             result.skipped_no_summary,
             len(result.apply_errors),
         )

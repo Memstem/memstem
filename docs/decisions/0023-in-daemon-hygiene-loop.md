@@ -15,7 +15,7 @@ Memstem v0.10 ships four hygiene tasks as one-shot CLI commands:
 
 These commands were designed to run on a cron or systemd timer, scheduled outside the daemon. In practice no scheduling layer was ever set up — the fleet has `distill-sessions` last firing on 2026-05-05 (one-shot backfill, never since), `dedup-judge` last on 2026-05-02 (backfill, never since), `importance` never run, `project-records` last on 2026-04-29.
 
-Every Memstem instance audited (Ari, E1, three UltraClaw customer containers) shows the same pattern. The ingestion + embedding pipeline works; the curation pipeline is dormant.
+Every Memstem instance audited (Atlas, host-b, three hosted customer containers) shows the same pattern. The ingestion + embedding pipeline works; the curation pipeline is dormant.
 
 ## Decision
 
@@ -106,7 +106,7 @@ The `/health` endpoint gains a `hygiene` block:
 {
   "status": "ok",
   "version": "0.11.0",
-  "vault": "/home/ubuntu/memstem-vault",
+  "vault": "/home/user/memstem-vault",
   "embedder": true,
   "hygiene": {
     "loop_enabled": true,
@@ -125,11 +125,11 @@ The `/health` endpoint gains a `hygiene` block:
 
 ## Rollout
 
-Native PM2 installs (Ari, Daymond's ultra-openclaw, Skyler's e1-new):
+Native PM2 installs (Atlas, operator-b, operator-c):
 `pipx upgrade memstem && pm2 restart memstem`. Loop starts automatically.
 
-UltraClaw customer containers (halston, ultra, sevenjade, et al.):
-The `templates/memstem/config.yaml.template` in the `ultraclaw` repo gains `hygiene: { loop_enabled: false }`. After rebuilding `ultraweb/memstem:latest` from the new image and re-running `bin/attach-memstem.sh <slug>`, customer containers still ingest and embed but do not run hygiene. When self-hosted summarization comes online, flip the customer template to `loop_enabled: true` and re-run `attach-memstem.sh`.
+Hosted customer containers (customer-a, customer-b, customer-c, et al.):
+The `templates/memstem/config.yaml.template` in the hosting repo gains `hygiene: { loop_enabled: false }`. After rebuilding `example/memstem:latest` from the new image and re-running `bin/attach-memstem.sh <slug>`, customer containers still ingest and embed but do not run hygiene. When self-hosted summarization comes online, flip the customer template to `loop_enabled: true` and re-run `attach-memstem.sh`.
 
 ## Tests
 

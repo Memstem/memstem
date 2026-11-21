@@ -3,7 +3,7 @@
 The ``sqlite-vec`` wheels on PyPI are compiled without SIMD on Linux —
 upstream's Makefile only adds ``-mavx -DSQLITE_VEC_ENABLE_AVX`` on
 Darwin x86_64 — so every KNN query computes its L2 distances with the
-scalar loop. On brads-server (280K slots x 4096 dims) an AVX build of the
+scalar loop. On main-server (280K slots x 4096 dims) an AVX build of the
 same tag cut the vector scan from 2.45 s to 1.65 s with an identical
 top-50.
 

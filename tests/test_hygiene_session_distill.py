@@ -272,11 +272,11 @@ class TestFindSessionCandidates:
             vault,
             session_id="s1",
             turns=12,
-            tags=["agent:ari", "topic:foo"],
+            tags=["agent:atlas", "topic:foo"],
             source="openclaw",
         )
         candidates, _ = find_session_candidates(vault, recency_days=None)
-        assert candidates[0].agent == "ari"
+        assert candidates[0].agent == "atlas"
 
 
 def test_find_distilled_session_ids_handles_empty_vault(vault: Vault) -> None:
@@ -435,7 +435,7 @@ class TestStaleRefresh:
 
 
 class TestDuplicateDistillations:
-    """Two distillation files linking one session (snape-server, 2026-09-25).
+    """Two distillation files linking one session (small-server, 2026-09-25).
 
     A record migrated in under its memory id (``distillations/codex/<memory-id>.md``)
     carried a ``source_read_chars: -1`` redo marker while the redo wrote the
@@ -684,7 +684,7 @@ def _make_candidate(**overrides: object) -> SessionCandidate:
         "memory_id": "mem-id",
         "title": "Title",
         "body": "Body content",
-        "tags": ["agent:ari", "home-ubuntu-woodfield-quotes"],
+        "tags": ["agent:atlas", "home-user-northwind-quotes"],
         "source": "claude-code",
         "agent": None,
         "session_id": "sess-id",
@@ -699,13 +699,13 @@ def _make_candidate(**overrides: object) -> SessionCandidate:
 
 def test_build_session_prompt_interpolates_title_tags_body() -> None:
     candidate = _make_candidate(
-        title="Woodfield Country Club e-bike proposal",
-        tags=["agent:ari", "home-ubuntu-woodfield-quotes"],
+        title="Northwind Logistics forklift proposal",
+        tags=["agent:atlas", "home-user-northwind-quotes"],
         body="**User:** can you build a proposal\n\n**Assistant:** sure",
     )
     prompt = build_session_prompt(candidate)
-    assert "Woodfield Country Club e-bike proposal" in prompt
-    assert "agent:ari, home-ubuntu-woodfield-quotes" in prompt
+    assert "Northwind Logistics forklift proposal" in prompt
+    assert "agent:atlas, home-user-northwind-quotes" in prompt
     assert "can you build a proposal" in prompt
 
 
@@ -784,10 +784,10 @@ class TestMaterializeDistillation:
         assert prov_extra.get("summarizer") == "stub"
 
     def test_inherits_tags_and_adds_distillation_marker(self) -> None:
-        candidate = _make_candidate(tags=["agent:ari", "home-ubuntu-woodfield-quotes"])
+        candidate = _make_candidate(tags=["agent:atlas", "home-user-northwind-quotes"])
         memory = materialize_distillation(candidate, summary="x", summarizer_name="stub")
-        assert "agent:ari" in memory.frontmatter.tags
-        assert "home-ubuntu-woodfield-quotes" in memory.frontmatter.tags
+        assert "agent:atlas" in memory.frontmatter.tags
+        assert "home-user-northwind-quotes" in memory.frontmatter.tags
         assert DISTILLATION_KIND_TAG in memory.frontmatter.tags
 
     def test_default_importance_is_seed(self) -> None:
@@ -803,9 +803,9 @@ class TestMaterializeDistillation:
         assert memory.frontmatter.importance == 0.95
 
     def test_agent_in_path_when_present(self) -> None:
-        candidate = _make_candidate(source="openclaw", agent="ari", session_id="xyz")
+        candidate = _make_candidate(source="openclaw", agent="atlas", session_id="xyz")
         memory = materialize_distillation(candidate, summary="x", summarizer_name="stub")
-        assert memory.path == Path("distillations/openclaw/ari/xyz.md")
+        assert memory.path == Path("distillations/openclaw/atlas/xyz.md")
 
     def test_explicit_memory_id_preserved_for_force_overwrite(self) -> None:
         candidate = _make_candidate()
@@ -834,13 +834,13 @@ class TestComputeDistillationPlan:
         assert "NoOp" in prop.skipped_reason or "empty" in prop.skipped_reason
 
     def test_stub_summarizer_produces_summaries(self, vault: Vault) -> None:
-        _write_session(vault, session_id="s1", turns=12, title="The Woodfield work")
+        _write_session(vault, session_id="s1", turns=12, title="The Northwind work")
         stub = StubSummarizer()
-        stub.set_default("## Summary\n\nWoodfield demo video work.")
+        stub.set_default("## Summary\n\nNorthwind demo video work.")
         plan = compute_distillation_plan(vault, stub, recency_days=None)
         assert len(plan.proposals) == 1
         prop = plan.proposals[0]
-        assert "Woodfield" in prop.summary
+        assert "Northwind" in prop.summary
         assert prop.summarizer_name == "stub"
         assert prop.skipped_reason is None
 
@@ -1108,7 +1108,7 @@ class TestCli:
         for sub in ("memories", "skills", "sessions", "daily", "distillations", "_meta"):
             (vault_path / sub).mkdir(parents=True, exist_ok=True)
         v = Vault(vault_path)
-        _write_session(v, session_id="cli-1", turns=12, title="Woodfield e-bike work")
+        _write_session(v, session_id="cli-1", turns=12, title="Northwind forklift work")
         # Write minimal config so cli's _load_config picks the vault path up.
         cfg = {
             "vault_path": str(vault_path),

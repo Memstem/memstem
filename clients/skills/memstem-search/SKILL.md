@@ -3,7 +3,7 @@ name: memstem-search
 slug: memstem-search
 version: 0.1.0
 homepage: https://github.com/Memstem/memstem
-description: "Search MemStem — the unified memory index across all AI agents (Ari, Claude Code, future agents). Use for any retrieval-style question: past decisions, project status, skills lookup, prior work, 'what did we decide about X', 'do we have a skill for Y', 'what did the other agent do yesterday'. This skill owns the full priority ladder (MCP → HTTP → CLI → grep) so callers do not need to remember the order."
+description: "Search MemStem — the unified memory index across all AI agents (Atlas, Claude Code, future agents). Use for any retrieval-style question: past decisions, project status, skills lookup, prior work, 'what did we decide about X', 'do we have a skill for Y', 'what did the other agent do yesterday'. This skill owns the full priority ladder (MCP → HTTP → CLI → grep) so callers do not need to remember the order."
 metadata:
   clawdbot:
     emoji: "🔎"
@@ -18,7 +18,7 @@ metadata:
 
 # MemStem Search
 
-Search MemStem — the unified memory index that contains every AI agent's memories, skills, daily logs, and session captures (Ari + Claude Code today, more later). MemStem is the only place that sees cross-agent context; grep on a single workspace cannot.
+Search MemStem — the unified memory index that contains every AI agent's memories, skills, daily logs, and session captures (Atlas + Claude Code today, more later). MemStem is the only place that sees cross-agent context; grep on a single workspace cannot.
 
 ## When to use
 
@@ -86,12 +86,12 @@ memstem search "<the args>" --top 10 --format json
 Only when steps 1–3 are all unavailable.
 
 ```bash
-grep -rli "<keyword>" ~/ari/memory/ ~/ari/MEMORY.md ~/ari/skills/*/SKILL.md
+grep -rli "<keyword>" ~/atlas/memory/ ~/atlas/MEMORY.md ~/atlas/skills/*/SKILL.md
 ```
 
-Or read known files directly: `~/ari/MEMORY.md`, today's daily log `~/ari/memory/YYYY-MM-DD.md`, a specific `SKILL.md`.
+Or read known files directly: `~/atlas/MEMORY.md`, today's daily log `~/atlas/memory/YYYY-MM-DD.md`, a specific `SKILL.md`.
 
-This rung sees only the local Ari workspace — not Claude Code session captures, not other agents' memories, not the semantic index. Note this gap when you report results so the caller knows the answer may be incomplete.
+This rung sees only the local Atlas workspace — not Claude Code session captures, not other agents' memories, not the semantic index. Note this gap when you report results so the caller knows the answer may be incomplete.
 
 ## Result format
 

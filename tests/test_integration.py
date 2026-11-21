@@ -388,7 +388,7 @@ class TestRemoveFlipclawHook:
 
 class TestClaudeMdTargetsForOpenclaw:
     def test_resolves_workspace_dir(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         ws.mkdir()
         (ws / "CLAUDE.md").write_text("# rules\n")
         targets = claude_md_targets_for_openclaw(ws)
@@ -400,7 +400,7 @@ class TestClaudeMdTargetsForOpenclaw:
         assert claude_md_targets_for_openclaw(f) == [f]
 
     def test_returns_empty_for_workspace_without_claude_md(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         ws.mkdir()
         assert claude_md_targets_for_openclaw(ws) == []
 
@@ -410,19 +410,19 @@ class TestClaudeMdTargetsForOpenclaw:
 
 class TestOpenclawConfigForWorkspace:
     def test_resolves_workspace_dir(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         ws.mkdir()
         cfg = ws / "openclaw.json"
-        cfg.write_text(json.dumps({"meta": {"name": "ari"}}))
+        cfg.write_text(json.dumps({"meta": {"name": "atlas"}}))
         assert openclaw_config_for_workspace(ws) == cfg
 
     def test_resolves_direct_openclaw_json(self, tmp_path: Path) -> None:
         cfg = tmp_path / "openclaw.json"
-        cfg.write_text(json.dumps({"meta": {"name": "ari"}}))
+        cfg.write_text(json.dumps({"meta": {"name": "atlas"}}))
         assert openclaw_config_for_workspace(cfg) == cfg
 
     def test_finds_sibling_when_passed_claude_md(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         ws.mkdir()
         cfg = ws / "openclaw.json"
         cfg.write_text(json.dumps({}))
@@ -431,7 +431,7 @@ class TestOpenclawConfigForWorkspace:
         assert openclaw_config_for_workspace(md) == cfg
 
     def test_returns_none_for_workspace_without_openclaw_json(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ari"
+        ws = tmp_path / "atlas"
         ws.mkdir()
         assert openclaw_config_for_workspace(ws) is None
 
@@ -448,7 +448,7 @@ class TestRegisterOpenclawMcpServer:
     def _seed_config(self, path: Path, *, mcp: dict[str, Any] | None = None) -> dict[str, Any]:
         """Write an openclaw.json with realistic top-level structure plus optional mcp block."""
         data: dict[str, Any] = {
-            "meta": {"name": "ari", "version": 1},
+            "meta": {"name": "atlas", "version": 1},
             "agents": {"main": {"model": "opus[1m]"}},
             "tools": {"web": {"enabled": True}},
         }
@@ -465,7 +465,7 @@ class TestRegisterOpenclawMcpServer:
         data = json.loads(cfg.read_text())
         assert data["mcp"]["servers"]["memstem"] == DEFAULT_OPENCLAW_MCP_SERVER_ENTRY
         # Other top-level keys are preserved.
-        assert data["meta"]["name"] == "ari"
+        assert data["meta"]["name"] == "atlas"
         assert data["agents"]["main"]["model"] == "opus[1m]"
         assert data["tools"]["web"]["enabled"] is True
 

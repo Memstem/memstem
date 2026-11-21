@@ -24,7 +24,7 @@ Because the loser's hash row was gone, the reconcile skip never applied, so
 the fight repeated on every pass. The canonical markdown for a session could
 hold a subagent's transcript instead of the session's own.
 
-Measured on brads-server, 2026-09-26: 743 subagent transcripts (368 MB)
+Measured on main-server, 2026-09-26: 743 subagent transcripts (368 MB)
 beside 801 main sessions, 597 `record_map` entries pointing at displaced
 memories, and 55 sessions (2,705 chunks) fully re-embedded within two
 minutes of a restart. Per-chunk reuse (ADR 0045) cannot help, because the
@@ -70,7 +70,7 @@ rollout, whose **first** `session_meta` carries the thread's own `id`,
 `thread_source: "subagent"` and `parent_thread_id`. The rollout then
 replays the parent's history, including the parent's `session_meta`. The
 adapter kept the *last* `session_meta` id, so the thread was filed under
-the parent's `sessions/<id>.md`. On brads-server: 603 subagent rollouts
+the parent's `sessions/<id>.md`. On main-server: 603 subagent rollouts
 (427 MB) out of 2,785; 394 of them owned a live memory; every restart
 re-processed ~800 Codex records, and one restart dropped ~9K vectors.
 

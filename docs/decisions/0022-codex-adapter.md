@@ -6,7 +6,7 @@ Status: Accepted
 ## Context
 
 Memstem ingests memories, sessions, and skills from each AI client that
-drops files on disk. Adapters exist for Claude Code and OpenClaw / Ari.
+drops files on disk. Adapters exist for Claude Code and OpenClaw.
 OpenAI's Codex CLI is the next first-class client: it stores rich
 session logs and a growing user-skills directory, and — as of the
 0.130 series — the Codex desktop app can launch the remote `codex`
@@ -79,7 +79,7 @@ Three record shapes:
    Metadata carries `session_id` (from `session_meta.payload.id`),
    `cwd`, `turn_count`, `cli_version`, `model_provider`, and ISO
    `created` / `updated` timestamps. Tags: a project tag derived from
-   the slugified `cwd` (e.g. `/home/ubuntu/memstem` → `home-ubuntu-memstem`)
+   the slugified `cwd` (e.g. `/home/user/memstem` → `home-user-memstem`)
    so Codex and Claude Code sessions for the same project group
    together in search.
 
@@ -144,7 +144,7 @@ land cleanly. Operators apply the templates by hand for now.
   Codex behavior. The "zero AI cooperation" property holds — same
   reason this adapter design works against vendor churn.
 - Cross-client project recall improves: searching for work in
-  `/home/ubuntu/memstem` returns both the Claude Code and Codex
+  `/home/user/memstem` returns both the Claude Code and Codex
   sessions for that project because they share a derived project tag.
 - Codex configured with the Memstem MCP server can read every
   ingested memory — including Claude Code sessions, OpenClaw notes,

@@ -93,7 +93,7 @@ def test_discovery_matches_names_and_prunes(tmp_path: Path) -> None:
 def test_record_carries_project_and_date(tmp_path: Path) -> None:
     root = tmp_path / "projects"
     path = write(
-        root / "techpro-ops" / "docs" / "HANDOFF-2026-11-13-new-tab-and-windows.md",
+        root / "acme-ops" / "docs" / "HANDOFF-2026-11-13-new-tab-and-windows.md",
         "---\ntags: [ops]\n---\n" + NOTE,
         mtime=NOON + 3 * 86400,
     )
@@ -101,26 +101,26 @@ def test_record_carries_project_and_date(tmp_path: Path) -> None:
     record = records(adapter(root))[str(path)]
 
     assert record.source == "handoff"
-    assert record.title == "techpro-ops handoff 2026-11-13: New tab and windows"
-    assert record.tags == ["ops", "handoff", "project:techpro-ops"]
+    assert record.title == "acme-ops handoff 2026-11-13: New tab and windows"
+    assert record.tags == ["ops", "handoff", "project:acme-ops"]
     assert record.metadata["type"] == "memory"
     assert record.metadata["created"] == "2026-11-13T00:00:00+00:00"
     assert record.metadata["updated"] == "2026-11-16T12:00:00+00:00"
     head, _, rest = record.body.partition("\n\n")
-    assert head == f"Handoff note for project techpro-ops, dated 2026-11-13. Source: {path}"
+    assert head == f"Handoff note for project acme-ops, dated 2026-11-13. Source: {path}"
     assert rest == NOTE.strip()
 
 
 def test_undated_name_uses_modification_date_and_falls_back_to_stem(tmp_path: Path) -> None:
     root = tmp_path / "projects"
     write(root / "HANDOFF.md", "No heading here, only prose.")
-    write(root / "sinosure" / "handoff" / "Notes_Handoff_20260819.md", "Body without heading.")
+    write(root / "westwind" / "handoff" / "Notes_Handoff_20260819.md", "Body without heading.")
 
     titles = sorted(r.title or "" for r in records(adapter(root)).values())
 
     assert titles == [
         "projects handoff 2026-11-13: HANDOFF",
-        "sinosure handoff 2026-08-19: Notes_Handoff_20260819",
+        "westwind handoff 2026-08-19: Notes_Handoff_20260819",
     ]
 
 

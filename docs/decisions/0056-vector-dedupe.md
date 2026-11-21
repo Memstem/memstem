@@ -7,7 +7,7 @@
 ## Context
 
 Every vector search is an exact brute-force KNN over the whole vec0 table,
-so its cost is the table's size. On brads-server (Ari vault, 2026-11-17
+so its cost is the table's size. On main-server (Atlas vault, 2026-11-17
 sizing) the table holds **224,472 vectors, of which only 144,405 are
 distinct**: 80,067 (36%) are byte-for-byte copies of another row, and the
 largest group has 1,517 copies. The July prototype measured the same share
@@ -73,7 +73,7 @@ the same vector as an **alias** of that row.
 
 ## Consequences
 
-- Measured 2026-11-18 on a scratch copy of the brads-server index (this
+- Measured 2026-11-18 on a scratch copy of the main-server index (this
   branch's code, nothing live touched): 226,659 rows → **146,280 rows +
   80,379 aliases**; vector chunks 3.76 → **2.40 GB**; db file 5.0 → 3.65 GB
   after VACUUM. KNN k=50 **cold 15.7 → 10.0 s, warm 0.88 → 0.58 s**. For 20

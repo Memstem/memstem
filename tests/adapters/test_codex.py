@@ -27,7 +27,7 @@ from memstem.adapters.codex import (
 
 def _session_meta_line(
     session_id: str = "abc12345-0000-0000-0000-000000000000",
-    cwd: str = "/home/ubuntu/memstem",
+    cwd: str = "/home/user/memstem",
     cli_version: str = "0.130.0",
     timestamp: str = "2026-05-16T15:00:00.000Z",
 ) -> dict[str, Any]:
@@ -105,7 +105,7 @@ def _basic_session(path: Path, **meta_kwargs: Any) -> Path:
             _session_meta_line(**meta_kwargs),
             _message_line(
                 "user",
-                "<environment_context>\n  <cwd>/home/ubuntu</cwd>\n</environment_context>",
+                "<environment_context>\n  <cwd>/home/user</cwd>\n</environment_context>",
             ),
             _message_line("developer", "<permissions instructions>\nbig boilerplate"),
             _message_line("user", "what is 2+2"),
@@ -120,7 +120,7 @@ async def _drain(stream: AsyncGenerator[MemoryRecord, None]) -> list[MemoryRecor
 
 class TestSlugifyCwd:
     def test_basic(self) -> None:
-        assert _slugify_cwd("/home/ubuntu/memstem") == "home-ubuntu-memstem"
+        assert _slugify_cwd("/home/user/memstem") == "home-user-memstem"
 
     def test_root_only(self) -> None:
         assert _slugify_cwd("/") == ""
@@ -129,7 +129,7 @@ class TestSlugifyCwd:
         assert _slugify_cwd("") == ""
 
     def test_special_chars_collapsed(self) -> None:
-        assert _slugify_cwd("/home/ubuntu/my project (test)") == "home-ubuntu-my-project-test"
+        assert _slugify_cwd("/home/user/my project (test)") == "home-user-my-project-test"
 
 
 class TestExtractMessageText:
@@ -246,7 +246,7 @@ class TestParseSessionFile:
         parsed = _parse_session_file(path)
         assert parsed is not None
         assert parsed["session_id"] == "abc12345-0000-0000-0000-000000000000"
-        assert parsed["cwd"] == "/home/ubuntu/memstem"
+        assert parsed["cwd"] == "/home/user/memstem"
         assert parsed["cli_version"] == "0.130.0"
         assert parsed["model_provider"] == "openai"
 
@@ -332,9 +332,9 @@ class TestSessionToRecord:
         assert record.ref == str(path)
         assert record.metadata["type"] == "session"
         assert record.metadata["session_id"] == "abc12345-0000-0000-0000-000000000000"
-        assert record.metadata["cwd"] == "/home/ubuntu/memstem"
+        assert record.metadata["cwd"] == "/home/user/memstem"
         assert record.metadata["cli_version"] == "0.130.0"
-        assert record.tags == ["home-ubuntu-memstem"]
+        assert record.tags == ["home-user-memstem"]
 
     def test_empty_body_returns_none(self, tmp_path: Path) -> None:
         path = _write_session(
@@ -563,13 +563,13 @@ class TestSubagentRollouts:
     """ADR 0046: a Codex subagent/forked rollout replays its parent's
     session_meta after its own; only the first one describes the file."""
 
-    PARENT = "01a07d98-f49b-7f13-8139-57d41cd8dfd3"
-    CHILD = "01a07d99-701f-7e21-8e69-1ef43a94dffe"
+    PARENT = "01a1c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d"
+    CHILD = "01a1c2d4-5f60-7b7c-9d0e-1f2a3b4c5d6e"
 
     def _child_rollout(self, path: Path, thread_source: str) -> Path:
         own = _session_meta_line(session_id=self.CHILD, cwd="/tmp/council")
         own["payload"].update({"thread_source": thread_source, "parent_thread_id": self.PARENT})
-        parent = _session_meta_line(session_id=self.PARENT, cwd="/home/ubuntu")
+        parent = _session_meta_line(session_id=self.PARENT, cwd="/home/user")
         return _write_session(
             path,
             [

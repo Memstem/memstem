@@ -27,7 +27,7 @@ from memstem.core.storage import Vault
 
 
 def _record(
-    body: str = "Some legitimate memory content about Brad's project.",
+    body: str = "Some legitimate memory content about the user's project.",
     *,
     source: str = "openclaw",
     ref: str = "/tmp/test.md",
@@ -140,11 +140,11 @@ class TestIsToolDump:
             [
                 "[tool_use: Bash] running command number one across many lines",
                 "[tool_result] /var/log/syslog with output that is long",
-                "[tool_use: Read] reading file at path /home/ubuntu/memstem/x",
+                "[tool_use: Read] reading file at path /home/user/memstem/x",
                 "[tool_result] file contents that go on for a while as well",
                 "[tool_use: Bash] running command number two across many lines",
                 "[tool_result] /var/log/syslog with more output as well too",
-                "[tool_use: Read] reading another file at /home/ubuntu/y/z",
+                "[tool_use: Read] reading another file at /home/user/y/z",
                 "[tool_result] more file contents that go on for a while too",
             ]
         )
@@ -248,20 +248,20 @@ class TestIsTransientTask:
 
 class TestIsAutomationLog:
     def test_heartbeat_path(self) -> None:
-        assert is_automation_log("/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md") is True
+        assert is_automation_log("/home/user/atlas/agents/main/heartbeat/2026-04-27.md") is True
 
     def test_monitoring_path(self) -> None:
         assert is_automation_log("/var/log/monitoring/check.md") is True
 
     def test_pm2_logs_path(self) -> None:
-        assert is_automation_log("/home/ubuntu/.pm2/logs/memstem-out-0.log") is True
+        assert is_automation_log("/home/user/.pm2/logs/memstem-out-0.log") is True
 
     def test_cron_logs_path(self) -> None:
         assert is_automation_log("/var/cron/logs/nightly.md") is True
 
     def test_legitimate_path_not_caught(self) -> None:
-        assert is_automation_log("/home/ubuntu/ari/MEMORY.md") is False
-        assert is_automation_log("/home/ubuntu/ari/skills/deploy/SKILL.md") is False
+        assert is_automation_log("/home/user/atlas/MEMORY.md") is False
+        assert is_automation_log("/home/user/atlas/skills/deploy/SKILL.md") is False
 
     def test_empty_ref(self) -> None:
         assert is_automation_log("") is False
@@ -271,7 +271,7 @@ class TestNoiseFilterTagTransient:
     def test_automation_log_path_tagged_transient(self) -> None:
         rec = _record(
             body="some heartbeat snapshot content",
-            ref="/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md",
+            ref="/home/user/atlas/agents/main/heartbeat/2026-04-27.md",
         )
         decision = noise_filter(rec)
         assert decision.action is NoiseAction.TAG_TRANSIENT
@@ -312,7 +312,7 @@ class TestPipelineTagTransient:
         memory = pipe.process(
             _record(
                 body="agent reported status=ok",
-                ref="/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md",
+                ref="/home/user/atlas/agents/main/heartbeat/2026-04-27.md",
             )
         )
         assert memory is not None
@@ -334,7 +334,7 @@ class TestIsBootEcho:
     def test_match_drops(self, tmp_path: Path) -> None:
         # Set up a fake CLAUDE.md, hash it, then verify a record with that
         # exact body matches.
-        prompt_body = "# Brad's CLAUDE.md\nUse the project conventions documented here.\n"
+        prompt_body = "# The user's CLAUDE.md\nUse the project conventions documented here.\n"
         claude_md = tmp_path / "CLAUDE.md"
         claude_md.write_text(prompt_body)
         hashes = build_boot_echo_hashes([tmp_path])
@@ -579,9 +579,9 @@ class TestPipelineIntegration:
 # --- ADR 0049: OpenClaw scheduled-job sessions ---
 
 _CRON_BODY = (
-    "**User:** [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat — overnight "
-    "hourly email/calendar check] Run Ari's full heartbeat checklist from HEARTBEAT.md.\n\n"
-    "**Assistant:** Calendars clear; nothing to report."
+    "**User:** [cron:7c4e19b2-3a5f-4d81-9e6c-0b2f8a5d1e47 Atlas Inbox Sweep — morning "
+    "summary of new mail] Run Atlas's inbox sweep checklist.\n\n"
+    "**Assistant:** Inbox clear; nothing to report."
 )
 
 
@@ -594,14 +594,14 @@ def _session(
 ) -> MemoryRecord:
     return MemoryRecord(
         source=source,
-        ref="/home/ubuntu/ari/agents/main/agent/openclaw-agent.sqlite#session=abc",
+        ref="/home/user/atlas/agents/main/agent/openclaw-agent.sqlite#session=abc",
         title=body[:80],
         body=body,
         tags=[],
         metadata={
             "type": type_,
             "created": created or "2026-04-27T10:00:00+00:00",
-            "session_id": "d8bc35c3-f25e-4d5d-b1e0-6503e3c6d5b8",
+            "session_id": "2c6f0a93-8e41-4b7d-9f25-d1a8b3e60c74",
         },
     )
 
@@ -633,7 +633,7 @@ class TestOpenClawScheduledSession:
         "body",
         [
             # a real chat that only mentions a cron job
-            "**User:** why did [cron:d23aa873-9cd3-49de-ba33-314a9f1e8cad Ari Full Heartbeat] fail?",
+            "**User:** why did [cron:7c4e19b2-3a5f-4d81-9e6c-0b2f8a5d1e47 Atlas Inbox Sweep] fail?",
             "**User:** Please look at the heartbeat cron job tonight.",
             # marker without a uuid
             "**User:** [cron:nightly] run the report",

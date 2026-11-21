@@ -23,7 +23,7 @@ land in a path an adapter watches.
 reusable procedure, and writing a `SKILL.md` from it — is a different
 problem. Other systems the maintainer has used in the past have included it:
 
-- **FlipClaw** (`~/ari/toolkit/flipclaw/scripts/skill-extractor.py`,
+- **FlipClaw** (`~/atlas/toolkit/flipclaw/scripts/skill-extractor.py`,
   ~1,440 lines) — a session-end pipeline that gates on local
   heuristics, classifies via a nano LLM, generates the SKILL.md via
   a mini LLM, dedups against existing skills, and supports an UPDATE

@@ -241,7 +241,7 @@ def test_model_tags_are_not_project_names() -> None:
 
     assert not _is_project_tag("model:openrouter/vendor/model")
     assert not _is_project_tag("provider:openrouter")
-    assert _is_project_tag("home-ubuntu-example")
+    assert _is_project_tag("home-user-example")
 
 
 def test_malformed_session_header_does_not_block_valid_sessions(db: Database) -> None:

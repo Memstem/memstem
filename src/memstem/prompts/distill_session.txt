@@ -6,9 +6,9 @@ and your summary is what they will find.
 Goals (in this order):
 
 1. Make the summary directly findable by natural-language searches
-   ABOUT the work. If the session was about a Woodfield Country Club
-   e-bike video, the summary should contain the words "Woodfield",
-   "Country Club", "e-bike", "video" — and any other entities,
+   ABOUT the work. If the session was about a Northwind Logistics
+   walkthrough video, the summary should contain the words "Northwind",
+   "Logistics", "walkthrough", "video" — and any other entities,
    organizations, or specific deliverables mentioned.
 
 2. Capture the irreplaceable signal: decisions made, deliverables

@@ -1,0 +1,29 @@
+# gitleaks configuration: the default rule set plus exact exemptions for fake test values.
+[extend]
+useDefault = true
+
+# Made-up API keys in the CLI and shadow-run tests, there to exercise key handling and
+# redaction. None is a real credential.
+#
+# Each entry exempts only the listed values, only in that file and only for the rule that
+# reports them, so a real key pasted into one of these files later is still reported. (A
+# top-level [[allowlists]] block with `paths` skips the whole file whatever its other
+# conditions, so the entries sit on the rule instead; gitleaks adds them to its default rule
+# of the same id.) Paths are written `(^|/)tests/...` so the scan works from the repository
+# root and from an absolute path. To add a fixture: run the scan, then add its exact value
+# under the rule it was reported for, anchored with ^ and $.
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "CLI tests: made-up OpenAI-style keys read from the environment"
+condition = "AND"
+paths = ['''(^|/)tests/test_cli\.py$''']
+regexes = ['''^sk-from-env-1234567890$''', '''^sk-env-key-9876543210$''']
+
+[[rules.allowlists]]
+description = "Shadow-run test: a made-up key"
+condition = "AND"
+paths = ['''(^|/)tests/test_jev_shadow\.py$''']
+regexes = ['''^abcd1234efgh$''']

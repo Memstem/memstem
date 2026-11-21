@@ -13,11 +13,11 @@ row for the memory, insert one row per chunk. Two costs follow.
 **Dead slots.** vec0 never reuses a deleted slot until its whole 1024-slot
 chunk is empty, so every re-embed leaves one dead slot per old chunk. Live
 agent sessions are rewritten on every settle and are re-embedded whole each
-time. On brads-server on 2026-09-26, 468 re-embeds between 09:00Z and 19:00Z
+time. On main-server on 2026-09-26, 468 re-embeds between 09:00Z and 19:00Z
 wrote ~25.8K chunks (22.5K from sessions; one 1,910-chunk memory file alone),
 and occupancy fell 0.83 → 0.755, about 2.6K dead slots an hour. Every KNN
 scan reads every slot, dead or alive, until the nightly compaction gate
-(ADR 0041) rebuilds the table. snape-server showed the same thing on
+(ADR 0041) rebuilds the table. small-server showed the same thing on
 2026-09-11: 1,783 dead slots from one conversation in three hours (noted in
 ADR 0041's consequences, never built).
 

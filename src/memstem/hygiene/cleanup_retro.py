@@ -1,6 +1,6 @@
 """Retroactive cleanup pass for the existing vault (W3, ADR 0012 addendum).
 
-Today's pipeline catches new duplicates and new noise. Brad's live
+Today's pipeline catches new duplicates and new noise. The maintainer's live
 audit (2026-04-29) found ~20% of the vault is byte-hash duplicate
 damage from re-ingestion that pre-dates the Layer 1 dedup PR. This
 module applies the *already-shipped* dedup logic and noise rules to

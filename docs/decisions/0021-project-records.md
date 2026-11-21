@@ -6,20 +6,20 @@ Status: Accepted
 ## Context
 
 The recall failure that motivated ADR 0020 has a second dimension:
-not only does an individual session about Woodfield Country Club's
-e-bike system rank weakly, but the *project as a whole* — work that
+not only does an individual session about Northwind Logistics'
+forklift system rank weakly, but the *project as a whole* — work that
 spans multiple sessions over weeks, with multiple deliverables — has
 no record at the right grain.
 
 A query like *"the project where we revised the aerial-style demo
 video"* should land on a single record that says "this is the
-Woodfield project; it covers e-bike + golf cart tracking; here are
+Northwind project; it covers forklift + loading dock tracking; here are
 the sessions, the summaries, the videos we delivered." Today the
 information is scattered across:
 
 - 4+ raw Claude Code session JSONLs, ranked weakly because
   transcripts are noisy
-- Daily logs that mention Woodfield in passing
+- Daily logs that mention Northwind in passing
 - Google Drive uploads (deliverables) that aren't in the vault at all
 
 Once ADR 0020 lands the session distillations, the per-session signal
@@ -45,8 +45,8 @@ two session records**, where:
 
 - The tag is the encoded directory under `~/.claude/projects/`,
   already extracted by `ClaudeCodeAdapter` and stored in each
-  session's `tags` (e.g. `home-ubuntu-woodfield-quotes` for sessions
-  in `~/.claude/projects/-home-ubuntu-woodfield-quotes/`).
+  session's `tags` (e.g. `home-user-northwind-quotes` for sessions
+  in `~/.claude/projects/-home-user-northwind-quotes/`).
 - "At least two sessions" filters out one-shot / exploratory CWDs
   whose distillation is already enough.
 
@@ -54,16 +54,16 @@ Why Claude Code project tags as the seed signal:
 
 - They're free — already in the vault, no new extraction needed.
 - They map cleanly to the user's mental model: the maintainer opens
-  `~/woodfield-quotes/`, every session inside that directory is "the
-  Woodfield project."
+  `~/northwind-quotes/`, every session inside that directory is "the
+  Northwind project."
 - They're conservative: a session in a different CWD won't merge into
   the wrong project even if the topics overlap.
 
 What v1 does *not* try to do:
 
 - Merge multiple project tags that are conceptually one project (e.g.
-  `home-ubuntu-woodfield-quotes` + `home-ubuntu-video-projects` for
-  related Woodfield video work). The user can do this manually by
+  `home-user-northwind-quotes` + `home-user-video-projects` for
+  related Northwind video work). The user can do this manually by
   editing the project record's `tags` field; future ADRs may add
   semi-automatic merging.
 - Identify projects across OpenClaw memories. OpenClaw stores memory
@@ -78,7 +78,7 @@ What v1 does *not* try to do:
 
 Project records land at `vault/memories/projects/<slug>.md`,
 where `<slug>` is the lowercased Claude Code project tag (e.g.
-`home-ubuntu-woodfield-quotes`).
+`home-user-northwind-quotes`).
 
 The frontmatter:
 
@@ -86,21 +86,21 @@ The frontmatter:
 ---
 id: <uuid>
 type: project
-title: "Woodfield Country Club — e-bike & golf cart tracking system"
+title: "Northwind Logistics — forklift & loading dock tracking system"
 created: 2026-04-21T00:00:00Z   # earliest source session
 updated: 2026-05-01T03:00:00Z   # most recent source session or rerun
 source: hygiene-worker
 provenance:
   source: hygiene-worker
-  ref: "project:home-ubuntu-woodfield-quotes"
+  ref: "project:home-user-northwind-quotes"
   ingested_at: 2026-05-01T03:00:00Z
 links:
-  - "memory://sessions/b7972233-e434-42fb-b55a-1736bd17e211"
-  - "memory://sessions/abc1234-e434-42fb-b55a-…"
-  - "memory://distillations/claude-code/b7972233-…"
+  - "memory://sessions/5e1d8c47-2b9a-4f63-8d10-a7c3e9f2b6d4"
+  - "memory://sessions/9a0b7e12-6c3d-4f58-…"
+  - "memory://distillations/claude-code/5e1d8c47-…"
   - "memory://distillations/claude-code/abc1234-…"
 tags:
-  - "home-ubuntu-woodfield-quotes"
+  - "home-user-northwind-quotes"
   - "project:claude-code"
 importance: 0.85
 ---
@@ -138,6 +138,24 @@ that's the whole point.
 
 The body-hash check uses the same `body_hash` column the embed
 pipeline writes. We don't recompute hashes — just read them.
+
+**As implemented (amended 2026-11).** The writer first shipped
+without this check: it called the summarizer for every project on
+every run and relied on the summarizer cache, keyed on the full
+rendered prompt, to skip unchanged ones. Because the key included the
+template's wording, any wording edit made every project miss the
+cache and regenerate. The check is now an input hash stored on the
+record, `provenance.input_hash`: SHA-256 over the values substituted
+into the template (tag, session count, input type, the source
+sections), the summarizer name and `PROJECT_PROMPT_VERSION`
+(`hygiene/project_records.py`), but not the template text. When it
+matches, the body is kept and no call is made. A record written
+before the field existed is kept when it links exactly the current
+sources, its body is a cached output of the same summarizer, and no
+source was updated after that output was cached; the next write
+stamps the hash. Bump `PROJECT_PROMPT_VERSION` when a template change
+is meant to change the records; leave it for wording-only edits.
+`--force` skips both the hash and the cache.
 
 ### Manual override
 
@@ -181,8 +199,8 @@ distillations (0.8), to reflect that they're the highest-value record
 for a project-shaped query. The existing alpha=0.2 multiplier
 handles the search-time effect; no new search code.
 
-A direct match on a project record (title contains "Woodfield") will
-clearly outrank any specific session about Woodfield. A vec-only hit
+A direct match on a project record (title contains "Northwind") will
+clearly outrank any specific session about Northwind. A vec-only hit
 where multiple records cluster around the project topic still has the
 project record floating above the raw sessions.
 
@@ -258,10 +276,10 @@ writer, in three sequential PRs.
 
 - "What did we work on for X" gets a single, retrieval-shaped record
   that aggregates the session-level work — directly addressing the
-  Woodfield recall failure.
+  Northwind recall failure.
 - Project records improve continuity across sessions: an agent
-  starting a fresh session about Woodfield can `memstem_search
-  "Woodfield project"` and get the rollup, links to past
+  starting a fresh session about Northwind can `memstem_search
+  "Northwind project"` and get the rollup, links to past
   distillations, accumulated decisions, all in one hit.
 - Body is regenerable: if the LLM gets a project's framing wrong,
   re-running with `--force` (or `manual: true` for permanent
@@ -278,7 +296,7 @@ writer, in three sequential PRs.
   fields always tie back to source sessions; the user can edit and
   set `manual: true` if the LLM gets it wrong.
 - Project tags don't always reflect projects. A user with one giant
-  `home-ubuntu` directory holding many unrelated session JSONLs would
+  `home-user` directory holding many unrelated session JSONLs would
   end up with one giant "project" record. Mitigation: that's already
   a poorly-organized vault; the recall plan addresses it via
   per-project subdirectories, not via the project record writer.
@@ -294,8 +312,8 @@ writer, in three sequential PRs.
   project records. v1 doesn't enforce; documentation suggests
   running session distillation first for best results.
 - *Project tag normalization.* The encoded directory tag preserves
-  characters like `-home-ubuntu-…`. Should the slug strip the leading
-  `home-ubuntu-`? v1: no — keep the tag as-is so search by raw tag
+  characters like `-home-user-…`. Should the slug strip the leading
+  `home-user-`? v1: no — keep the tag as-is so search by raw tag
   works. The LLM-extracted `title` provides the human-readable name.
 
 ## References

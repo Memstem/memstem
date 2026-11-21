@@ -24,7 +24,7 @@ That distinction is invisible for a user who launches from inside each repo, and
 fatal for one who launches from `$HOME` and navigates — a pattern that any
 "pick a project first, then work in it" instruction produces. On the vault that
 surfaced this, **625 of 633 session transcripts carried the single tag
-`home-ubuntu`**, spanning roughly forty unrelated projects.
+`home-user`**, spanning roughly forty unrelated projects.
 
 The damage is not limited to search filtering. ADR 0021 defines a project as
 "a Claude Code project tag with ≥ 2 sessions" and aggregates each into a
@@ -79,7 +79,7 @@ back to the launch directory.
 Rejected: **normalizing every candidate to its enclosing project root.**
 It reads as the more principled version of rule 5 and is strictly worse:
 a workspace that is itself a repo but contains independent project
-directories (`~/ari` with `.git` and `~/ari/projects/*` beneath it) would
+directories (`~/atlas` with `.git` and `~/atlas/projects/*` beneath it) would
 collapse all of them back into one tag. Measured on the motivating vault,
 that variant cut 68 tags to 56 and re-merged four distinct projects into
 their parent — reintroducing the bug for a third of them. Rule 5 only ever
@@ -92,7 +92,7 @@ entries against 3 for the project actually worked in — because orientation,
 planning, and cross-cutting commands run before and between the `cd`. Excluding
 the launch directory before ranking is the whole point; a plain mode does not.
 
-Tags keep their existing encoded shape (`home-ubuntu-projects-foo`), so ADR 0021
+Tags keep their existing encoded shape (`home-user-projects-foo`), so ADR 0021
 slugs, vault filenames under `memories/projects/`, and any saved query continue
 to work unchanged.
 
@@ -118,8 +118,8 @@ old rule got wrong.
 
 **Directories deeper than the project root can still tag separately** when the
 launch directory is a hub. A session launched from `~` and run entirely in
-`projects/tpv-cloud/api` tags as that path, not as `tpv-cloud` — 6 of 602
-transcripts in the observed vault. Resolving this needs a notion of where project
+`projects/example-app/api` tags as that path, not as `example-app` — about one
+transcript in a hundred in the vault we measured. Resolving this needs a notion of where project
 roots live for arbitrary hub layouts, which is per-installation config; deferred
 until there is evidence it matters. It is a strictly smaller error than the one
 being fixed: a real subdirectory rather than an unrelated project.

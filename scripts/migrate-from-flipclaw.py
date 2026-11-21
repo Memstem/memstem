@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot migration from FlipClaw / Ari into a Memstem vault.
+"""One-shot migration from FlipClaw / OpenClaw into a Memstem vault.
 
 Thin wrapper that delegates to `memstem.migrate.app`. See the module
 docstring there for behavior details.

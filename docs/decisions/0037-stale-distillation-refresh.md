@@ -21,7 +21,7 @@ session's transcript continuously, so a long-running or reopened
 session diverges from its one-shot summary — and because
 distillations are deliberately boosted in search (importance seed
 0.8 plus the per-type weight, per ADR 0020), the *stale summary
-outranks the fresh transcript*. A user (Brad Snape, 2026-08-24)
+outranks the fresh transcript*. A customer (2026-08-24)
 independently diagnosed exactly this from observed recall lapses:
 the summary is written once, nothing ever asks "has enough new
 dialogue happened?" a second time.

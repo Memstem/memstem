@@ -292,7 +292,7 @@ class SearchConfig(BaseModel):
     the daemon / MCP / CLI search path. ``None`` (default) disables MMR —
     the RRF + importance order is final. A float in ``[0, 1]`` activates
     the diversifier: ``0.7`` is the literature default, ``0.5`` trades a
-    little relevance for more topic spread (the value validated on Brad's
+    little relevance for more topic spread (the value validated on the maintainer's
     corpus), ``1.0`` reduces to identity. See :meth:`Search.search`."""
 
     rerank_top_n: int | None = Field(default=None, ge=1)
@@ -619,7 +619,7 @@ class OpenClawAdapterConfig(BaseModel):
     `agent:<tag>`."""
 
     shared_files: list[Path] = Field(default_factory=list)
-    """Agent-agnostic files (e.g. `~/ari/HARD-RULES.md`). Emitted with a
+    """Agent-agnostic files (e.g. `~/atlas/HARD-RULES.md`). Emitted with a
     `shared` tag instead of an `agent:*` tag."""
 
     scheduled_session_ttl_days: int | None = Field(default=None, ge=0)

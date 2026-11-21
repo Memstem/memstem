@@ -88,8 +88,8 @@ class TestSelectPassages:
     def test_matches_pilot_selector(self) -> None:
         rng = random.Random(7)
         vocab = [
-            "memstem", "jev", "rerank", "gateway", "stop-sign", "Oaks", "pm2", "zoho",
-            "quote", "template", "the", "and", "ari", "deploy", "rollback", "ß", "naïve",
+            "memstem", "jev", "rerank", "gateway", "stop-sign", "warehouse", "pm2", "crm",
+            "quote", "template", "the", "and", "atlas", "deploy", "rollback", "ß", "naïve",
         ]  # fmt: skip
         mismatches = 0
         for trial in range(300):
@@ -117,7 +117,7 @@ class TestSelectPassages:
 class TestRedaction:
     def test_common_secret_shapes(self) -> None:
         text = (
-            "tsql -S host -U damon -P 'hunter22x' -D db\n"
+            "tsql -S host -U dbuser -P 'hunter22x' -D db\n"
             "password: s3cretvalue\napi_key=abcd1234efgh\n"
             "https://user:pa55word@example.com/x\nsk-or-v1-" + "a" * 30
         )
@@ -381,7 +381,7 @@ class TestJevShadowRun:
             ("memstem watchdog liveness probe", 1, ["__watchdog__"]),
             ("normal question here", 10, ["__watchdog__"]),
             ("normal question here", 2, None),
-            ("what is the MOM password", 10, None),
+            ("what is the router admin password", 10, None),
             ("   ", 10, None),
         ],
     )

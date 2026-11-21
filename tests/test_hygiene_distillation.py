@@ -105,7 +105,7 @@ class TestTopicClusters:
         # `agent:*` tags share across every memory in an agent's
         # workspace. We deliberately don't cluster on them.
         for i in range(8):
-            _make_memory(body=f"r{i}", vault=vault, tags=["agent:ari"])
+            _make_memory(body=f"r{i}", vault=vault, tags=["agent:atlas"])
         assert find_distillation_candidates(vault) == []
 
     def test_multiple_topics_each_eligible(self, vault: Vault) -> None:
@@ -127,13 +127,13 @@ class TestDailyWeekClusters:
                 body=f"daily {i}",
                 vault=vault,
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 created=base.replace(day=base.day + i),
             )
         candidates = find_distillation_candidates(vault)
-        # Expect one cluster: daily:ari/2026-W17
+        # Expect one cluster: daily:atlas/2026-W17
         cluster_ids = {c.cluster_id for c in candidates}
-        assert any(cid.startswith("daily:ari/2026-W") for cid in cluster_ids)
+        assert any(cid.startswith("daily:atlas/2026-W") for cid in cluster_ids)
 
     def test_daily_logs_split_across_weeks_dont_combine(self, vault: Vault) -> None:
         # Three logs in week 17, three in week 18 — neither hits 5.
@@ -142,7 +142,7 @@ class TestDailyWeekClusters:
                 body="x",
                 vault=vault,
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 created=datetime(2026, 4, d, 9, 0, 0, tzinfo=UTC),
             )
         for d in (28, 29, 30):
@@ -150,7 +150,7 @@ class TestDailyWeekClusters:
                 body="y",
                 vault=vault,
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 created=datetime(2026, 4, d, 9, 0, 0, tzinfo=UTC),
             )
         # No cluster of >=5 in any single week.
@@ -158,7 +158,7 @@ class TestDailyWeekClusters:
         assert all(not c.cluster_id.startswith("daily:") for c in candidates)
 
     def test_daily_logs_separated_by_agent(self, vault: Vault) -> None:
-        # Five for agent ari, five for agent sarah — both clusters
+        # Five for agent atlas, five for agent vega — both clusters
         # should appear separately.
         base = datetime(2026, 4, 20, 9, 0, 0, tzinfo=UTC)
         for i in range(5):
@@ -166,7 +166,7 @@ class TestDailyWeekClusters:
                 body=f"a{i}",
                 vault=vault,
                 type_="daily",
-                tags=["agent:ari"],
+                tags=["agent:atlas"],
                 created=base.replace(day=base.day + i),
             )
         for i in range(5):
@@ -174,14 +174,14 @@ class TestDailyWeekClusters:
                 body=f"s{i}",
                 vault=vault,
                 type_="daily",
-                tags=["agent:sarah"],
+                tags=["agent:vega"],
                 created=base.replace(day=base.day + i),
             )
         candidates = find_distillation_candidates(vault)
         # Two clusters, both daily-week kind.
         daily = [c for c in candidates if c.kind == "daily-week"]
         agents = {c.cluster_id.split("/")[0] for c in daily}
-        assert agents == {"daily:ari", "daily:sarah"}
+        assert agents == {"daily:atlas", "daily:vega"}
 
 
 class TestSkipExistingDistillations:
@@ -203,7 +203,7 @@ class TestSkipExistingDistillations:
             body="rollup",
             vault=vault,
             type_="distillation",
-            tags=["agent:ari"],
+            tags=["agent:atlas"],
             links=[str(m.id) for m in members],
         )
         # Cluster is fully covered; should be filtered out.
@@ -218,7 +218,7 @@ class TestSkipExistingDistillations:
             body="partial rollup",
             vault=vault,
             type_="distillation",
-            tags=["agent:ari"],
+            tags=["agent:atlas"],
             links=[str(members[0].id), str(members[1].id), str(members[2].id)],
         )
         candidates = find_distillation_candidates(vault)
@@ -233,7 +233,7 @@ class TestSkipExistingDistillations:
             body="rollup",
             vault=vault,
             type_="distillation",
-            tags=["agent:ari"],
+            tags=["agent:atlas"],
             links=[str(m.id) for m in members],
         )
         candidates = find_distillation_candidates(vault, skip_already_distilled=False)

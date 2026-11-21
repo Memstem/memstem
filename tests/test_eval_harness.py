@@ -48,15 +48,15 @@ def _build_result(
 
 def test_expect_matcher_title_substring_case_insensitive() -> None:
     matcher = ExpectMatcher(title_contains=("Memory Architecture",))
-    assert matcher.matches(_build_result(title="Ari Memory Architecture v3"))
-    assert matcher.matches(_build_result(title="ARI MEMORY ARCHITECTURE V3"))
+    assert matcher.matches(_build_result(title="Atlas Memory Architecture v3"))
+    assert matcher.matches(_build_result(title="ATLAS MEMORY ARCHITECTURE V3"))
     assert not matcher.matches(_build_result(title="Other Title"))
 
 
 def test_expect_matcher_body_substring() -> None:
-    matcher = ExpectMatcher(body_contains=("18789",))
-    assert matcher.matches(_build_result(body="port 18789 is the gateway"))
-    assert not matcher.matches(_build_result(body="port 18790 something else"))
+    matcher = ExpectMatcher(body_contains=("12345",))
+    assert matcher.matches(_build_result(body="port 12345 is the gateway"))
+    assert not matcher.matches(_build_result(body="port 12346 something else"))
 
 
 def test_expect_matcher_path_substring() -> None:
@@ -209,14 +209,14 @@ def fixture_search(tmp_path: Path) -> Search:
             "id": "11111111-1111-1111-1111-111111111111",
             "type": "memory",
             "title": "Server Environment Reference",
-            "body": "Ari runs on port 18789. Fleet runs on port 3021.",
+            "body": "Atlas runs on port 12345. Orion runs on port 12346.",
             "path": "memories/server-env.md",
         },
         {
             "id": "22222222-2222-2222-2222-222222222222",
             "type": "skill",
             "title": "Send Telegram",
-            "body": "Use bash ~/scripts/tg-send to message Brad.",
+            "body": "Use bash ~/scripts/notify-send to message the owner.",
             "path": "skills/send-telegram.md",
         },
         {
@@ -273,8 +273,8 @@ def test_run_query_finds_match(fixture_search: Search) -> None:
     query = EvalQuery(
         id="q1",
         class_="factual",
-        query="Ari port 18789",
-        expect=ExpectMatcher(body_contains=("18789",)),
+        query="Atlas port 12345",
+        expect=ExpectMatcher(body_contains=("12345",)),
     )
     result = run_query(fixture_search, query)
     assert result.found
@@ -312,14 +312,14 @@ def test_run_eval_aggregates_metrics(fixture_search: Search) -> None:
         EvalQuery(
             id="hit1",
             class_="factual",
-            query="Ari port 18789",
-            expect=ExpectMatcher(body_contains=("18789",)),
+            query="Atlas port 12345",
+            expect=ExpectMatcher(body_contains=("12345",)),
         ),
         EvalQuery(
             id="hit2",
             class_="procedural",
-            query="tg-send Telegram Brad",
-            expect=ExpectMatcher(body_contains=("tg-send",)),
+            query="notify-send Telegram owner",
+            expect=ExpectMatcher(body_contains=("notify-send",)),
         ),
         EvalQuery(
             id="miss",
@@ -364,8 +364,8 @@ def test_format_report_includes_aggregate_and_per_class(fixture_search: Search) 
         EvalQuery(
             id="hit1",
             class_="factual",
-            query="Ari port 18789",
-            expect=ExpectMatcher(body_contains=("18789",)),
+            query="Atlas port 12345",
+            expect=ExpectMatcher(body_contains=("12345",)),
         ),
         EvalQuery(
             id="miss",
@@ -391,8 +391,8 @@ def test_report_to_json_round_trip(fixture_search: Search) -> None:
         EvalQuery(
             id="q1",
             class_="factual",
-            query="Ari port 18789",
-            expect=ExpectMatcher(body_contains=("18789",)),
+            query="Atlas port 12345",
+            expect=ExpectMatcher(body_contains=("12345",)),
         ),
     ]
     report = run_eval(fixture_search, queries)

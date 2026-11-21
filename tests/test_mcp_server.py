@@ -147,11 +147,11 @@ class TestSearchTool:
 
 class TestGetTool:
     async def test_get_by_path(self, vault: Vault, index: Index) -> None:
-        memory = _make_memory(title="brad", vault=vault, index=index)
+        memory = _make_memory(title="jordan", vault=vault, index=index)
         mcp = build_server(vault, index)
         result = await _call_tool(mcp, "memstem_get", {"id_or_path": str(memory.path)})
         assert result["id"] == str(memory.id)
-        assert result["title"] == "brad"
+        assert result["title"] == "jordan"
         assert result["body"] == "hello world"
 
     async def test_get_by_id(self, vault: Vault, index: Index) -> None:
@@ -187,7 +187,7 @@ class TestListSkillsTool:
             type_="skill",
             title="email",
             body="how to send",
-            scope="ari",
+            scope="atlas",
             verification="ok",
             vault=vault,
             index=index,
@@ -209,17 +209,17 @@ class TestListSkillsTool:
         )
         _make_memory(
             type_="skill",
-            title="ari-skill",
+            title="atlas-skill",
             body="x",
-            scope="ari",
+            scope="atlas",
             verification="ok",
             vault=vault,
             index=index,
         )
         mcp = build_server(vault, index)
-        ari_only = await _call_tool(mcp, "memstem_list_skills", {"scope": "ari"})
-        assert len(ari_only) == 1
-        assert ari_only[0]["title"] == "ari-skill"
+        atlas_only = await _call_tool(mcp, "memstem_list_skills", {"scope": "atlas"})
+        assert len(atlas_only) == 1
+        assert atlas_only[0]["title"] == "atlas-skill"
 
     async def test_excludes_tombstoned_by_default(self, vault: Vault, index: Index) -> None:
         """ADR 0026: a skill whose source was deleted must not be listed."""

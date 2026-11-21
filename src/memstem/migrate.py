@@ -1,4 +1,4 @@
-"""One-shot migration from FlipClaw / Ari into a Memstem vault.
+"""One-shot migration from FlipClaw / OpenClaw into a Memstem vault.
 
 Walks the existing on-disk memory under `~/ari/memory/` and
 `~/ari/skills/`, plus recent Claude Code sessions in
@@ -42,7 +42,7 @@ CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 DEFAULT_DAYS = 30
 MIGRATION_TAG = "flipclaw-migration"
 
-app = typer.Typer(help="Migrate FlipClaw / Ari memory into a Memstem vault.")
+app = typer.Typer(help="Migrate FlipClaw / OpenClaw memory into a Memstem vault.")
 
 
 def _is_recent(path: Path, cutoff: datetime) -> bool:

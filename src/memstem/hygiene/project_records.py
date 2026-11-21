@@ -40,10 +40,12 @@ Design notes (per ADR 0021):
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +54,7 @@ from uuid import uuid4
 
 from memstem.core.frontmatter import MemoryType, validate
 from memstem.core.index import Index
+from memstem.core.recency import as_utc
 from memstem.core.storage import Memory, Vault
 from memstem.core.summarizer import Summarizer
 
@@ -72,7 +75,7 @@ close ties."""
 DEFAULT_MAX_INPUT_CHARS = 12000
 """Cap on combined source-input length sent to the project summarizer.
 
-Brad's Woodfield project today is ~5 sessions of mixed length. As
+The maintainer's Northwind project today is ~5 sessions of mixed length. As
 projects grow we don't want to blow past the LLM's context window.
 This cap is per-prompt; the prompt template includes a continuation
 marker so the LLM knows when input was truncated. 12k chars ≈ 3k
@@ -81,8 +84,8 @@ under any modern model's context window."""
 
 PROVENANCE_REF_PREFIX = "project:"
 """Prefix on ``frontmatter.provenance.ref`` for project records.
-Combined with the slug it forms a stable id like ``project:home-ubuntu-
-woodfield-quotes`` so the writer can recognize its own outputs."""
+Combined with the slug it forms a stable id like ``project:home-user-
+northwind-quotes`` so the writer can recognize its own outputs."""
 
 PROJECT_KIND_TAG = "project:claude-code"
 """Static tag added to every project record. Lets agents filter
@@ -99,6 +102,27 @@ FORCE_OVERRIDES_MANUAL = True
 """ADR 0021 §Manual override: ``--force`` regenerates even
 ``manual: true`` records. The CLI surfaces a warning so the operator
 notices."""
+
+PROJECT_PROMPT_VERSION = 1
+"""Version of ``prompts/distill_project.txt`` for regeneration purposes.
+
+A project record is regenerated when its inputs change (sessions,
+distillations, their text), when the summarizer changes, or when this
+number changes. The template's wording is deliberately *not* part of
+that check: a wording-only edit (a typo, a different example name) must
+not make every install re-summarize every project. Bump this when a
+template change is meant to change the records, so existing records are
+rewritten under the new template on the next run."""
+
+_INPUT_HASH_PROMPT_VERSION = 1
+"""The :data:`PROJECT_PROMPT_VERSION` at which :data:`PROVENANCE_INPUT_HASH`
+was introduced. A record without the hash was written under this version;
+see :func:`_legacy_record_is_current`. Never change it."""
+
+PROVENANCE_INPUT_HASH = "input_hash"
+"""Provenance extra key on a project record: :func:`project_input_hash`
+of the inputs the body was generated from. ``Provenance`` is
+``extra="allow"``, so this is not a schema change."""
 
 # Tag prefixes that aren't project tags. Sessions with only these
 # tags are skipped by the project-candidate scan.
@@ -159,6 +183,10 @@ class ProjectProposal:
     manual_skip: bool
     existing_memory_id: str | None
     skipped_reason: str | None = None
+    input_hash: str | None = None
+    unchanged: bool = False
+    """True when the existing body was kept because its inputs are
+    unchanged (no summarizer call)."""
 
 
 @dataclass(frozen=True)
@@ -176,6 +204,7 @@ class ApplyResult:
 
     written: int = 0
     updated: int = 0
+    unchanged: int = 0
     links_only_updates: int = 0
     skipped_no_summary: int = 0
     apply_errors: list[str] = field(default_factory=list)
@@ -194,8 +223,8 @@ def project_tag_for_session(memory: Memory) -> str | None:
     """Return the Claude Code project tag from a session, or ``None``.
 
     A session's tags include the encoded project directory (e.g.
-    ``home-ubuntu-woodfield-quotes`` for sessions in
-    ``~/.claude/projects/-home-ubuntu-woodfield-quotes/``). Other tag
+    ``home-user-northwind-quotes`` for sessions in
+    ``~/.claude/projects/-home-user-northwind-quotes/``). Other tag
     shapes (``agent:*``, ``topic:*``, ``distillation:*``,
     ``project:*``, plus the literal ``instructions`` / ``core`` /
     ``shared``) are not project tags.
@@ -334,7 +363,13 @@ def build_project_prompt(
     (cleaner input → cleaner output).
     """
     template = prompt_template or _load_project_prompt()
+    return template.format(**_project_prompt_fields(candidate, max_input_chars=max_input_chars))
 
+
+def _project_prompt_fields(
+    candidate: ProjectCandidate, *, max_input_chars: int = DEFAULT_MAX_INPUT_CHARS
+) -> dict[str, Any]:
+    """The values substituted into the project template for one candidate."""
     # Build {session_id -> distillation} for quick "does this session
     # have a distillation?" checks.
     distill_by_session: dict[str, Memory] = {}
@@ -368,12 +403,89 @@ def build_project_prompt(
     else:
         input_type = f"{raw_count} raw session"
 
-    return template.format(
-        tag=candidate.slug,
-        session_count=candidate.session_count,
-        input_type=input_type,
-        sources=sources_text,
-    )
+    return {
+        "tag": candidate.slug,
+        "session_count": candidate.session_count,
+        "input_type": input_type,
+        "sources": sources_text,
+    }
+
+
+def project_input_hash(
+    candidate: ProjectCandidate,
+    summarizer_name: str,
+    *,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
+) -> str:
+    """SHA-256 of what a project record's body depends on, minus the wording.
+
+    Covers every value substituted into the template, the summarizer
+    name and :data:`PROJECT_PROMPT_VERSION`, but not the template text,
+    so a wording-only template edit leaves every stored hash current.
+    """
+    fields = _project_prompt_fields(candidate, max_input_chars=max_input_chars)
+    parts = [
+        f"project-prompt-v{PROJECT_PROMPT_VERSION}",
+        summarizer_name,
+        *(f"{key}={fields[key]}" for key in sorted(fields)),
+    ]
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _stored_input_hash(memory: Memory) -> str | None:
+    prov = memory.frontmatter.provenance
+    extra = (getattr(prov, "model_extra", None) or {}) if prov is not None else {}
+    raw = extra.get(PROVENANCE_INPUT_HASH)
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _legacy_record_is_current(
+    existing: Memory,
+    candidate: ProjectCandidate,
+    summarizer_name: str,
+    db: object | None,
+    lock: AbstractContextManager[Any] | None,
+) -> bool:
+    """Is a record written before :data:`PROVENANCE_INPUT_HASH` existed current?
+
+    Such a record carries no input hash. Before, the summarizer cache
+    (keyed on the full prompt, wording included) decided this; a wording
+    change makes that key unreachable. Instead: the record is current
+    when its body is the cached output of this summarizer, it links
+    exactly the candidate's sessions and distillations, and no source
+    was updated after that output was cached. One check per record: the
+    next write stamps the hash.
+
+    Only while :data:`PROJECT_PROMPT_VERSION` is still
+    :data:`_INPUT_HASH_PROMPT_VERSION`: a legacy record was written
+    under that version, so after a bump it is out of date by definition
+    and must be regenerated like a hashed one.
+    """
+    if PROJECT_PROMPT_VERSION != _INPUT_HASH_PROMPT_VERSION:
+        return False
+    if not isinstance(db, sqlite3.Connection) or not existing.body:
+        return False
+    if sorted(existing.frontmatter.links) != sorted(_project_links(candidate)):
+        return False
+    try:
+        with lock or nullcontext():
+            row = db.execute(
+                "SELECT MAX(ts) FROM summarizer_cache WHERE summarizer = ? AND output = ?",
+                (summarizer_name, existing.body),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning("project_records: summarizer_cache lookup failed: %s", exc)
+        return False
+    cached_at = as_utc(row[0] if row is not None else None)
+    if cached_at is None:
+        return False
+    # Either side may lack a time zone (hand-written or older frontmatter);
+    # comparing naive with aware raises, so both are read as UTC.
+    for source in (*candidate.sessions, *candidate.distillations):
+        updated = as_utc(source.frontmatter.updated)
+        if updated is None or updated > cached_at:
+            return False
+    return True
 
 
 # ─── Existing record + manual flag ────────────────────────────────
@@ -440,6 +552,7 @@ def materialize_project_record(
     importance: float = DEFAULT_PROJECT_IMPORTANCE,
     now: datetime | None = None,
     preserve_manual_body: bool = False,
+    input_hash: str | None = None,
 ) -> Memory:
     """Build the ``type: project`` :class:`Memory` for a candidate.
 
@@ -478,6 +591,8 @@ def materialize_project_record(
             "summarizer": summarizer_name,
         },
     }
+    if input_hash and not manual_flag:
+        payload["provenance"][PROVENANCE_INPUT_HASH] = input_hash
     if manual_flag:
         payload[MANUAL_FLAG_KEY] = True
     fm = validate(payload)
@@ -529,11 +644,15 @@ def compute_project_record_plan(
     2. If ``manual: true`` and ``force=False``, marks the proposal
        ``manual_skip=True`` and bypasses the LLM call entirely (the
        applier will refresh links + ``updated`` only).
-    3. Otherwise calls :meth:`Summarizer.generate_cached` with the
+    3. If the record's stored :func:`project_input_hash` matches (or,
+       for a record written before the hash existed,
+       :func:`_legacy_record_is_current`), keeps its body: no call.
+    4. Otherwise calls :meth:`Summarizer.generate_cached` with the
        candidate's prompt; cache hits short-circuit.
 
     ``force=True`` regenerates everything, including ``manual: true``
-    records (per :data:`FORCE_OVERRIDES_MANUAL`).
+    records (per :data:`FORCE_OVERRIDES_MANUAL`), and bypasses both the
+    input-hash check and the summarizer cache.
     """
     candidates, stats = find_project_candidates(vault, min_sessions=min_sessions)
     proposals: list[ProjectProposal] = []
@@ -556,12 +675,41 @@ def compute_project_record_plan(
             )
             continue
 
+        input_hash = project_input_hash(candidate, summarizer.name, max_input_chars=max_input_chars)
+        if (
+            existing is not None
+            and not manual
+            and not force
+            and existing.body
+            and (
+                _stored_input_hash(existing) == input_hash
+                or (
+                    _stored_input_hash(existing) is None
+                    and _legacy_record_is_current(existing, candidate, summarizer.name, db, lock)
+                )
+            )
+        ):
+            proposals.append(
+                ProjectProposal(
+                    candidate=candidate,
+                    body=existing.body,
+                    summarizer_name=summarizer.name,
+                    is_update=True,
+                    manual_skip=False,
+                    existing_memory_id=str(existing.id),
+                    input_hash=input_hash,
+                    unchanged=True,
+                )
+            )
+            continue
+
         prompt = build_project_prompt(
             candidate,
             prompt_template=prompt_template,
             max_input_chars=max_input_chars,
         )
-        body = summarizer.generate_cached(prompt, db=db, lock=lock)  # type: ignore[arg-type]
+        # --force is a deliberate re-summarize: skip the cache too.
+        body = summarizer.generate_cached(prompt, db=None if force else db, lock=lock)  # type: ignore[arg-type]
         skipped_reason: str | None = None
         if not body:
             skipped_reason = "summarizer returned empty (NoOp default or LLM unreachable)"
@@ -574,6 +722,7 @@ def compute_project_record_plan(
                 manual_skip=False,
                 existing_memory_id=str(existing.id) if existing is not None else None,
                 skipped_reason=skipped_reason,
+                input_hash=input_hash,
             )
         )
 
@@ -615,6 +764,7 @@ def apply_project_records(
                 existing=existing,
                 now=now,
                 preserve_manual_body=proposal.manual_skip,
+                input_hash=proposal.input_hash,
             )
             vault.write(memory)
             index.upsert(memory)
@@ -625,6 +775,8 @@ def apply_project_records(
             index.enqueue_embed(str(memory.id))
             if proposal.manual_skip:
                 result.links_only_updates += 1
+            elif proposal.unchanged:
+                result.unchanged += 1
             elif proposal.is_update:
                 result.updated += 1
             else:
@@ -645,12 +797,16 @@ def format_plan_summary(plan: ProjectRecordPlan) -> str:
     skipped_empty = sum(1 for p in proposals if not p.body and not p.manual_skip)
     manual_skips = sum(1 for p in proposals if p.manual_skip)
     new_records = sum(1 for p in proposals if not p.is_update and p.body)
-    updates = sum(1 for p in proposals if p.is_update and not p.manual_skip and p.body)
+    unchanged = sum(1 for p in proposals if p.unchanged)
+    updates = sum(
+        1 for p in proposals if p.is_update and not p.manual_skip and not p.unchanged and p.body
+    )
     lines = [
         f"  scanned: {plan.total_tags_scanned} project tag(s)",
         f"  skipped (below {DEFAULT_MIN_SESSIONS}-session threshold): {plan.skipped_below_threshold}",
         f"  proposed (new records): {new_records}",
         f"  proposed (refresh): {updates}",
+        f"  unchanged (inputs as before, no summarizer call): {unchanged}",
         f"  manual:true preserved (links only): {manual_skips}",
         f"  skipped (summarizer empty): {skipped_empty}",
         f"  total proposals: {len(proposals)} (summarized: {summarized})",
@@ -664,6 +820,8 @@ def format_proposals(plan: ProjectRecordPlan, *, max_preview: int = 80) -> Itera
         candidate = proposal.candidate
         if proposal.manual_skip:
             marker = "M"  # manual-preserved
+        elif proposal.unchanged:
+            marker = "="  # inputs unchanged, body kept
         elif proposal.body:
             marker = "✓"
         else:
@@ -688,6 +846,8 @@ __all__ = [
     "FORCE_OVERRIDES_MANUAL",
     "MANUAL_FLAG_KEY",
     "PROJECT_KIND_TAG",
+    "PROJECT_PROMPT_VERSION",
+    "PROVENANCE_INPUT_HASH",
     "PROVENANCE_REF_PREFIX",
     "ApplyResult",
     "ProjectCandidate",
@@ -702,5 +862,6 @@ __all__ = [
     "format_proposals",
     "is_manual",
     "materialize_project_record",
+    "project_input_hash",
     "project_tag_for_session",
 ]
