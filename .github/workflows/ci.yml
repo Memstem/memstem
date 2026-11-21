@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: both jobs only read the repo. The Codecov upload does
+# not use GITHUB_TOKEN (no OIDC), so it needs no extra scope.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
