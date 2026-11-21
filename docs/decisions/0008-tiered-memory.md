@@ -12,7 +12,7 @@ expose two limits:
 
 1. **Search noise.** A query like *"what did we decide about pricing?"*
    retrieves 17 partial discussions across daily logs, session
-   transcripts, and Ari's MEMORY.md. Hybrid ranking helps, but the
+   transcripts, and Atlas's MEMORY.md. Hybrid ranking helps, but the
    results are still a stack of source material that the agent has to
    re-read every time. There is no concept of "this 2-paragraph rollup
    is the answer; the 17 sources are the citations."
@@ -137,8 +137,8 @@ importance: 0.8
 ---
 
 Across 12 conversations and daily logs over March-April 2026 we settled
-on Cloudflare for new domains because at-cost pricing saves ~$1,200/yr
-across 100 domains. GoDaddy renewal pricing is 2x+. Migration plan...
+on Cloudflare for new domains because at-cost pricing saves ~$300/yr
+across 25 domains. GoDaddy renewal pricing is 2x+. Migration plan...
 ```
 
 **Two flavors ship first:**

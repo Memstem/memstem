@@ -51,13 +51,13 @@ def put(db: sqlite3.Connection, seq: int, text: str, sid: str = "session-one") -
 def workspace(root: Path) -> OpenClawWorkspace:
     return OpenClawWorkspace(
         path=root,
-        tag="ari",
+        tag="atlas",
         layout=OpenClawLayout(trajectory_sqlite_roots=[Path(".")], trajectory_poll_seconds=0.1),
     )
 
 
 def test_discovery_opt_in_agents_and_escape(tmp_path: Path) -> None:
-    assert discover_databases(OpenClawWorkspace(path=tmp_path, tag="ari")) == []
+    assert discover_databases(OpenClawWorkspace(path=tmp_path, tag="atlas")) == []
     path, db = database(tmp_path)
     try:
         assert discover_databases(workspace(tmp_path)) == [path]
@@ -235,7 +235,7 @@ def test_compacted_snapshots_retain_earlier_conversation() -> None:
 async def test_live_poll_emits_only_changed_sessions(tmp_path: Path) -> None:
     """An active agent moves the database fingerprint on every write; a live
     poll must replay only the sessions that grew, not every stored session
-    (2026-09-26: Ari's 250 unchanged sessions were rewritten each pass)."""
+    (2026-09-26: Atlas's 250 unchanged sessions were rewritten each pass)."""
     _path, db = database(tmp_path)
     try:
         put(db, 0, "First session opening message with enough words.", sid="alpha")

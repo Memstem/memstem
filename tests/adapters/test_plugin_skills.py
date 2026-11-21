@@ -34,14 +34,14 @@ async def test_regular_and_plugin_skills_searchable_without_duplicates(
     packages = tmp_path / "installed"
     links = tmp_path / "plugin-skills"
     links.mkdir()
-    regular = skill(tmp_path / "skills", "regular-ari-skill")
+    regular = skill(tmp_path / "skills", "regular-atlas-skill")
     for name in NAMES:
         path = skill(packages, name)
         (links / name).symlink_to(path.parent, target_is_directory=True)
     (links / "regular-alias").symlink_to(regular.parent, target_is_directory=True)
     ws = OpenClawWorkspace(
         path=tmp_path,
-        tag="ari",
+        tag="atlas",
         layout=OpenClawLayout(
             plugin_skill_roots=[Path("plugin-skills")],
             plugin_skill_allowed_roots=[packages, tmp_path / "skills"],
@@ -65,7 +65,7 @@ async def test_regular_and_plugin_skills_searchable_without_duplicates(
         assert (
             index.db.execute("SELECT count(*) FROM memories WHERE type='skill'").fetchone()[0] == 6
         )
-        for name in [*NAMES, "regular-ari-skill"]:
+        for name in [*NAMES, "regular-atlas-skill"]:
             results = Search(vault, index).search(name, types=["skill"], limit=10)
             assert sum(r.memory.frontmatter.title == name for r in results) == 1
         changed = skill(packages, NAMES[0])
@@ -84,7 +84,7 @@ def test_symlink_escape_cycles_and_explicit_approval(tmp_path: Path) -> None:
     (root / "escape").symlink_to(path.parent, target_is_directory=True)
     (root / "cycle").symlink_to(root, target_is_directory=True)
     ws = OpenClawWorkspace(
-        path=tmp_path, tag="ari", layout=OpenClawLayout(plugin_skill_roots=[root])
+        path=tmp_path, tag="atlas", layout=OpenClawLayout(plugin_skill_roots=[root])
     )
     assert list(iter_plugin_skills(ws)) == []
     ws.layout.plugin_skill_allowed_roots = [external]
@@ -102,7 +102,7 @@ async def test_frontmatter_only_skills_have_distinct_names(tmp_path: Path) -> No
             f"---\nname: {name}\n---\nDetailed instructions for {name} without an H1 heading."
         )
     ws = OpenClawWorkspace(
-        path=tmp_path, tag="ari", layout=OpenClawLayout(plugin_skill_roots=[Path("plugins")])
+        path=tmp_path, tag="atlas", layout=OpenClawLayout(plugin_skill_roots=[Path("plugins")])
     )
     records = [r async for r in OpenClawAdapter([ws]).reconcile([])]
     assert {r.title for r in records} == {"wiki-maintainer", "obsidian-vault-maintainer"}

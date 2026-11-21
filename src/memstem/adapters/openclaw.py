@@ -1,4 +1,4 @@
-"""OpenClaw / Ari filesystem adapter.
+"""OpenClaw filesystem adapter.
 
 Reads markdown files belonging to one or more OpenClaw agent workspaces.
 By convention each workspace has the layout:
@@ -539,7 +539,7 @@ def _classify_trajectory_path(path: Path, ws: OpenClawWorkspace) -> bool:
 def _daily_scope_for(path: Path, ws: OpenClawWorkspace) -> str | None:
     """Sub-directory of a dated file, relative to the memory dir holding it.
 
-    `YYYY-MM-DD.md` is not unique within a workspace — Ari alone keeps dated
+    `YYYY-MM-DD.md` is not unique within a workspace — Atlas alone keeps dated
     files in `memory/`, `memory/dreaming/{rem,light,deep}/` and
     `memory/voice-reviews/`. Without this the pipeline collapses them all
     into one `daily/<agent>/<date>.md` slot (ADR 0033). Returns None for a

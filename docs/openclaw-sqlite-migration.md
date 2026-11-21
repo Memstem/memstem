@@ -15,7 +15,7 @@ adapters:
   openclaw:
     agent_workspaces:
       - path: /path/to/openclaw-state
-        tag: ari
+        tag: atlas
         layout:
           skills_dirs: [skills]
           # Preserve existing session_dirs, including the bridge and archives.
@@ -54,7 +54,7 @@ mypy src/ tests/ scripts/
 pytest --cov-report=xml
 python scripts/verify_source_deletion.py
 python scripts/verify_openclaw_sqlite.py \
-  --state-root /path/to/openclaw-state --tag ari \
+  --state-root /path/to/openclaw-state --tag atlas \
   --bridge-root /path/to/openclaw-state/memstem-feed \
   --plugin-root plugin-skills \
   --allow-plugin-root /path/to/approved/openclaw/runtime-installations \

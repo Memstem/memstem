@@ -18,7 +18,7 @@ Two clustering strategies ship in this slice:
 
 2. **Daily-log clusters.** ``type=daily`` records from the same
    ``agent:<x>`` tagged workspace within the same ISO calendar week
-   are grouped. This catches the common case "summarize my Ari week
+   are grouped. This catches the common case "summarize my Atlas week
    of 2026-W17."
 
 A cluster qualifies as a candidate if it has at least
@@ -65,7 +65,7 @@ class DistillationCandidate:
 
     cluster_id: str
     """Stable identifier for this cluster, e.g., ``topic:cloudflare``
-    or ``daily:ari/2026-W17``. Stable across runs so a future
+    or ``daily:atlas/2026-W17``. Stable across runs so a future
     distillation memory can declare ``provenance.ref = cluster_id``."""
 
     kind: str

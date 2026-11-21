@@ -69,7 +69,7 @@ top-K results matches its expect block.
 The four classes mirror the failure modes observed in the research
 that produced the recall plan:
 
-- **factual**: "what gateway port does Ari run on" → expects an exact
+- **factual**: "what gateway port does Atlas run on" → expects an exact
   string surfaced. Today's vec retrieval struggles because
   unstructured prose contains the answer alongside other tokens that
   outrank the answer.
@@ -120,7 +120,7 @@ One PR. Layout:
 |--------------------------------------------|------------------------------------------|
 | `src/memstem/eval/__init__.py`             | Public re-exports                        |
 | `src/memstem/eval/harness.py`              | Loaders, scoring, reporting              |
-| `eval/queries.yaml`                        | Hand-curated production query set        |
+| `eval/queries.yaml`                        | Example query set (copy, adapt privately) |
 | `scripts/run_eval.py`                      | CLI entrypoint                           |
 | `tests/test_eval_harness.py`               | Self-tests using a tmp_path fixture vault|
 | `docs/decisions/0015-eval-harness.md`      | This ADR                                 |
@@ -166,7 +166,7 @@ optimize the harness, not the system.
   becomes interesting after we cap recall.
 - Substring matchers are forgiving — a query that surfaces a wrong
   record containing the substring still scores. Mitigation: substrings
-  are chosen specifically (e.g., "18789" not "port"); false matches
+  are chosen specifically (e.g., "12345" not "port"); false matches
   are rare in practice.
 
 ## Open questions

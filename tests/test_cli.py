@@ -241,8 +241,8 @@ class TestInitWizard:
         # `-y` writes a Claude-Code-only config; OpenClaw is opt-in via wizard.
         home = tmp_path / "home"
         home.mkdir()
-        self._seed_agent(home, "ari", with_content=True)
-        self._seed_agent(home, "blake", with_content=True)
+        self._seed_agent(home, "atlas", with_content=True)
+        self._seed_agent(home, "orion", with_content=True)
 
         vault_path = tmp_path / "vault"
         result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
@@ -255,11 +255,11 @@ class TestInitWizard:
         # New behavior: each agent defaults to "no". User opts in by typing "y".
         home = tmp_path / "home"
         home.mkdir()
-        self._seed_agent(home, "ari", with_content=True)
-        self._seed_agent(home, "blake", with_content=True)
+        self._seed_agent(home, "atlas", with_content=True)
+        self._seed_agent(home, "orion", with_content=True)
 
         vault_path = tmp_path / "vault"
-        # ari=y, blake=<accept default no>. No shared files / claude prompts to answer.
+        # atlas=y, orion=<accept default no>. No shared files / claude prompts to answer.
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],
@@ -268,17 +268,17 @@ class TestInitWizard:
         assert result.exit_code == 0, result.output
         cfg = yaml.safe_load((vault_path / "_meta" / "config.yaml").read_text())
         tags = {ws["tag"] for ws in cfg["adapters"]["openclaw"]["agent_workspaces"]}
-        assert tags == {"ari"}
+        assert tags == {"atlas"}
 
     def test_wizard_shared_files_default_no(self, tmp_path: Path, runner: CliRunner) -> None:
         # Shared files default to no — they belong to a workspace, so opt-in too.
         home = tmp_path / "home"
         home.mkdir()
-        ws = self._seed_agent(home, "ari", with_content=True)
+        ws = self._seed_agent(home, "atlas", with_content=True)
         (ws / "HARD-RULES.md").write_text("# rules\n")
 
         vault_path = tmp_path / "vault"
-        # All defaults (no for ari, no for HARD-RULES.md).
+        # All defaults (no for atlas, no for HARD-RULES.md).
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],
@@ -291,12 +291,12 @@ class TestInitWizard:
     def test_wizard_can_include_shared_files(self, tmp_path: Path, runner: CliRunner) -> None:
         home = tmp_path / "home"
         home.mkdir()
-        ws = self._seed_agent(home, "ari", with_content=True)
+        ws = self._seed_agent(home, "atlas", with_content=True)
         rules = ws / "HARD-RULES.md"
         rules.write_text("# rules\n")
 
         vault_path = tmp_path / "vault"
-        # ari=y, HARD-RULES.md=y.
+        # atlas=y, HARD-RULES.md=y.
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],
@@ -322,14 +322,14 @@ class TestInitWizard:
     ) -> None:
         home = tmp_path / "home"
         home.mkdir()
-        ws = self._seed_agent(home, "ari", with_content=False)
+        ws = self._seed_agent(home, "atlas", with_content=False)
         # Discoverable extras + one item that should be filtered (dated snapshot).
         (ws / "SOUL.md").write_text("# soul\n")
         (ws / "USER.md").write_text("# user\n")
         (ws / "AGENTS_FULL_2026-03-11.md").write_text("# snapshot\n")
 
         vault_path = tmp_path / "vault"
-        # ari=y, extras prompt=<accept default y>.
+        # atlas=y, extras prompt=<accept default y>.
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],
@@ -343,11 +343,11 @@ class TestInitWizard:
     def test_wizard_can_decline_extras(self, tmp_path: Path, runner: CliRunner) -> None:
         home = tmp_path / "home"
         home.mkdir()
-        ws = self._seed_agent(home, "ari", with_content=False)
+        ws = self._seed_agent(home, "atlas", with_content=False)
         (ws / "SOUL.md").write_text("# soul\n")
 
         vault_path = tmp_path / "vault"
-        # ari=y, extras prompt=n.
+        # atlas=y, extras prompt=n.
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],
@@ -729,10 +729,10 @@ class TestMigrateCommand:
         """Migrate writes records and pushes them onto the embed queue —
         the actual embedding is the worker's job."""
         empty_home = tmp_path / "home"
-        ari = empty_home / "ari"
-        ari.mkdir(parents=True)
-        (ari / "openclaw.json").write_text("{}")
-        (ari / "MEMORY.md").write_text("# core\n")
+        atlas = empty_home / "atlas"
+        atlas.mkdir(parents=True)
+        (atlas / "openclaw.json").write_text("{}")
+        (atlas / "MEMORY.md").write_text("# core\n")
         vault = tmp_path / "vault"
         runner.invoke(app, ["init", "-y", "--home", str(empty_home), str(vault)])
 
@@ -1004,7 +1004,7 @@ class TestConnectClients:
         OpenClaw workspaces are opt-in.
         """
         home = tmp_path / "home"
-        ws = home / "ari"
+        ws = home / "atlas"
         ws.mkdir(parents=True)
         (ws / "openclaw.json").write_text("{}")
         (ws / "MEMORY.md").write_text("# core\n")

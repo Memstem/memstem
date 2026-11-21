@@ -11,7 +11,7 @@ Vector search is **brute-force**. `memories_vec` is a sqlite-vec `vec0` virtual 
 no ANN index, so every query does exact KNN over **all** vector chunks. Search latency is
 therefore ∝ the number of indexed chunks, and grows without bound as vaults accumulate.
 
-Measured on the ari vault (2026-07-07): 9,091 memories → **73,637 chunks → ~12–18 s/query**.
+Measured on the atlas vault (2026-07-07): 9,091 memories → **73,637 chunks → ~12–18 s/query**.
 Breakdown by `type` (chunks = the scan cost):
 
 | type | chunks | % of scan | retrieved in a 30-day window |
@@ -92,7 +92,7 @@ of growing unbounded.
 
 ## Consequences
 
-- **Latency:** removes old-session chunks from every future scan. On ari, de-indexing
+- **Latency:** removes old-session chunks from every future scan. On atlas, de-indexing
   sessions >30 days trims ~15k of ~74k chunks (~15 s → ~12–13 s immediately); the larger,
   durable win is bounding growth. This is complementary to — not a substitute for — an ANN
   index (a separate ADR), which removes the ∝-scan-size cost entirely.

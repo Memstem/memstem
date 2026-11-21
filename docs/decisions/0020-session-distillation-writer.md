@@ -16,7 +16,7 @@ The *writer* slice — the part that takes a candidate or a session and
 actually produces a `type: distillation` record — has not shipped.
 That gap is now blocking real recall quality:
 
-> A search for *"Woodfield Country Club e-bike video"* should surface
+> A search for *"Northwind Logistics walkthrough video"* should surface
 > a project-shaped, retrieval-optimized record. Today, the underlying
 > session JSONLs exist in the vault but rank weakly (vec_rank 3, score
 > 0.017) because the raw transcripts are conversational —
@@ -111,7 +111,7 @@ A session is eligible for distillation iff:
 2. The body is not a system-prompt boot echo (already filtered at
    ingest by ADR 0011 PR-C; we re-check defensively), **and**
 3. The body word count is at least 100 (so a 10-turn session of
-   one-line replies still gets skipped — the typical "hi ari, what
+   one-line replies still gets skipped — the typical "hi atlas, what
    time" / "thanks" / "ok" exchange).
 
 Both gates are deterministic and config-tunable
@@ -129,7 +129,7 @@ agent tag is present). The frontmatter:
 ---
 id: <uuid>
 type: distillation
-title: "Woodfield Country Club — e-bike & golf cart proposal review"
+title: "Northwind Logistics — forklift & loading dock proposal review"
 created: 2026-05-01T03:00:00Z
 updated: 2026-05-01T03:00:00Z
 source: hygiene-worker
@@ -138,10 +138,10 @@ provenance:
   ref: "session-distillation:<source-session-id>"
   ingested_at: 2026-05-01T03:00:00Z
 links:
-  - "memory://sessions/b7972233-e434-42fb-b55a-1736bd17e211"
+  - "memory://sessions/5e1d8c47-2b9a-4f63-8d10-a7c3e9f2b6d4"
 tags:
-  - "agent:ari"                    # inherited from source
-  - "home-ubuntu-woodfield-quotes" # inherited from source
+  - "agent:atlas"                    # inherited from source
+  - "home-user-northwind-quotes" # inherited from source
   - "distillation:session"
 importance: 0.8
 ---
@@ -251,7 +251,7 @@ sequential PRs:
   on later if real-time distillation becomes valuable.
 - **Per-session, not per-cluster.** This ADR ships the simpler shape
   first because it's both easier to evaluate (one input → one output)
-  and directly motivated by the recall failure ("the Woodfield
+  and directly motivated by the recall failure ("the Northwind
   session itself should be findable as a project-shaped record").
   Topic distillation can layer on top once we have empirical data.
 - **Threshold over filter.** The meaningfulness gate uses a
@@ -271,7 +271,7 @@ sequential PRs:
 
 **Pros:**
 
-- The Woodfield-style recall failure gets a direct fix: a project's
+- The Northwind-style recall failure gets a direct fix: a project's
   worth of sessions becomes findable via a single distilled record.
 - Search context is conserved: agents can pull a paragraph instead of
   a multi-thousand-token transcript.

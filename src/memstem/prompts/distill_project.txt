@@ -7,15 +7,15 @@ on this record.
 Goals (in this order):
 
 1. Pick a clear, human-readable canonical title. The encoded directory
-   tag (e.g. "home-ubuntu-woodfield-quotes") is not a title — extract
-   the real name from the work itself ("Woodfield Country Club —
-   e-bike & golf cart tracking system"). Include the client/customer
+   tag (e.g. "home-user-northwind-quotes") is not a title — extract
+   the real name from the work itself ("Northwind Logistics —
+   forklift & loading dock tracking system"). Include the client/customer
    when one exists, the kind of work, and any distinguishing
    modifier.
 
 2. Make the record findable by every reasonable phrasing of "what is
-   the X project". If the work is for Woodfield Country Club, mention
-   "Woodfield", "Country Club", and the specific deliverable types
+   the X project". If the work is for Northwind Logistics, mention
+   "Northwind", "Logistics", and the specific deliverable types
    (videos, proposals, integrations) so vec search lands on the
    project record from any of those entry points.
 
@@ -74,7 +74,7 @@ Hard rules:
   body — those are in the frontmatter and the links field.
 - Do not wrap the response in code fences.
 - Stay grounded in the inputs. If a source distillation says the
-  Woodfield video was revised on a specific date, you can use that
+  Northwind video was revised on a specific date, you can use that
   date; if the inputs don't mention a date, don't invent one.
 
 PROJECT TAG (encoded directory, for context only — do not put in the body):

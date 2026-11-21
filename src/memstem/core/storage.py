@@ -91,7 +91,7 @@ class Memory(BaseModel):
     frontmatter: Frontmatter
     body: str
     path: Path
-    """Vault-relative path, e.g. `memories/people/brad.md`."""
+    """Vault-relative path, e.g. `memories/people/jordan.md`."""
 
     @property
     def id(self) -> UUID:

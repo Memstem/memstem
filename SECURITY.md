@@ -4,8 +4,10 @@
 
 If you discover a security vulnerability in Memstem, please **do not open a public issue.**
 
-Email: bbesner@techprosecurity.com
-Subject line: `[Memstem Security] <brief description>`
+Report it privately through GitHub's private vulnerability reporting: on the
+repository page, open **Security → Report a vulnerability**
+(https://github.com/Memstem/memstem/security/advisories/new). Only the
+maintainers can see the report.
 
 I'll acknowledge within 48 hours and provide a remediation timeline within 5 business days.
 

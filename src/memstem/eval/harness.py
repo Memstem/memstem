@@ -3,11 +3,11 @@
 A query set is a YAML file shaped like::
 
     queries:
-      - id: factual_ari_port
+      - id: factual_atlas_port
         class: factual          # one of: factual conceptual procedural historical
-        query: what gateway port does Ari run on
+        query: what gateway port does Atlas run on
         expect:
-          body_contains: ["18789"]
+          body_contains: ["12345"]
           path_contains: ["CLAUDE.md"]
         top_k: 10               # optional; defaults to DEFAULT_TOP_K
 

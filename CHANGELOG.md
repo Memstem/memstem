@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With a bearer token configured (`MEMSTEM_HTTP_TOKEN`), `GET /health` without the token no longer returns the vault path, the per-file entries of `skipped_files` (full source paths and up to 300 characters of parser or OS error text) or the path of an accelerated sqlite-vec build. It reports status, problem codes and counts only (`skipped_files` is `{"count": N}`, `sqlite_vec.extension` is `"accelerated"` or `"bundled"`); `?detail=false` drops `vault` the same way. A caller with the token gets the full response as before, and so does every caller when no token is configured (the loopback default, where `/search` and `/memory` are open to the same callers anyway). `memstem search` now sends the token when `MEMSTEM_HTTP_TOKEN` (or the variable named by `http.auth_token_env`) is set in its shell, so it keeps using a token-protected daemon; without it, it falls back to direct index access as it did when `/search` refused it.
 - The OpenAI-host check (embedder batch cap, summarizer `openai:` provenance label) now matches `openai.com` and its subdomains only, so a look-alike host such as `notopenai.com` is treated as an OpenAI-compatible server.
 - Served Jev searches (ADR 0047) with a `limit` above `search.jev_shadow.pool_size` (default 20) returned only `pool_size` results. Jev's order is now followed by the remaining hits in their normal order, so the caller gets the number it asked for.
+- Project records (ADR 0021) are no longer regenerated when only the wording of `prompts/distill_project.txt` changes. The hygiene stage called the summarizer for every project on every run and skipped unchanged ones only through the summarizer cache, whose key is a hash of the full prompt including the template text, so any template edit (this release changes the example customer name in both distillation templates) made every project record regenerate once, one model call per project. The stage now compares an input hash stored on the record (`provenance.input_hash`: the template's inputs, the summarizer name and `PROJECT_PROMPT_VERSION`, not its wording) and keeps the body when it matches. Records written by earlier releases have no hash; while `PROJECT_PROMPT_VERSION` is 1 they are kept when they link the same sources, their body is the summarizer's cached output and no source's `updated` is later than the time that output was cached (time-zone-less timestamps are read as UTC), and are stamped on that run; after a version bump they are regenerated like any other record. Session distillations were never affected: they are redone only when a session grows (ADR 0037/0038), whatever the prompt says. Upgrading makes no model calls for sessions, and none for a project whose record passes that check. A project whose record fails it is summarized once (one model call) and stamped: its sessions or distillations differ from the record's links, a source's `updated` was moved after the summary was cached, or the cache no longer holds the summary (for example after the index was rebuilt). Earlier releases would have made that call too after this release's template change (`tests/test_hygiene_prompt_wording.py`). To regenerate deliberately, bump `PROJECT_PROMPT_VERSION` together with the template change, or run `memstem hygiene project-records --force --apply`, which now bypasses the summarizer cache as well.
 
 
 ## [0.33.0] - 2026-10-22
@@ -97,7 +98,7 @@ Minor release: searches no longer hang when the vector scan stalls on a cold pag
 
 ### Added
 
-- Searches from the daemon and MCP server now have a deadline on their semantic half (ADR 0048). If query embedding plus the vector scan take longer than `search.semantic_timeout_seconds` (default 15 s), the search returns its keyword results flagged `degraded` instead of hanging, and the overrunning scan is interrupted. Cold page-cache scans had been stalling Ari's searches past the 60 s client timeout. Set the option to `null` to restore the unbounded behaviour.
+- Searches from the daemon and MCP server now have a deadline on their semantic half (ADR 0048). If query embedding plus the vector scan take longer than `search.semantic_timeout_seconds` (default 15 s), the search returns its keyword results flagged `degraded` instead of hanging, and the overrunning scan is interrupted. Cold page-cache scans had been stalling Atlas's searches past the 60 s client timeout. Set the option to `null` to restore the unbounded behaviour.
 
 ## [0.26.0] - 2026-09-30
 
@@ -117,7 +118,7 @@ Patch release: adapter file parsing moved off the event loop, so a reconcile pas
 
 ### Fixed
 
-- Reconcile no longer blocks `/search` while parsing a transcript. The Claude Code, Codex, and OpenClaw adapters' `reconcile()` and `watch()` async generators read and JSON/frontmatter-parsed each file inline on the event loop; a py-spy capture on brads-server caught one such parse holding the loop (and `/search`) for 18.5s. `_reconcile_into_pipeline` already offloaded the per-record pipeline write via `asyncio.to_thread` (issue #142 / 0.24.2), but the read+parse feeding it did not. Each adapter's per-file parse now runs in a worker thread the same way.
+- Reconcile no longer blocks `/search` while parsing a transcript. The Claude Code, Codex, and OpenClaw adapters' `reconcile()` and `watch()` async generators read and JSON/frontmatter-parsed each file inline on the event loop; a py-spy capture on main-server caught one such parse holding the loop (and `/search`) for 18.5s. `_reconcile_into_pipeline` already offloaded the per-record pipeline write via `asyncio.to_thread` (issue #142 / 0.24.2), but the read+parse feeding it did not. Each adapter's per-file parse now runs in a worker thread the same way.
 
 ## [0.25.2] - 2026-09-26
 
@@ -142,7 +143,7 @@ Faster search and far less vector churn: MMR ~30x faster, optional AVX-accelerat
 
 ### Performance
 
-- Re-embedding a record keeps the vectors of chunks whose text did not change (ADR 0045). A new `vec_chunk_hashes` table (schema v15) stores each chunk's sha256; when the record's embed signature still matches, unchanged chunks are left alone, moved chunks are copied, and only the rest go to the embedder. A growing session now re-embeds its last chunk and new ones instead of the whole transcript. Vector rows are updated in place (`UPDATE ... WHERE chunk_id`) rather than deleted and re-inserted, so a rewrite no longer leaves a dead vec0 slot per chunk (brads-server was accumulating ~2.6K dead slots/hour, each one read by every search until the nightly compaction).
+- Re-embedding a record keeps the vectors of chunks whose text did not change (ADR 0045). A new `vec_chunk_hashes` table (schema v15) stores each chunk's sha256; when the record's embed signature still matches, unchanged chunks are left alone, moved chunks are copied, and only the rest go to the embedder. A growing session now re-embeds its last chunk and new ones instead of the whole transcript. Vector rows are updated in place (`UPDATE ... WHERE chunk_id`) rather than deleted and re-inserted, so a rewrite no longer leaves a dead vec0 slot per chunk (main-server was accumulating ~2.6K dead slots/hour, each one read by every search until the nightly compaction).
 - A memory's vector rows are found through the vec0 `_rowids` shadow table's unique index instead of `DELETE FROM memories_vec WHERE memory_id = ?`, which scanned the whole vector table (1.4 s on a 280K-slot index) under the writer lock on every re-embed and record delete.
 - MMR diversification is ~30x faster: cosine similarity uses `math.sumprod` (C, Python 3.12+; pure-Python fallback on 3.11) with per-candidate norms computed once, and the greedy loop updates each candidate's redundancy against only the newest pick instead of re-scanning every pick. Same selection rule; on 25 recent real queries the order was identical in all 25 and MMR time fell from 644 ms to 22 ms per search (~0.6–1.1 s of a ~4 s search on a 4096-dim vault).
 
@@ -315,7 +316,7 @@ Vec compaction is lock-free (ADR 0039/0040) and its gate now scales with the vau
   or reopened session was never rewritten — and because distillations are
   deliberately boosted in search, the stale summary outranked the fresh
   transcript (the follow-up ADR 0020 deferred; reported from observed recall
-  lapses by Brad Snape). Every distillation now records a snapshot of its
+  lapses by a customer). Every distillation now records a snapshot of its
   source transcript (`provenance.source_word_count` / `source_turn_count` /
   `source_updated`), and the default scan re-distills a session once its
   transcript outgrows that snapshot by ≥ 500 words or ≥ 10 turns
@@ -564,9 +565,9 @@ straight to 0.19.1.
   was caught and returned as the empty string — indistinguishable from
   "unsummarizable content" — so the distill applier counted it toward the
   3-strike `distill_fail` cap and **permanently excluded** the session, with no
-  self-recovery. A brief backend blip (a stopped `:9444` sidecar, a CF-tunnel
-  530) therefore silently stalled distillation for days (the June 2026 E1 /
-  techpro / cargol stalls). Now `Summarizer.generate` raises
+  self-recovery. A brief backend blip (a stopped summarizer sidecar, a CF-tunnel
+  530) therefore silently stalled distillation for days (the June 2026 host-b /
+  operator-b / operator-c stalls). Now `Summarizer.generate` raises
   `TransientSummarizerError` on a retryable failure (network / timeout / 5xx /
   429 / 408) — propagated by `generate_cached` — and `compute_distillation_plan`
   skips the session that cycle **without** recording a failure, so it retries
@@ -669,7 +670,7 @@ optional HTTP bearer auth, Gemini key header. Plus docs/CI housekeeping.
   `connect-clients` wiring details from README to the new
   [docs/install.md](./docs/install.md); README quickstart slimmed accordingly
 - README now asks for a star once, without the star-history chart
-- Maintainer-specific references ("Brad's box", `~/ari` example paths,
+- Maintainer-specific references (host names, personal example paths,
   personal workspace names) genericized across ADRs, docs, README examples,
   ARCHITECTURE, and ROADMAP — the docs now read for any operator
 - CLAUDE.md rewritten as contributor guidance (was stale Phase-1 session
@@ -1215,7 +1216,7 @@ failure-visibility fixes across the storage, serving, and hygiene paths.
 ## [0.10.0] — 2026-05-07
 
 The "embed worker resilience" release. Two production bugs spotted on
-Ari's deployment after 0.9.1, plus the previously unreleased hygiene
+Atlas's deployment after 0.9.1, plus the previously unreleased hygiene
 verify + type-bias work. Both bug fixes are blocking for any user
 running the daemon against OpenAI under real network conditions —
 without them, every cluster of OpenAI hiccups burns through retry
@@ -1264,7 +1265,7 @@ budget and surfaces as worker crashes in stderr.
   narrowed to `sqlite3.IntegrityError`. SQLite + Python 3.12 + sqlite
   3.45 surface the same FK violation as the parent
   `sqlite3.DatabaseError` in some transaction-state combinations
-  (observed on Ari's deployment), and the worker would crash through
+  (observed on Atlas's deployment), and the worker would crash through
   the original handler. The catch now matches by extended error code
   (`SQLITE_CONSTRAINT_FOREIGNKEY = 787`) with a message-string
   fallback for older bindings, via a new `_is_foreign_key_violation`
@@ -1335,7 +1336,7 @@ budget and surfaces as worker crashes in stderr.
 
 ## [0.9.1] — 2026-05-01
 
-Two cutover hotfixes from PR #96, found running 0.9.0 against Brad's
+Two cutover hotfixes from PR #96, found running 0.9.0 against the maintainer's
 live vault. Both are blocking for any user pointing the new W8/W9
 writers at OpenAI; both are silently corrupting if not for our
 "empty-summary skips the candidate" failure mode.
@@ -1366,8 +1367,8 @@ writers at OpenAI; both are silently corrupting if not for our
 The "derived records" release. Five PRs (#90–#94) ship Block 4 of
 RECALL-PLAN.md: session distillation writer (W8, ADR 0020) and
 project records (W9, ADR 0021). Direct fix for the recall failure
-where natural-language queries like "the Woodfield Country Club
-e-bike video" or "the project where we revised the aerial demo"
+where natural-language queries like "the Northwind Logistics
+walkthrough video" or "the project where we revised the aerial demo"
 fail to surface project work that exists in the vault — the data
 is there, the *shape* is wrong. Both new commands ship CLI-driven
 and idempotent; the recommended workflow is one backfill pass per
@@ -1403,7 +1404,7 @@ both writers; non-canonical, drop-and-rebuild safe).
 - **Project records writer (ADR 0021 / W9).** `memstem hygiene
   project-records [--apply] [--force]` aggregates Claude Code
   sessions sharing a project tag (e.g.
-  `home-ubuntu-woodfield-quotes`) into a single `type: project`
+  `home-user-northwind-quotes`) into a single `type: project`
   record at `vault/memories/projects/<slug>.md` — canonical project
   name extracted from the work itself, description, participants,
   deliverables, accumulated decisions, latest known state. Reuses
@@ -1455,7 +1456,7 @@ both writers; non-canonical, drop-and-rebuild safe).
   with HTTP 400 (`unsupported_parameter`), and the newer field name
   is also accepted by the older `gpt-4o-mini` family — so the
   switch is universal and forward-compatible. Surfaced during the
-  cutover smoke test on Brad's box: every summarizer call returned
+  cutover smoke test on the maintainer's box: every summarizer call returned
   400 until the field was renamed. Test fixtures updated to assert
   the new field.
 
@@ -1464,7 +1465,7 @@ both writers; non-canonical, drop-and-rebuild safe).
 - 1087 tests pass on Linux 3.11/3.12 (114 new in PRs #91–#93).
   Cross-platform CI matrix unchanged: macOS + Windows continue-on-
   error.
-- Brad's Ari vault should not see any of this until the upgrade pass
+- The maintainer's Atlas vault should not see any of this until the upgrade pass
   documented in `docs/distillation-verification.md` runs explicitly.
 - Cost at typical MemStem volumes for a one-shot backfill of ~356
   Claude Code sessions on `gpt-5.4-mini`: ~$5 one time, ~$3-4/month
@@ -1528,7 +1529,7 @@ rebuild safe).
 
 - **Rerank API 400 errors on oversized memory bodies.** Two
   multi-megabyte ``Infrastructure — Extended Context`` memories in
-  Brad's vault (1.7 MB and 1.5 MB bodies) blew past every chat
+  the maintainer's vault (1.7 MB and 1.5 MB bodies) blew past every chat
   model's context window, causing every rerank score on those
   candidates to fail with HTTP 400 from OpenAI (and silent context
   overflow with Ollama). Failed candidates returned 0.0 and fell
@@ -1546,7 +1547,7 @@ rebuild safe).
 
 - **First end-to-end W5/W6 eval results** at
   ``docs/recall-eval-results.md``. Both features fail their default-on
-  gates on Brad's vault as configured (W5 -12% aggregate MRR vs
+  gates on the maintainer's vault as configured (W5 -12% aggregate MRR vs
   ≥15% required; W6 -10% on procedural class vs ≥20% required).
   Per-class breakdown surfaces asymmetric effects: W5 helps
   conceptual (+25%) but breaks historical (-44%); W6 helps factual
@@ -1621,9 +1622,9 @@ rebuild safe).
   the worker came back and called `record_embed_state`, the FK on
   `embed_state.memory_id` rejected the INSERT with
   `sqlite3.IntegrityError: FOREIGN KEY constraint failed`, crashing
-  the worker iteration. Surfaced on the busiest vault (Ari, 1.3 GB
+  the worker iteration. Surfaced on the busiest vault (Atlas, 1.3 GB
   index) during the v0.7 → v0.8 embedder migration; never observed
-  on smaller vaults (Ultra, 79 MB) where the race window almost
+  on smaller vaults (a small hosted vault, 79 MB) where the race window almost
   never opens. `Index.record_embed_state` now treats the FK
   violation as a normal outcome — the cascade has already cleaned
   `embed_queue` / `embed_state`, so there's nothing to record — and
@@ -1692,7 +1693,7 @@ microseconds on already-stamped vaults).
 - **`OpenClawLayout.extra_files`** — workspace-relative top-level files
   beyond `MEMORY.md` / `CLAUDE.md` that the OpenClaw adapter ingests
   with the workspace's `agent:<tag>` tag. Closes a coverage gap on
-  agents like Ari with foundational system files (`SOUL.md`,
+  agents like Atlas with foundational system files (`SOUL.md`,
   `USER.md`, `AGENTS.md`, `IDENTITY.md`, `TOOLS.md`, etc.) that
   previously needed to be added to `shared_files` (wrong tag) or stay
   unindexed. See ADR 0013.
@@ -1787,7 +1788,7 @@ Stages shipped:
   the supported way to call this from Python.
 - **Why:** the function issues one `query_vec` per indexed memory,
   and `query_vec` is a vec0 k-NN MATCH that scans all of
-  `memories_vec`. On a ~1k-memory vault that's ~30s; on Brad's
+  `memories_vec`. On a ~1k-memory vault that's ~30s; on the maintainer's
   production vault that exceeded a 45-second smoke timeout even with
   `--neighbors 1 --limit 1`. `--limit` only caps the *report*, not
   the work; the new flag caps the *work*.
@@ -2017,7 +2018,7 @@ Stages shipped:
   signature is unchanged; existing tests and the daemon's in-process
   embed continue to work without modification.
 - **Trade-off:** the first tool call after spawning a fresh MCP
-  subprocess pays the load cost (~30 s on Brad's vault), where it used
+  subprocess pays the load cost (~30 s on the maintainer's vault), where it used
   to be paid up-front. After that, queries are fast and the
   subprocess stays warm until `cfg.mcp.idle_timeout_seconds` elapses.
   Net effect: the connection timeout class of failure goes away
@@ -2265,7 +2266,7 @@ removes the friction that was blocking external use.
 
 - **The boot-echo discovery walk now skips `__pycache__`, `.git`,
   `node_modules`, `.venv`, etc., and prunes at `max_depth = 8`**.
-  On a vault with the live Ari + Claude Code corpus the walk dropped
+  On a vault with the live Atlas + Claude Code corpus the walk dropped
   from ~3.6s to ~20ms — about 180× faster — which kept the noise
   filter from being the long pole on daemon boot.
 
@@ -2304,7 +2305,7 @@ transcript install.
 ### Changed — OpenClaw discovery is now opt-in
 
 - **`memstem init` no longer auto-includes every OpenClaw workspace it
-  finds.** On a multi-agent host (Ari + Blake + Charlie + …) the
+  finds.** On a multi-agent host (Atlas + Orion + Lyra + …) the
   installer used to silently index all of them, mixing every agent's
   memory into one vault. The wizard now defaults each discovered agent
   to "no" — the user opts in explicitly, agent by agent. Shared files
@@ -2649,7 +2650,7 @@ Code releases actually read.
 
 - **Path collisions across agents.** Daily logs and skills with the
   same title/date from different agents collapsed into one record on
-  disk. On Brad's box, 326 daily files reduced to 80, and ~130
+  disk. On the maintainer's box, 326 daily files reduced to 80, and ~130
   OpenClaw records were silently lost during the first cutover.
   Pipeline now extracts `agent:<tag>` from record tags and produces
   agent-scoped paths: `daily/<agent>/<date>.md`, `skills/<agent>/<slug>.md`,
@@ -2715,10 +2716,10 @@ Code releases actually read.
 
 ## [0.1.0] - 2026-04-XX
 
-First tagged release. Phase 1 v0.1 — running on the live EC2 box,
+First tagged release. Phase 1 v0.1 — running on the maintainer's server,
 ingesting from Claude Code + multi-agent OpenClaw, exposing MCP
 search, with FlipClaw retired. Tag date is filled in at release
-time after Brad validates the cutover.
+time after the maintainer validates the cutover.
 
 ### Added
 
@@ -2744,7 +2745,7 @@ time after Brad validates the cutover.
   `Result` records (memory + score + per-source ranks) from the vault.
   Sanitizes FTS5-special characters from natural-language queries; falls
   back to BM25-only if the embedder errors so the daemon never goes mute
-- `memstem.adapters.openclaw`: `OpenClawAdapter` reads Ari/OpenClaw
+- `memstem.adapters.openclaw`: `OpenClawAdapter` reads OpenClaw
   markdown files (memory, daily logs, skills) into normalized
   `MemoryRecord` objects. Reconcile walks paths once; watch streams
   records via `watchdog` inotify. Classifies files by name (`SKILL.md`,
@@ -2825,7 +2826,7 @@ time after Brad validates the cutover.
 - ADR 0007: remote-machine ingestion is out of scope until Phase 3+;
   documented sync-and-watch as the recommended workaround
 - ADR 0008: tiered-memory design (importance scoring, distillations,
-  hygiene worker) for v0.2. Status proposed; no code lands until Brad
+  hygiene worker) for v0.2. Status proposed; no code lands until the maintainer
   reviews
 
 ### Changed

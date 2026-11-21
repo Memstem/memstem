@@ -132,12 +132,12 @@ class TestProjectTagForSession:
         m = _write_session(
             vault,
             session_id="s1",
-            tags=["home-ubuntu-woodfield-quotes"],
+            tags=["home-user-northwind-quotes"],
         )
-        assert project_tag_for_session(m) == "home-ubuntu-woodfield-quotes"
+        assert project_tag_for_session(m) == "home-user-northwind-quotes"
 
     def test_skips_agent_prefix(self, vault: Vault) -> None:
-        m = _write_session(vault, session_id="s2", tags=["agent:ari"])
+        m = _write_session(vault, session_id="s2", tags=["agent:atlas"])
         assert project_tag_for_session(m) is None
 
     def test_skips_topic_prefix(self, vault: Vault) -> None:
@@ -156,9 +156,9 @@ class TestProjectTagForSession:
         m = _write_session(
             vault,
             session_id="s6",
-            tags=["agent:ari", "home-ubuntu-stuff"],
+            tags=["agent:atlas", "home-user-stuff"],
         )
-        assert project_tag_for_session(m) == "home-ubuntu-stuff"
+        assert project_tag_for_session(m) == "home-user-stuff"
 
     def test_non_session_returns_none(self, vault: Vault) -> None:
         payload = {
@@ -168,7 +168,7 @@ class TestProjectTagForSession:
             "updated": datetime(2026, 4, 28, tzinfo=UTC).isoformat(),
             "source": "test",
             "title": "x",
-            "tags": ["home-ubuntu-something"],
+            "tags": ["home-user-something"],
         }
         m = Memory(
             frontmatter=validate(payload),
@@ -188,7 +188,7 @@ class TestFindProjectCandidates:
         assert stats["total_tags_scanned"] == 0
 
     def test_single_session_below_threshold(self, vault: Vault) -> None:
-        _write_session(vault, session_id="s1", tags=["home-ubuntu-onesession"])
+        _write_session(vault, session_id="s1", tags=["home-user-onesession"])
         candidates, stats = find_project_candidates(vault, min_sessions=2)
         assert candidates == []
         assert stats["skipped_below_threshold"] == 1
@@ -197,20 +197,20 @@ class TestFindProjectCandidates:
         _write_session(
             vault,
             session_id="s1",
-            tags=["home-ubuntu-woodfield-quotes"],
+            tags=["home-user-northwind-quotes"],
             title="proposal review",
         )
         _write_session(
             vault,
             session_id="s2",
-            tags=["home-ubuntu-woodfield-quotes"],
+            tags=["home-user-northwind-quotes"],
             title="video work",
             updated=datetime(2026, 4, 29, tzinfo=UTC),
         )
         candidates, _ = find_project_candidates(vault)
         assert len(candidates) == 1
         c = candidates[0]
-        assert c.slug == "home-ubuntu-woodfield-quotes"
+        assert c.slug == "home-user-northwind-quotes"
         assert c.session_count == 2
         # Sorted chronologically by `updated`.
         ids = [Path(s.path).stem for s in c.sessions]
@@ -220,12 +220,12 @@ class TestFindProjectCandidates:
         _write_session(
             vault,
             session_id="s1",
-            tags=["home-ubuntu-woodfield-quotes"],
+            tags=["home-user-northwind-quotes"],
         )
         _write_session(
             vault,
             session_id="s2",
-            tags=["home-ubuntu-woodfield-quotes"],
+            tags=["home-user-northwind-quotes"],
         )
         _write_distillation(vault, linked_session_id="s1", body="d1")
         candidates, _ = find_project_candidates(vault)
@@ -250,7 +250,7 @@ class TestFindProjectCandidates:
 
 def _make_candidate(
     *,
-    slug: str = "home-ubuntu-woodfield-quotes",
+    slug: str = "home-user-northwind-quotes",
     sessions: list[Memory] | None = None,
     distillations: list[Memory] | None = None,
 ) -> ProjectCandidate:
@@ -267,16 +267,16 @@ def _make_candidate(
 
 class TestBuildProjectPrompt:
     def test_includes_slug_and_session_count(self, vault: Vault) -> None:
-        s1 = _write_session(vault, session_id="s1", tags=["home-ubuntu-woodfield-quotes"])
-        s2 = _write_session(vault, session_id="s2", tags=["home-ubuntu-woodfield-quotes"])
+        s1 = _write_session(vault, session_id="s1", tags=["home-user-northwind-quotes"])
+        s2 = _write_session(vault, session_id="s2", tags=["home-user-northwind-quotes"])
         candidate = _make_candidate(sessions=[s1, s2])
         prompt = build_project_prompt(candidate)
-        assert "home-ubuntu-woodfield-quotes" in prompt
+        assert "home-user-northwind-quotes" in prompt
         assert "NUMBER OF SOURCE SESSIONS: 2" in prompt
 
     def test_uses_distillation_when_available(self, vault: Vault) -> None:
         s1 = _write_session(
-            vault, session_id="s1", tags=["home-ubuntu-x"], body="raw session content"
+            vault, session_id="s1", tags=["home-user-x"], body="raw session content"
         )
         d1 = _write_distillation(
             vault,
@@ -292,7 +292,7 @@ class TestBuildProjectPrompt:
 
     def test_falls_back_to_session_body_when_no_distillation(self, vault: Vault) -> None:
         s1 = _write_session(
-            vault, session_id="s1", tags=["home-ubuntu-x"], body="raw session content"
+            vault, session_id="s1", tags=["home-user-x"], body="raw session content"
         )
         candidate = _make_candidate(sessions=[s1], distillations=[])
         prompt = build_project_prompt(candidate)
@@ -300,8 +300,8 @@ class TestBuildProjectPrompt:
         assert "[session]" in prompt
 
     def test_mixed_input_type_label(self, vault: Vault) -> None:
-        s1 = _write_session(vault, session_id="s1", tags=["home-ubuntu-x"], body="s1 body")
-        s2 = _write_session(vault, session_id="s2", tags=["home-ubuntu-x"], body="s2 body")
+        s1 = _write_session(vault, session_id="s1", tags=["home-user-x"], body="s1 body")
+        s2 = _write_session(vault, session_id="s2", tags=["home-user-x"], body="s2 body")
         d1 = _write_distillation(vault, linked_session_id="s1", body="d1 body")
         candidate = _make_candidate(sessions=[s1, s2], distillations=[d1])
         prompt = build_project_prompt(candidate)
@@ -322,11 +322,11 @@ class TestBuildProjectPrompt:
 
 class TestMaterializeProjectRecord:
     def test_path_uses_slug(self, vault: Vault) -> None:
-        s = _write_session(vault, session_id="s1", tags=["home-ubuntu-woodfield-quotes"])
+        s = _write_session(vault, session_id="s1", tags=["home-user-northwind-quotes"])
         candidate = _make_candidate(sessions=[s])
-        body = "# Woodfield Country Club — e-bike work\n\n## Description\n\nbody"
+        body = "# Northwind Logistics — forklift work\n\n## Description\n\nbody"
         memory = materialize_project_record(candidate, body, "stub")
-        assert memory.path == Path("memories/projects/home-ubuntu-woodfield-quotes.md")
+        assert memory.path == Path("memories/projects/home-user-northwind-quotes.md")
 
     def test_title_extracted_from_body_h1(self, vault: Vault) -> None:
         s = _write_session(vault, session_id="s1", tags=["t"])

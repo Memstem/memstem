@@ -132,7 +132,7 @@ _AUTOMATION_PATH_RE = re.compile(
 
 
 # How long transient records stay searchable before `valid_to` expires them.
-# Brad's preference (per the design conversation): "couple of weeks, or four
+# The owner's preference (per the design conversation): "couple of weeks, or four
 # weeks at most." Four weeks is the documented default in ADR 0011's table.
 _TRANSIENT_TTL_DAYS = 28
 

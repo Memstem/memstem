@@ -54,7 +54,7 @@ produces.
 5. Stay local-first and cross-platform. Pure Python + Ollama; no API
    key required; runs identically on Linux, macOS, and (later) Windows.
 6. Stay 100% inside MemStem. The thin redirect markdown in
-   `~/.claude/CLAUDE.md` and `~/ari/openclaw.json` is the only touch
+   `~/.claude/CLAUDE.md` and `~/atlas/openclaw.json` is the only touch
    point with Claude Code or OpenClaw — no hooks, no callbacks, no
    plugins on the client side.
 

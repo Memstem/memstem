@@ -105,7 +105,7 @@ Options:
   --remove-flipclaw   With --connect-clients, also strip the legacy
                       claude-code-bridge.py SessionEnd hook.
   --migrate           After init, run `memstem migrate --apply` to import
-                      historical Ari/OpenClaw memory and recent Claude
+                      historical OpenClaw memory and recent Claude
                       Code sessions into the new vault.
   --migrate-days N    Claude Code session lookback for --migrate (default 30).
                       Smaller values reduce the embed load on a fresh

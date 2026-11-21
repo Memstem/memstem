@@ -53,11 +53,11 @@ class TestShouldExpand:
         [
             # Real questions — should expand.
             ("how do I send a Telegram message", True),
-            ("what gateway port does Ari run on", True),
+            ("what gateway port does Atlas run on", True),
             ("memory consolidation strategy", True),
             # Too short — exact lookups, skip.
-            ("ari", False),
-            ("ari port", False),
+            ("atlas", False),
+            ("atlas port", False),
             # Quoted strings — exact match intent.
             ('alpha "exact phrase" query', False),
             # Boolean operators.
@@ -68,7 +68,7 @@ class TestShouldExpand:
             # Identifier shapes.
             ("11111111-1111-1111-1111-111111111111", False),
             ("a" * 32, False),
-            ("/home/ubuntu/memstem/file.md", False),
+            ("/home/user/memstem/file.md", False),
             ("memstem/core/search.py", False),
             # Empty / whitespace.
             ("", False),
@@ -86,7 +86,7 @@ class TestShouldExpand:
         # subclasses can override but the default must match.
         expander = NoOpExpander()
         assert expander.should_expand("how do I send a message") is True
-        assert expander.should_expand("ari") is False
+        assert expander.should_expand("atlas") is False
 
 
 # ─── cache helpers ────────────────────────────────────────────────
@@ -225,7 +225,7 @@ class TestOllamaExpander:
         assert expander.name == f"ollama:{DEFAULT_OLLAMA_MODEL}"
 
     def test_expand_returns_passage(self) -> None:
-        passage = "To send a Telegram message, run bash ~/scripts/tg-send 'msg'."
+        passage = "To send a Telegram message, run bash ~/scripts/notify-send 'msg'."
         client = _MockHttpClient(_MockHttpResponse(body={"response": passage}))
         expander = OllamaExpander(client=client)
         result = expander.expand("how do I send a Telegram message")
@@ -309,7 +309,7 @@ class TestOpenAIExpander:
         assert expander.name == "openai:gpt-4o"
 
     def test_expand_returns_passage(self) -> None:
-        passage = "To send a Telegram message, run bash ~/scripts/tg-send 'msg'."
+        passage = "To send a Telegram message, run bash ~/scripts/notify-send 'msg'."
         client = _MockHttpClient(_openai_response(passage))
         expander = OpenAIExpander(client=client)
         result = expander.expand("how do I send a Telegram message")

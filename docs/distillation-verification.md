@@ -101,7 +101,7 @@ Pick a known project and read the generated record:
 
 ```bash
 # Project record:
-cat ~/memstem-vault/memories/projects/home-ubuntu-woodfield-quotes.md
+cat ~/memstem-vault/memories/projects/home-user-northwind-quotes.md
 
 # A session distillation that contributed to it:
 ls ~/memstem-vault/distillations/claude-code/ | head -5
@@ -112,8 +112,8 @@ What to look for (if any of these fail, see "What to do if quality
 is poor" below):
 
 - **Title** — Is the canonical project name the way you'd phrase it?
-  ("Woodfield Country Club — e-bike & golf cart tracking", not
-  `home-ubuntu-woodfield-quotes`.)
+  ("Northwind Logistics — forklift & loading dock tracking", not
+  `home-user-northwind-quotes`.)
 - **Entity coverage** — Does the summary mention the people,
   organizations, and specific deliverables you'd expect?
 - **Length** — Is the body roughly a paragraph + 4 short sections,
@@ -139,11 +139,11 @@ python -m memstem.eval.harness --queries eval/queries.yaml --json-out /tmp/eval-
 # Diff the JSON for the lift on the project_* queries.
 ```
 
-The Woodfield-shape queries (`project_woodfield_ebike_video`,
+The Northwind-shape queries (`project_northwind_walkthrough_video`,
 `project_aerial_demo_revision`, `project_recent_client_work`,
 `project_distillation_ranks_above_raw`) are the ones designed to
 exercise the new pipeline. Substring matchers in the queries assume
-your vault contains a Woodfield project — replace the entity
+your vault contains a Northwind project — replace the entity
 substrings with terms from your own projects if needed (the
 `expect.body_contains` / `expect.path_contains` lists are easy to
 edit).
@@ -220,7 +220,7 @@ server) in their vault config:
 http:
   enabled: true
   host: 127.0.0.1
-  port: 7822      # different from any other MemStem on this host
+  port: 7899      # example: any port no other MemStem on this host uses
 ```
 
 Then `pm2 restart memstem` for that user. The MCP-over-stdio path

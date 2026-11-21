@@ -108,7 +108,7 @@ def mcp_env_from_embedding(
     and embed it in the written entry.
 
     The value isn't a secret per se — it's the same key the user
-    already has elsewhere on the box (e.g., in `~/ari/openclaw.json`
+    already has elsewhere on the box (e.g., in `~/atlas/openclaw.json`
     `env.vars`) — but it's worth noting that it lands on disk in the
     MCP config file. Treat that file's permissions accordingly.
     """

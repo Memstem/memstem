@@ -16,7 +16,7 @@ gap stayed hidden on the maintainers' own server because every entry in its
 
 On other installs the gap is real. A client who writes skills with Claude Code, or who
 gets them from a tool, cannot find them through `memstem_search` or `memstem_list_skills`.
-Pocket Code 1.34 now installs its `pocket-projects` and `pocket-files` skills into both
+Pocket Code 1.34 now installs its own skills into both
 `~/.claude/skills` and `~/.codex/skills`, and a Claude-only server indexes neither.
 
 Two hazards shaped the design, both seen on real servers:
@@ -56,7 +56,7 @@ title and tag handling for every client's `SKILL.md`.
 
 - Claude-only installs see their own skills in search and `memstem_list_skills`.
 - Installs whose `~/.claude/skills` holds only symlinks, vendor copies or Codex duplicates
-  gain no records. Measured on brads-server: zero new records.
+  gain no records. Measured on main-server: zero new records.
 - A skill installed for both clients but edited in only one of them is indexed twice,
   once per client. That is correct: the two copies now say different things.
 - A user who keeps nested folders of their own skills deeper than one level will not see

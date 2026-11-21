@@ -39,7 +39,7 @@ across releases; the implementation behind it ships in phases.
 
 | Capability | Status | What it does |
 |---|---|---|
-| **Vault primitive** (`SecretBackend` interface) | ⚪ Designed | Stores secrets by name, returns them on demand to authorized callers. Multiple backends planned: `UltraVaultBackend` (default), `EnvBackend` (dev), `HashiCorpVaultBackend`, `AWSSecretsManagerBackend`, `NoopBackend`. |
+| **Vault primitive** (`SecretBackend` interface) | ⚪ Designed | Stores secrets by name, returns them on demand to authorized callers. Multiple backends planned: `ExampleVaultBackend` (default), `EnvBackend` (dev), `HashiCorpVaultBackend`, `AWSSecretsManagerBackend`, `NoopBackend`. |
 | **Agent vault tools** | ⚪ Designed | `vault.put(name, value)` and `vault.get(name)` exposed to OpenClaw and Codex assistants, configured by default in the deployment template. |
 | **System-prompt guidance** | 🟡 In progress | Default `AGENTS.md` / `CLAUDE.md` instruct the assistant to put credentials in the vault on first sight and refer to them by name thereafter. |
 | **Ingest-time pattern scrub** | ⚪ Designed | When records enter the Memstem index, a regex pack matching known secret formats (AWS keys, GitHub tokens, OpenAI keys, JWT, OAuth bearer tokens, RSA private keys, etc.) runs. Hits are redacted to `{{vault:slug/key}}` placeholders and the underlying secret is moved to the configured backend. |
@@ -132,13 +132,13 @@ scores reflect the redacted form, not the secret value.
 
 ## Vault backends
 
-The default deployment ships with `UltraVaultBackend`, pointing at a
+The default deployment ships with `ExampleVaultBackend`, pointing at a
 co-located vault container. To use your own:
 
 ```yaml
 # _meta/config.yaml
 secrets:
-  backend: hashicorp        # or: aws-secrets-manager, env, noop, ultra-vault
+  backend: hashicorp        # or: aws-secrets-manager, env, noop, example-vault
   url: https://vault.example.com:8200
   namespace: my-tenant
   auth:

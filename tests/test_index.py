@@ -73,8 +73,8 @@ def index(tmp_path: Path) -> Iterator[Index]:
 
 class TestExtractWikilinks:
     def test_finds_simple_links(self) -> None:
-        body = "See [[Brad Besner]] and [[Cloudflare]]."
-        assert extract_wikilinks(body) == ["Brad Besner", "Cloudflare"]
+        body = "See [[Jordan Avery]] and [[Cloudflare]]."
+        assert extract_wikilinks(body) == ["Jordan Avery", "Cloudflare"]
 
     def test_returns_empty_for_plain_text(self) -> None:
         assert extract_wikilinks("no links here") == []
@@ -129,14 +129,14 @@ class TestSchema:
 
 class TestUpsert:
     def test_round_trip_basic_fields(self, index: Index) -> None:
-        memory = _make_memory(title="brad", body="hello", importance=0.7)
+        memory = _make_memory(title="jordan", body="hello", importance=0.7)
         index.upsert(memory)
         row = index.db.execute(
             "SELECT id, title, body, importance FROM memories WHERE id = ?",
             (str(memory.id),),
         ).fetchone()
         assert row["id"] == str(memory.id)
-        assert row["title"] == "brad"
+        assert row["title"] == "jordan"
         assert row["body"] == "hello"
         assert row["importance"] == 0.7
 
@@ -410,7 +410,7 @@ class TestEmbedState:
         """Regression: when the parent ``memories`` row is deleted
         between ``upsert_vectors`` and ``record_embed_state`` (the
         race that triggered ``sqlite3.IntegrityError: FOREIGN KEY
-        constraint failed`` on Ari's box during the v0.7 → v0.8
+        constraint failed`` on Atlas's box during the v0.7 → v0.8
         embedder migration), the worker must not crash. The cascade
         has already cleaned ``embed_queue`` / ``embed_state``;
         ``record_embed_state`` should silently no-op rather than
@@ -506,7 +506,7 @@ class TestEmbedState:
         """The FK race handler must catch the violation regardless of
         whether SQLite surfaces it as :class:`sqlite3.IntegrityError`
         (the usual case) or as the parent
-        :class:`sqlite3.DatabaseError` (observed on Ari's Python 3.12 +
+        :class:`sqlite3.DatabaseError` (observed on Atlas's Python 3.12 +
         SQLite 3.45 deployment after the original PR #78 fix shipped —
         the narrow ``except IntegrityError`` clause didn't fire and the
         embed worker crashed).
@@ -537,7 +537,7 @@ class TestEmbedState:
             class _RaisingDB:
                 """Proxy that intercepts the embed_state INSERT and
                 raises ``sqlite3.DatabaseError`` (parent class), the
-                shape Ari's box surfaced. Everything else falls
+                shape Atlas's box surfaced. Everything else falls
                 through to the real connection."""
 
                 def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:

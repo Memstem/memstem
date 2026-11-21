@@ -9,7 +9,7 @@ Vec retrieval ranks documents by their semantic distance to the query
 in embedding space. The bi-encoder embeds query and document
 independently, so retrieval quality depends on the two sides sharing
 embedding-space neighbors. Most queries do — "what gateway port does
-Ari run on" lands close to documents that mention "Ari port" or "18789"
+Atlas run on" lands close to documents that mention "Atlas port" or "12345"
 because the bi-encoder learned those associations during training.
 
 But some queries don't share embedding-space neighbors with their
@@ -17,13 +17,13 @@ correct answers, even when the answer is in the vault. The classic
 failure mode is the **procedural query / declarative answer** mismatch:
 
 - Query: *"how do I send a Telegram message"*
-- Answer document: *"Use `bash ~/scripts/tg-send 'Your message'`. The
+- Answer document: *"Use `bash ~/scripts/notify-send 'Your message'`. The
   script reads the bot token from ..."*
 
 The query is a question; the document is an imperative instruction.
 Vocabulary diverges ("how do I" → "use", "send" → "run", "Telegram
-message" → "tg-send"). The bi-encoder hasn't been trained on
-Memstem-specific vocabulary, so it doesn't know `tg-send` is the
+message" → "notify-send"). The bi-encoder hasn't been trained on
+Memstem-specific vocabulary, so it doesn't know `notify-send` is the
 canonical procedure for "send a Telegram message". The result: vec
 retrieval misses; BM25 might catch it via "Telegram" overlap, but a
 rank-7 BM25 hit doesn't beat 50 noise documents in the fused result.
@@ -50,7 +50,7 @@ the vault, even when the original query doesn't. The LLM doesn't need
 to be right about the facts — it just needs to produce passage-shaped
 text that lands near the actual answer in embedding space. A
 hallucinated step ("run `tg-cli send <message>`") still pulls vec
-retrieval toward the documents that describe the real `tg-send`
+retrieval toward the documents that describe the real `notify-send`
 script, because the bi-encoder maps both to the
 "send-a-message-via-CLI" region of embedding space.
 
@@ -112,7 +112,7 @@ HyDE adds latency to every query it fires on. The gate prunes queries
 that don't benefit:
 
 - **Length gate**: queries shorter than 3 words are typically exact
-  lookups ("ari port", "rrf k") where the original query already
+  lookups ("atlas port", "rrf k") where the original query already
   shares vocabulary with the answer. HyDE adds noise.
 - **Quoted-string gate**: queries containing `"..."` signal user
   intent for exact-string match. HyDE's hypothesis would dilute that.

@@ -186,7 +186,7 @@ class TestOpenAITransientErrors:
 
     def test_connect_error_raises_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Network-level failure (peer closed, connect refused, read
-        timeout) is the exact shape that was burning Ari's retry
+        timeout) is the exact shape that was burning Atlas's retry
         budget. Must map to transient."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         emb = OpenAIEmbedder(model="text-embedding-3-small", dimensions=4)

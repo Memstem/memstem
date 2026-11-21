@@ -90,12 +90,10 @@ class TestLoadPost:
         assert post.content.endswith("```")
 
     def test_quoted_quotes_and_alias_like_values(self) -> None:
-        text = (
-            '---\ndescription: WIRED (Skyler: "All 5") — five hooks\nref: *not-an-alias\n---\nb\n'
-        )
+        text = '---\ndescription: WIRED (Robin: "All 5") — five hooks\nref: *not-an-alias\n---\nb\n'
         post, recovered = load_post(text)
         assert recovered
-        assert post.metadata["description"] == 'WIRED (Skyler: "All 5") — five hooks'
+        assert post.metadata["description"] == 'WIRED (Robin: "All 5") — five hooks'
         assert post.metadata["ref"] == "*not-an-alias"
 
     def test_nested_blocks_lists_and_wrapped_lines(self) -> None:
@@ -105,7 +103,7 @@ class TestLoadPost:
             "tags: [x, y]\n"
             "metadata:\n"
             "  type: feedback\n"
-            "  owner: Skyler: lead\n"
+            "  owner: Robin: lead\n"
             "links:\n"
             "  - one\n"
             "  - two: three\n"
@@ -121,7 +119,7 @@ class TestLoadPost:
         assert dict(post.metadata) == {
             "title": "a: b",
             "tags": ["x", "y"],
-            "metadata": {"type": "feedback", "owner": "Skyler: lead"},
+            "metadata": {"type": "feedback", "owner": "Robin: lead"},
             "links": ["one", "two: three"],
             "summary": "first line continues here",
             "empty": None,
@@ -198,7 +196,7 @@ class TestValidate:
         fm_obj = validate(
             _minimal_metadata(
                 type="skill",
-                title="deploy to kinsta",
+                title="deploy to staging",
                 scope="universal",
                 verification="run health check",
             )

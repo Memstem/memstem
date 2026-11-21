@@ -893,7 +893,7 @@ def migrate(
         ),
     ] = 25,
 ) -> None:
-    """One-shot import of FlipClaw / Ari memory into the Memstem vault.
+    """One-shot import of FlipClaw / OpenClaw memory into the Memstem vault.
 
     Default mode is dry-run (counts + sample preview, no writes). Pass
     `--apply` to actually persist. Re-runs are safe — the pipeline
@@ -3181,7 +3181,8 @@ def hygiene_project_records(
         typer.Option(
             "--force",
             help=(
-                "Re-summarize project records that already exist, "
+                "Re-summarize project records that already exist, bypassing "
+                "the input check and the summarizer cache, "
                 "including those flagged manual:true. Without --force, "
                 "manual records have only their links and updated "
                 "timestamp refreshed."
@@ -3302,6 +3303,7 @@ def hygiene_project_records(
             typer.echo(
                 f"\napplied: {result.written} new, "
                 f"{result.updated} updated, "
+                f"{result.unchanged} unchanged, "
                 f"{result.links_only_updates} links-only refresh, "
                 f"{result.skipped_no_summary} skipped (empty), "
                 f"{len(result.apply_errors)} error(s)"

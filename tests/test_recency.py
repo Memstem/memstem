@@ -131,9 +131,9 @@ class TestHistoricalQueries:
             "memstem config in 2025",
             "what was the embed provider on 2026-08-01",
             "what did we originally use for embeddings",
-            "how did the Oaks NVR work three months ago",
+            "how did the warehouse NVR work three months ago",
             "when did we switch to OpenRouter",
-            "the history of pole 35",
+            "the history of rack 35",
             "early may pricing",
         ],
     )
@@ -146,7 +146,7 @@ class TestHistoricalQueries:
             "which embedding provider does memstem use",
             "may I restart the daemon",
             "what model does the ticket agent use",
-            "current TechPro ticket setup",
+            "current Acme ticket setup",
             "marching orders for the content engine",
         ],
     )
