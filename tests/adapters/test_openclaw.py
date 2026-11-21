@@ -71,11 +71,11 @@ class TestExtractH1:
 
 class TestFileToRecord:
     def test_plain_markdown_uses_h1_as_title(self, tmp_path: Path) -> None:
-        path = _write(tmp_path / "people.md", "# People\n\nBrad runs Acme.\n")
+        path = _write(tmp_path / "people.md", "# People\n\nJordan runs Acme.\n")
         record = _file_to_record(path, "openclaw")
         assert record is not None
         assert record.title == "People"
-        assert record.body == "# People\n\nBrad runs Acme."
+        assert record.body == "# People\n\nJordan runs Acme."
         assert record.metadata["type"] == "memory"
         assert record.source == "openclaw"
         assert record.ref == str(path)
@@ -290,7 +290,7 @@ class TestWorkspaceMode:
         ws_root = root / agent
         _write(ws_root / "MEMORY.md", "# Core for " + agent)
         _write(ws_root / "CLAUDE.md", "# How " + agent + " operates")
-        _write(ws_root / "memory" / "people.md", "# People\n\nBrad")
+        _write(ws_root / "memory" / "people.md", "# People\n\nJordan")
         _write(ws_root / "memory" / "2026-04-25.md", "# Daily 2026-04-25\n\nlog")
         _write(ws_root / "skills" / "deploy" / "SKILL.md", "# Deploy skill")
         return ws_root

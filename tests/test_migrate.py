@@ -98,7 +98,7 @@ class TestCli:
 
         # Seed a FlipClaw-style atlas directory.
         atlas = tmp_path / "atlas"
-        _write(atlas / "memory" / "people.md", "# People\n\nbrad")
+        _write(atlas / "memory" / "people.md", "# People\n\njordan")
 
         result = runner.invoke(
             app,
@@ -127,7 +127,7 @@ class TestCli:
         runner.invoke(cli_app, ["init", str(vault_path)])
 
         atlas = tmp_path / "atlas"
-        _write(atlas / "memory" / "people.md", "# People\n\nbrad")
+        _write(atlas / "memory" / "people.md", "# People\n\njordan")
         _write(atlas / "memory" / "decisions.md", "# Decisions\n\nstuff")
 
         result = runner.invoke(
