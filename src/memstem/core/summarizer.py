@@ -461,7 +461,9 @@ class OpenAISummarizer(Summarizer):
         from urllib.parse import urlparse
 
         host = (urlparse(self.base_url).hostname or "").lower()
-        if host.endswith("openai.com") or host.endswith("openai.azure.com"):
+        # Exact host or a dot-delimited subdomain, so look-alikes such as
+        # ``notopenai.com`` are labelled ``openai-compat``.
+        if host == "openai.com" or host.endswith((".openai.com", ".openai.azure.com")):
             self.name_prefix = "openai"
         else:
             self.name_prefix = "openai-compat"

@@ -22,6 +22,7 @@ from memstem.core.embeddings import (
     TransientEmbeddingError,
     VoyageEmbedder,
     _classify_http_error,
+    _is_real_openai_host,
     chunk_text,
     embed_for,
     image_bytes_to_data_url,
@@ -263,6 +264,22 @@ class TestOpenAIEmbedder:
             real.close()
             compat.close()
             override.close()
+
+    @pytest.mark.parametrize(
+        ("base_url", "expected"),
+        [
+            ("https://api.openai.com/v1", True),
+            ("https://openai.com/v1", True),
+            ("https://my-resource.openai.azure.com/openai", True),
+            ("https://notopenai.com/v1", False),
+            ("https://api.evil-openai.azure.com.attacker.net/v1", False),
+            ("https://myopenai.azure.com/v1", False),
+            ("http://localhost:8080/v1", False),
+        ],
+    )
+    def test_real_openai_host_matches_whole_labels(self, base_url: str, expected: bool) -> None:
+        """Host check compares dot-delimited labels, not a bare suffix."""
+        assert _is_real_openai_host(base_url) is expected
 
     def test_self_hosted_sub_batches_to_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A self-hosted endpoint (T4 caps at 32) embedding 70 chunks must

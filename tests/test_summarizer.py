@@ -427,6 +427,17 @@ def test_openai_summarizer_azure_endpoint_keeps_openai_prefix() -> None:
     assert s.name_prefix == "openai"
 
 
+def test_openai_summarizer_lookalike_host_uses_compat_prefix() -> None:
+    """Only openai.com and its subdomains count as OpenAI Inc.; a host that
+    merely ends in the same letters (``notopenai.com``) is a compat server."""
+    for base_url in ("https://notopenai.com/v1", "https://myopenai.azure.com/v1"):
+        s = smod.OpenAISummarizer(
+            base_url=base_url,
+            client=_MockClient(_MockResponse({"choices": []})),
+        )
+        assert s.name_prefix == "openai-compat", base_url
+
+
 def test_openai_summarizer_calls_chat_completions_endpoint() -> None:
     response = _MockResponse({"choices": [{"message": {"content": "openai summary"}}]})
     client = _MockClient(response)
