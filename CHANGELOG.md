@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vector compaction now copies live rows that appeared during the copy without an `embed_state` change, instead of aborting the swap on the count mismatch (needed for ADR 0056 alias promotion).
 
 ### Fixed
+- `GET /health` no longer puts exception text in its `error` fields when the hygiene state or embed queue can't be read (`/health` stays open even with bearer auth on). It now reports `unreadable; see the daemon log` and logs the exception there. The `problems` codes are unchanged.
+- The OpenAI-host check (embedder batch cap, summarizer `openai:` provenance label) now matches `openai.com` and its subdomains only, so a look-alike host such as `notopenai.com` is treated as an OpenAI-compatible server.
 - Served Jev searches (ADR 0047) with a `limit` above `search.jev_shadow.pool_size` (default 20) returned only `pool_size` results. Jev's order is now followed by the remaining hits in their normal order, so the caller gets the number it asked for.
 
 
