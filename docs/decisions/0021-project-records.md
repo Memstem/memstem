@@ -139,6 +139,24 @@ that's the whole point.
 The body-hash check uses the same `body_hash` column the embed
 pipeline writes. We don't recompute hashes — just read them.
 
+**As implemented (amended 2026-11).** The writer first shipped
+without this check: it called the summarizer for every project on
+every run and relied on the summarizer cache, keyed on the full
+rendered prompt, to skip unchanged ones. Because the key included the
+template's wording, any wording edit made every project miss the
+cache and regenerate. The check is now an input hash stored on the
+record, `provenance.input_hash`: SHA-256 over the values substituted
+into the template (tag, session count, input type, the source
+sections), the summarizer name and `PROJECT_PROMPT_VERSION`
+(`hygiene/project_records.py`), but not the template text. When it
+matches, the body is kept and no call is made. A record written
+before the field existed is kept when it links exactly the current
+sources, its body is a cached output of the same summarizer, and no
+source was updated after that output was cached; the next write
+stamps the hash. Bump `PROJECT_PROMPT_VERSION` when a template change
+is meant to change the records; leave it for wording-only edits.
+`--force` skips both the hash and the cache.
+
 ### Manual override
 
 Project records can be hand-edited like any other markdown file. To
