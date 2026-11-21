@@ -23,8 +23,8 @@ permanently excluded every session it caught mid-distillation, with no
 self-recovery (the only cap reset fires on a *successful* write, which an
 excluded session can never reach).
 
-This caused the June 2026 fleet stalls: E1 lost 8 days of distillation behind a
-stopped `:9444` sidecar; tenant-a (`distill_fail:18`) and tenant-b
+This caused the June 2026 fleet stalls: host-b lost 8 days of distillation behind a
+stopped summarizer sidecar; operator-b (`distill_fail:18`) and operator-c
 (`distill_fail:2`) were poisoned by brief tunnel blips. The embed path never had
 this problem — it retries transient failures indefinitely (`retry_count
 unchanged`). Distillation lacked the same grace.
@@ -58,7 +58,7 @@ storage-invariant change; the canonical markdown store (ADR 0002) is untouched.
 
 - A momentary backend outage no longer silently kills distillation — sessions
   retry until the backend recovers, so the failure mode that hid for 8 days on
-  E1 cannot recur from a transient cause.
+  host-b cannot recur from a transient cause.
 - A genuinely-unsummarizable session is retried at most ~once per TTL window
   (not every tick), bounded further by the recency window (ADR 0020). Its
   attempt counter grows unbounded but is harmless.

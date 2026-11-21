@@ -15,7 +15,7 @@ The failure is not rare and it is not random. Agents write memory notes with a o
 prose `description:` (Claude Code's auto-memory format has exactly this field), and
 prose contains `: ` — `Browser support: Chrome 114+`, `(Robin: "All 5")`, `Robin: lead
 designer`. YAML reads the unquoted value as a nested mapping and fails with `mapping
-values are not allowed in this context`. One fleet host (E1) produced seven daily health
+values are not allowed in this context`. One fleet host (host-b) produced seven daily health
 warnings for this between 2026-09-19 and 2026-10-11, ten files in all, each repaired by
 hand while new ones kept arriving; a client workstation lost a file to it for sixteen
 days in September. Other hosts are unaffected only because their agents' memory files

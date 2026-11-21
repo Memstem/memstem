@@ -110,7 +110,7 @@ class TestPathForMemory:
         atlas = _processed(
             pipe,
             _record(
-                body="Atlas's deploy procedure (different content from Sarah's).",
+                body="Atlas's deploy procedure (different content from Vega's).",
                 ref="/home/user/atlas/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
@@ -120,22 +120,22 @@ class TestPathForMemory:
                 },
             ),
         )
-        sarah = _processed(
+        vega = _processed(
             pipe,
             _record(
-                body="Sarah's deploy procedure (different content from Atlas's).",
-                ref="/home/user/sarah/skills/deploy/SKILL.md",
+                body="Vega's deploy procedure (different content from Atlas's).",
+                ref="/home/user/vega/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
-                tags=["agent:sarah"],
+                tags=["agent:vega"],
                 extra_metadata={
                     "raw_frontmatter": {"scope": "universal", "verification": "ok"},
                 },
             ),
         )
         assert atlas.path == Path("skills/atlas/deploy.md")
-        assert sarah.path == Path("skills/sarah/deploy.md")
-        assert atlas.path != sarah.path
+        assert vega.path == Path("skills/vega/deploy.md")
+        assert atlas.path != vega.path
 
     def test_agent_tag_disambiguates_daily_path(self, vault: Vault, index: Index) -> None:
         """Daily logs from different agents on the same date must not collide."""
@@ -143,7 +143,7 @@ class TestPathForMemory:
         atlas = _processed(
             pipe,
             _record(
-                body="Atlas's notes for 2026-04-26 (distinct from Sarah's).",
+                body="Atlas's notes for 2026-04-26 (distinct from Vega's).",
                 ref="/home/user/atlas/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
@@ -151,19 +151,19 @@ class TestPathForMemory:
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
             ),
         )
-        sarah = _processed(
+        vega = _processed(
             pipe,
             _record(
-                body="Sarah's notes for 2026-04-26 (distinct from Atlas's).",
-                ref="/home/user/sarah/memory/2026-04-26.md",
+                body="Vega's notes for 2026-04-26 (distinct from Atlas's).",
+                ref="/home/user/vega/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
-                tags=["agent:sarah"],
+                tags=["agent:vega"],
                 extra_metadata={"created": "2026-04-26T00:00:00+00:00"},
             ),
         )
         assert atlas.path == Path("daily/atlas/2026-04-26.md")
-        assert sarah.path == Path("daily/sarah/2026-04-26.md")
+        assert vega.path == Path("daily/vega/2026-04-26.md")
 
     def test_no_agent_tag_keeps_legacy_path(self, vault: Vault, index: Index) -> None:
         """Records without an `agent:` tag use the pre-PR-25 paths (back-compat)."""

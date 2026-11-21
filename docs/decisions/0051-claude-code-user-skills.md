@@ -16,7 +16,7 @@ gap stayed hidden on the maintainers' own server because every entry in its
 
 On other installs the gap is real. A client who writes skills with Claude Code, or who
 gets them from a tool, cannot find them through `memstem_search` or `memstem_list_skills`.
-Pocket Code 1.34 now installs its `pocket-projects` and `pocket-files` skills into both
+Pocket Code 1.34 now installs its own skills into both
 `~/.claude/skills` and `~/.codex/skills`, and a Claude-only server indexes neither.
 
 Two hazards shaped the design, both seen on real servers:

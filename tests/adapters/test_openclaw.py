@@ -321,18 +321,18 @@ class TestWorkspaceMode:
 
     async def test_multi_agent_records_tagged_distinctly(self, tmp_path: Path) -> None:
         self._seed_workspace(tmp_path, "atlas")
-        self._seed_workspace(tmp_path, "sarah")
+        self._seed_workspace(tmp_path, "vega")
         adapter = OpenClawAdapter(
             workspaces=[
                 OpenClawWorkspace(path=tmp_path / "atlas", tag="atlas"),
-                OpenClawWorkspace(path=tmp_path / "sarah", tag="sarah"),
+                OpenClawWorkspace(path=tmp_path / "vega", tag="vega"),
             ]
         )
         records = await _drain(adapter.reconcile([]))
         atlas_only = [r for r in records if "agent:atlas" in r.tags]
-        sarah_only = [r for r in records if "agent:sarah" in r.tags]
+        vega_only = [r for r in records if "agent:vega" in r.tags]
         assert len(atlas_only) == 5
-        assert len(sarah_only) == 5
+        assert len(vega_only) == 5
         # No record should carry both agent tags.
         for r in records:
             agent_tags = [t for t in r.tags if t.startswith("agent:")]

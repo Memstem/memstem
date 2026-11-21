@@ -562,9 +562,9 @@ straight to 0.19.1.
   was caught and returned as the empty string — indistinguishable from
   "unsummarizable content" — so the distill applier counted it toward the
   3-strike `distill_fail` cap and **permanently excluded** the session, with no
-  self-recovery. A brief backend blip (a stopped `:9444` sidecar, a CF-tunnel
-  530) therefore silently stalled distillation for days (the June 2026 E1 /
-  tenant-a / tenant-b stalls). Now `Summarizer.generate` raises
+  self-recovery. A brief backend blip (a stopped summarizer sidecar, a CF-tunnel
+  530) therefore silently stalled distillation for days (the June 2026 host-b /
+  operator-b / operator-c stalls). Now `Summarizer.generate` raises
   `TransientSummarizerError` on a retryable failure (network / timeout / 5xx /
   429 / 408) — propagated by `generate_cached` — and `compute_distillation_plan`
   skips the session that cycle **without** recording a failure, so it retries
@@ -2302,7 +2302,7 @@ transcript install.
 ### Changed — OpenClaw discovery is now opt-in
 
 - **`memstem init` no longer auto-includes every OpenClaw workspace it
-  finds.** On a multi-agent host (Atlas + Blake + Charlie + …) the
+  finds.** On a multi-agent host (Atlas + Orion + Lyra + …) the
   installer used to silently index all of them, mixing every agent's
   memory into one vault. The wizard now defaults each discovered agent
   to "no" — the user opts in explicitly, agent by agent. Shared files

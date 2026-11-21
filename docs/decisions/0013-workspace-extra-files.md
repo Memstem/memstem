@@ -71,7 +71,7 @@ through the same way `MEMORY.md` edits do.
 - Layout stays the single place describing "what counts as a
   ingestable file in this workspace."
 - Setup is unblocked for Atlas today, and the same field will serve
-  a second operator's agents, Fleet, and any future agent without a code change.
+  a second operator's agents, a monitoring agent, and any future agent without a code change.
 
 **Cons:**
 

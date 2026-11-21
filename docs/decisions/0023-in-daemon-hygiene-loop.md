@@ -15,7 +15,7 @@ Memstem v0.10 ships four hygiene tasks as one-shot CLI commands:
 
 These commands were designed to run on a cron or systemd timer, scheduled outside the daemon. In practice no scheduling layer was ever set up — the fleet has `distill-sessions` last firing on 2026-05-05 (one-shot backfill, never since), `dedup-judge` last on 2026-05-02 (backfill, never since), `importance` never run, `project-records` last on 2026-04-29.
 
-Every Memstem instance audited (Atlas, E1, three hosted customer containers) shows the same pattern. The ingestion + embedding pipeline works; the curation pipeline is dormant.
+Every Memstem instance audited (Atlas, host-b, three hosted customer containers) shows the same pattern. The ingestion + embedding pipeline works; the curation pipeline is dormant.
 
 ## Decision
 
@@ -125,7 +125,7 @@ The `/health` endpoint gains a `hygiene` block:
 
 ## Rollout
 
-Native PM2 installs (Atlas, a second operator's tenant-a, a third operator's tenant-b):
+Native PM2 installs (Atlas, operator-b, operator-c):
 `pipx upgrade memstem && pm2 restart memstem`. Loop starts automatically.
 
 Hosted customer containers (customer-a, customer-b, customer-c, et al.):

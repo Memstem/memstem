@@ -381,7 +381,7 @@ class TestJevShadowRun:
             ("memstem watchdog liveness probe", 1, ["__watchdog__"]),
             ("normal question here", 10, ["__watchdog__"]),
             ("normal question here", 2, None),
-            ("what is the MOM password", 10, None),
+            ("what is the router admin password", 10, None),
             ("   ", 10, None),
         ],
     )

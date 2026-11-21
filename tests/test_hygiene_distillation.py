@@ -158,7 +158,7 @@ class TestDailyWeekClusters:
         assert all(not c.cluster_id.startswith("daily:") for c in candidates)
 
     def test_daily_logs_separated_by_agent(self, vault: Vault) -> None:
-        # Five for agent atlas, five for agent sarah — both clusters
+        # Five for agent atlas, five for agent vega — both clusters
         # should appear separately.
         base = datetime(2026, 4, 20, 9, 0, 0, tzinfo=UTC)
         for i in range(5):
@@ -174,14 +174,14 @@ class TestDailyWeekClusters:
                 body=f"s{i}",
                 vault=vault,
                 type_="daily",
-                tags=["agent:sarah"],
+                tags=["agent:vega"],
                 created=base.replace(day=base.day + i),
             )
         candidates = find_distillation_candidates(vault)
         # Two clusters, both daily-week kind.
         daily = [c for c in candidates if c.kind == "daily-week"]
         agents = {c.cluster_id.split("/")[0] for c in daily}
-        assert agents == {"daily:atlas", "daily:sarah"}
+        assert agents == {"daily:atlas", "daily:vega"}
 
 
 class TestSkipExistingDistillations:

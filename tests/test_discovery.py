@@ -33,14 +33,14 @@ def _make_workspace(home: Path, name: str, *, content: bool = False) -> Path:
 class TestDiscoverOpenClawCandidates:
     def test_finds_workspaces_with_openclaw_json(self, tmp_path: Path) -> None:
         _make_workspace(tmp_path, "atlas", content=True)
-        _make_workspace(tmp_path, "blake")
+        _make_workspace(tmp_path, "orion")
         # A non-agent dir without openclaw.json
         (tmp_path / "scratch").mkdir()
         (tmp_path / "scratch" / "MEMORY.md").write_text("# decoy\n")
 
         candidates = discover_openclaw_candidates(tmp_path)
         tags = {c.tag for c in candidates}
-        assert tags == {"atlas", "blake"}
+        assert tags == {"atlas", "orion"}
 
     def test_returns_empty_for_empty_home(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty"
@@ -61,9 +61,9 @@ class TestDiscoverOpenClawCandidates:
         assert cand.has_content is True
 
     def test_candidate_with_only_top_files_still_has_content(self, tmp_path: Path) -> None:
-        _make_workspace(tmp_path, "blake", content=False)
+        _make_workspace(tmp_path, "orion", content=False)
         candidates = discover_openclaw_candidates(tmp_path)
-        cand = next(c for c in candidates if c.tag == "blake")
+        cand = next(c for c in candidates if c.tag == "orion")
         assert cand.memory_files == 0
         assert cand.skill_files == 0
         # MEMORY.md/CLAUDE.md count as content for inclusion purposes.
@@ -114,7 +114,7 @@ class TestBuildDefaultAdaptersConfig:
         # Two workspaces with full content — neither should auto-include.
         # Discovery is opt-in via the wizard, not via the default config.
         _make_workspace(tmp_path, "atlas", content=True)
-        _make_workspace(tmp_path, "blake", content=True)
+        _make_workspace(tmp_path, "orion", content=True)
 
         cfg = build_default_adapters_config(tmp_path)
         assert cfg.openclaw.agent_workspaces == []

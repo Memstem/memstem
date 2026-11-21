@@ -242,7 +242,7 @@ class TestInitWizard:
         home = tmp_path / "home"
         home.mkdir()
         self._seed_agent(home, "atlas", with_content=True)
-        self._seed_agent(home, "blake", with_content=True)
+        self._seed_agent(home, "orion", with_content=True)
 
         vault_path = tmp_path / "vault"
         result = runner.invoke(app, ["init", "-y", "--home", str(home), str(vault_path)])
@@ -256,10 +256,10 @@ class TestInitWizard:
         home = tmp_path / "home"
         home.mkdir()
         self._seed_agent(home, "atlas", with_content=True)
-        self._seed_agent(home, "blake", with_content=True)
+        self._seed_agent(home, "orion", with_content=True)
 
         vault_path = tmp_path / "vault"
-        # atlas=y, blake=<accept default no>. No shared files / claude prompts to answer.
+        # atlas=y, orion=<accept default no>. No shared files / claude prompts to answer.
         result = runner.invoke(
             app,
             ["init", "--home", str(home), str(vault_path)],

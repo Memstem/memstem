@@ -220,7 +220,7 @@ server) in their vault config:
 http:
   enabled: true
   host: 127.0.0.1
-  port: 7822      # different from any other MemStem on this host
+  port: 7899      # example: any port no other MemStem on this host uses
 ```
 
 Then `pm2 restart memstem` for that user. The MCP-over-stdio path

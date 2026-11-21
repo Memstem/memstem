@@ -657,19 +657,19 @@ async def _collect(gen: AsyncGenerator[MemoryRecord, None]) -> list[MemoryRecord
 class TestSkills:
     async def test_reconcile_indexes_plain_skills_tagged_claude_code(self, tmp_path: Path) -> None:
         root = tmp_path / "skills"
-        _write_skill(root, "pocket-files")
+        _write_skill(root, "team-files")
         _write_skill(root, ".system/vendor")
         _write_skill(root, ".trash/old")
         _write_skill(root / "synced" / "8e15-6dc4", "docx")
         _write_skill(root / "synced" / "f749-9971", "docx")
         adapter = ClaudeCodeAdapter(skills_root=root)
         records = await _collect(adapter.reconcile([]))
-        assert [r.title for r in records] == ["pocket-files"]
+        assert [r.title for r in records] == ["team-files"]
         rec = records[0]
         assert rec.metadata["type"] == "skill"
         assert rec.source == "claude-code"
         assert "agent:claude-code" in rec.tags
-        assert rec.ref == str(root / "pocket-files" / "SKILL.md")
+        assert rec.ref == str(root / "team-files" / "SKILL.md")
 
     async def test_symlinked_skills_are_skipped(self, tmp_path: Path) -> None:
         canonical = tmp_path / "atlas" / "skills"
@@ -686,12 +686,12 @@ class TestSkills:
 
     async def test_identical_codex_copy_is_not_indexed_twice(self, tmp_path: Path) -> None:
         root, codex = tmp_path / "claude", tmp_path / "codex"
-        _write_skill(root, "pocket-projects", "same")
-        _write_skill(codex, "pocket-projects", "same")
-        _write_skill(root, "pocket-files", "claude wording")
-        _write_skill(codex, "pocket-files", "codex wording")
+        _write_skill(root, "team-projects", "same")
+        _write_skill(codex, "team-projects", "same")
+        _write_skill(root, "team-files", "claude wording")
+        _write_skill(codex, "team-files", "codex wording")
         adapter = ClaudeCodeAdapter(skills_root=root, codex_skills_roots=[codex])
-        assert [r.title for r in await _collect(adapter.reconcile([]))] == ["pocket-files"]
+        assert [r.title for r in await _collect(adapter.reconcile([]))] == ["team-files"]
 
     async def test_codex_symlink_to_this_skill_is_not_a_duplicate(self, tmp_path: Path) -> None:
         # Seen on a real install: ~/.codex/skills/<name> -> ~/.claude/skills/<name>.
