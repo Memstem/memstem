@@ -120,7 +120,7 @@ One PR. Layout:
 |--------------------------------------------|------------------------------------------|
 | `src/memstem/eval/__init__.py`             | Public re-exports                        |
 | `src/memstem/eval/harness.py`              | Loaders, scoring, reporting              |
-| `eval/queries.yaml`                        | Hand-curated production query set        |
+| `eval/queries.yaml`                        | Example query set (copy, adapt privately) |
 | `scripts/run_eval.py`                      | CLI entrypoint                           |
 | `tests/test_eval_harness.py`               | Self-tests using a tmp_path fixture vault|
 | `docs/decisions/0015-eval-harness.md`      | This ADR                                 |

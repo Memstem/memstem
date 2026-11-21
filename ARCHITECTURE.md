@@ -58,7 +58,7 @@
 │   └── facts/
 │       └── port-assignments.md
 ├── skills/
-│   ├── deploy-to-kinsta.md
+│   ├── deploy-to-staging.md
 │   └── send-telegram.md
 ├── sessions/
 │   └── 2026-04-25/

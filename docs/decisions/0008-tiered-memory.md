@@ -137,8 +137,8 @@ importance: 0.8
 ---
 
 Across 12 conversations and daily logs over March-April 2026 we settled
-on Cloudflare for new domains because at-cost pricing saves ~$1,200/yr
-across 100 domains. GoDaddy renewal pricing is 2x+. Migration plan...
+on Cloudflare for new domains because at-cost pricing saves ~$300/yr
+across 25 domains. GoDaddy renewal pricing is 2x+. Migration plan...
 ```
 
 **Two flavors ship first:**

@@ -76,7 +76,7 @@ def _extract_h1(body: str) -> str | None:
 def _slugify_cwd(cwd: str) -> str:
     """Turn a cwd into a project tag, matching Claude Code's convention.
 
-    ``/home/ubuntu/memstem`` → ``home-ubuntu-memstem``. Leading slash
+    ``/home/user/memstem`` → ``home-user-memstem``. Leading slash
     stripped; remaining slashes replaced with hyphens; non-tag chars
     coerced to hyphens; leading/trailing hyphens trimmed. Mirrors the
     slug Claude Code embeds in its project directory names so

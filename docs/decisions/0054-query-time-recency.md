@@ -83,7 +83,7 @@ falls back (timeout, budget, filtered query: 2.3% at the 0047 trial, plus
 `min_limit`/sensitive-query skips). The prompt variant is what changes
 Jev's own judgement. Both are needed; neither alone covers the case.
 
-## Evaluation (brads-server Ari vault, 2026-10-22)
+## Evaluation (main-server Ari vault, 2026-10-22)
 
 `scripts/run_eval.py` gained `--production-ranking` (the vault's own
 importance, type bias and MMR), `--recency/--no-recency`,
@@ -112,7 +112,7 @@ embedding route…" (5–9 → 4–5); the other found questions were the same o
 within one rank. Four questions miss in every
 configuration; those are retrieval misses that ordering can't fix.
 
-**General set** (`eval/queries.yaml`, 16 queries): recency on changed MRR
+**General set** (the vault's private 16-query set; `eval/queries.yaml` is an example of its shape): recency on changed MRR
 0.845 → 0.843 without Jev. With Jev, base vs prefer-recent over four runs
 each: 0.814 vs 0.817 mean MRR — the same within run-to-run noise
 (0.79–0.85).
@@ -133,7 +133,7 @@ general set. Both sets were hand-labelled by one agent, so treat them as
 smoke tests; the 0047-style blind labelling of live traffic split by
 `variant` is the real gate.
 
-**Recommended rollout order:** `prefer_recent` first on brads-server, then
+**Recommended rollout order:** `prefer_recent` first on main-server, then
 label a sample after a few days; turn the multiplier on afterwards if
 wanted, since its effect is small either way.
 
@@ -143,14 +143,14 @@ wanted, since its effect is small either way.
   `search.recency.enabled: true` or `search.jev_shadow.prefer_recent: true`.
 - Searches with recency on materialize the wider re-score pool, as type
   bias already forces, so there's no extra cost on this host.
-- Rollout, if adopted: brads-server first; check the Jev ledger split by
+- Rollout, if adopted: main-server first; check the Jev ledger split by
   `variant` after a few days, label a sample with the 0047 procedure, then
   other hosts with the usual notice. Rollback: set either flag back to
   `false` and restart the daemon; MCP sessions pick it up on restart.
 - `hygiene.decay_half_life_days` stays in the schema for config
   compatibility and is documented as unused.
 
-## Live trial (brads-server Ari vault, 2026-10-22 → 2026-10-29)
+## Live trial (main-server Ari vault, 2026-10-22 → 2026-10-29)
 
 `prefer_recent` served all Jev traffic on one vault for a week (4,387
 runs, 0.36% fallback, cost unchanged). Traffic changed during the trial,

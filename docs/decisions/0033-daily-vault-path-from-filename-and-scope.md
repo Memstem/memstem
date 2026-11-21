@@ -27,7 +27,7 @@ production:
 is written to `daily/<agent>/2026-02-02.md`, displacing the *actual* Feb 2 log, which
 in turn displaces Feb 3, cascading through the run. In the production Ari vault, 31 of
 182 top-level daily files carried an mtime hour of 21:00–23:00 UTC; `daily/ari/2026-02-02.md`
-was verified to hold the body of `/home/ubuntu/ari/memory/2026-02-01.md`.
+was verified to hold the body of `/home/user/ari/memory/2026-02-01.md`.
 
 **2. Cross-directory collision.** `YYYY-MM-DD.md` is not unique within a workspace.
 Ari's workspace also emits dated files under `memory/dreaming/rem/`,

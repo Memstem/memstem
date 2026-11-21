@@ -46,7 +46,7 @@ human + machine report, and has no mutation surface at all.
 |------------------------------|--------------|-----------|-------------------------------------------------------------|
 | `memories/claude-code/`      | `memory`     | varies    | UUID-named files; ingested from `~/.claude/projects/...`    |
 | `memories/openclaw/<agent>/` | `memory`     | varies    | UUID-named files; ingested from agent workspace             |
-| `memories/projects/`         | `project`    | small     | Slug-named files (e.g. `home-ubuntu-ari.md`); curated       |
+| `memories/projects/`         | `project`    | small     | Slug-named files (e.g. `home-user-ari.md`); curated       |
 | `sessions/`                  | `session`    | largest   | UUID-named; one per ingested session transcript             |
 | `distillations/<source>/`    | `distillation` | medium  | UUID-named; LLM digest records — derivative by design       |
 | `daily/<agent>/`             | `daily`      | small     | Date-named (`2026-04-15.md`); date-bucketed logs            |
@@ -302,8 +302,8 @@ recommendations are interpretable.
 Before any apply pass:
 
 ```bash
-cp -a /home/ubuntu/memstem-vault /home/ubuntu/memstem-vault.audit-snap-$(date +%Y%m%dT%H%M%SZ)
-sqlite3 /home/ubuntu/memstem-vault/_meta/index.db ".backup '/home/ubuntu/memstem-vault/_meta/backups/index-$(date +%Y%m%dT%H%M%SZ).db'"
+cp -a /home/user/memstem-vault /home/user/memstem-vault.audit-snap-$(date +%Y%m%dT%H%M%SZ)
+sqlite3 /home/user/memstem-vault/_meta/index.db ".backup '/home/user/memstem-vault/_meta/backups/index-$(date +%Y%m%dT%H%M%SZ).db'"
 ```
 
 Both the canonical markdown tree and the index are snapshotted. The
@@ -354,7 +354,7 @@ Skill collisions wrote review tickets to `vault/skills/_review/` in
 Phase A. Walk each ticket by hand:
 
 ```bash
-ls /home/ubuntu/memstem-vault/skills/_review/
+ls /home/user/memstem-vault/skills/_review/
 ```
 
 For each ticket: read it, decide whether to apply (mark loser

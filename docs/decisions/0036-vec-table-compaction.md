@@ -22,7 +22,7 @@ multi-hundred-MB session trajectory shrinking under
 `max_trajectory_bytes`), bulk purges, and slice rebuilds (ADR 0033) all
 strand survivors across every chunk they once filled.
 
-Production impact (brads-server main vault, 2026-08-19): 2,355,200 allocated
+Production impact (main-server main vault, 2026-08-19): 2,355,200 allocated
 slots, 125,489 live rows — **5.3% occupancy**, a 36.8 GB vector table holding
 ~2 GB of live data. Every KNN query brute-force scans the whole table:
 

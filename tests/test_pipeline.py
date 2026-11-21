@@ -111,7 +111,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Ari's deploy procedure (different content from Sarah's).",
-                ref="/home/ubuntu/ari/skills/deploy/SKILL.md",
+                ref="/home/user/ari/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
                 tags=["agent:ari"],
@@ -124,7 +124,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Sarah's deploy procedure (different content from Ari's).",
-                ref="/home/ubuntu/sarah/skills/deploy/SKILL.md",
+                ref="/home/user/sarah/skills/deploy/SKILL.md",
                 title="Deploy",
                 type_="skill",
                 tags=["agent:sarah"],
@@ -144,7 +144,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Ari's notes for 2026-04-26 (distinct from Sarah's).",
-                ref="/home/ubuntu/ari/memory/2026-04-26.md",
+                ref="/home/user/ari/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
                 tags=["agent:ari"],
@@ -155,7 +155,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Sarah's notes for 2026-04-26 (distinct from Ari's).",
-                ref="/home/ubuntu/sarah/memory/2026-04-26.md",
+                ref="/home/user/sarah/memory/2026-04-26.md",
                 title="2026-04-26",
                 type_="daily",
                 tags=["agent:sarah"],
@@ -204,7 +204,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Ari's journal entry written on the evening of Feb 1 ET.",
-                ref="/home/ubuntu/ari/memory/2026-02-01.md",
+                ref="/home/user/ari/memory/2026-02-01.md",
                 title="2026-02-01",
                 type_="daily",
                 tags=["agent:ari"],
@@ -223,7 +223,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="The actual journal entry for 2026-04-15.",
-                ref="/home/ubuntu/ari/memory/2026-04-15.md",
+                ref="/home/user/ari/memory/2026-04-15.md",
                 title="2026-04-15",
                 type_="daily",
                 tags=["agent:ari"],
@@ -234,7 +234,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="A REM-phase dreaming artifact generated for 2026-04-15.",
-                ref="/home/ubuntu/ari/memory/dreaming/rem/2026-04-15.md",
+                ref="/home/user/ari/memory/dreaming/rem/2026-04-15.md",
                 title="2026-04-15",
                 type_="daily",
                 tags=["agent:ari"],
@@ -261,7 +261,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body=f"Daily body probing scope {bad_scope!r} for traversal.",
-                ref="/home/ubuntu/ari/memory/2026-04-15.md",
+                ref="/home/user/ari/memory/2026-04-15.md",
                 title="2026-04-15",
                 type_="daily",
                 tags=["agent:ari"],
@@ -279,7 +279,7 @@ class TestPathForMemory:
             pipe,
             _record(
                 body="Daily body with an unusable filename-derived date.",
-                ref="/home/ubuntu/ari/memory/nope.md",
+                ref="/home/user/ari/memory/nope.md",
                 title="nope",
                 type_="daily",
                 tags=["agent:ari"],

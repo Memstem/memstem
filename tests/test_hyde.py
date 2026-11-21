@@ -68,7 +68,7 @@ class TestShouldExpand:
             # Identifier shapes.
             ("11111111-1111-1111-1111-111111111111", False),
             ("a" * 32, False),
-            ("/home/ubuntu/memstem/file.md", False),
+            ("/home/user/memstem/file.md", False),
             ("memstem/core/search.py", False),
             # Empty / whitespace.
             ("", False),

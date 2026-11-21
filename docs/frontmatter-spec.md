@@ -90,7 +90,7 @@ provenance:
 confidence: extracted
 ---
 
-Decided to use Cloudflare Registrar for new domain registrations because at-cost pricing saves ~$1,200/yr across 100 domains. GoDaddy renewal pricing is 2x+ higher.
+Decided to use Cloudflare Registrar for new domain registrations because at-cost pricing saves ~$300/yr across 25 domains. GoDaddy renewal pricing is 2x+ higher.
 
 Related:
 - [[Cloudflare Registrar]]

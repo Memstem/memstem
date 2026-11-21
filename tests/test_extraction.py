@@ -140,11 +140,11 @@ class TestIsToolDump:
             [
                 "[tool_use: Bash] running command number one across many lines",
                 "[tool_result] /var/log/syslog with output that is long",
-                "[tool_use: Read] reading file at path /home/ubuntu/memstem/x",
+                "[tool_use: Read] reading file at path /home/user/memstem/x",
                 "[tool_result] file contents that go on for a while as well",
                 "[tool_use: Bash] running command number two across many lines",
                 "[tool_result] /var/log/syslog with more output as well too",
-                "[tool_use: Read] reading another file at /home/ubuntu/y/z",
+                "[tool_use: Read] reading another file at /home/user/y/z",
                 "[tool_result] more file contents that go on for a while too",
             ]
         )
@@ -248,20 +248,20 @@ class TestIsTransientTask:
 
 class TestIsAutomationLog:
     def test_heartbeat_path(self) -> None:
-        assert is_automation_log("/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md") is True
+        assert is_automation_log("/home/user/ari/agents/main/heartbeat/2026-04-27.md") is True
 
     def test_monitoring_path(self) -> None:
         assert is_automation_log("/var/log/monitoring/check.md") is True
 
     def test_pm2_logs_path(self) -> None:
-        assert is_automation_log("/home/ubuntu/.pm2/logs/memstem-out-0.log") is True
+        assert is_automation_log("/home/user/.pm2/logs/memstem-out-0.log") is True
 
     def test_cron_logs_path(self) -> None:
         assert is_automation_log("/var/cron/logs/nightly.md") is True
 
     def test_legitimate_path_not_caught(self) -> None:
-        assert is_automation_log("/home/ubuntu/ari/MEMORY.md") is False
-        assert is_automation_log("/home/ubuntu/ari/skills/deploy/SKILL.md") is False
+        assert is_automation_log("/home/user/ari/MEMORY.md") is False
+        assert is_automation_log("/home/user/ari/skills/deploy/SKILL.md") is False
 
     def test_empty_ref(self) -> None:
         assert is_automation_log("") is False
@@ -271,7 +271,7 @@ class TestNoiseFilterTagTransient:
     def test_automation_log_path_tagged_transient(self) -> None:
         rec = _record(
             body="some heartbeat snapshot content",
-            ref="/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md",
+            ref="/home/user/ari/agents/main/heartbeat/2026-04-27.md",
         )
         decision = noise_filter(rec)
         assert decision.action is NoiseAction.TAG_TRANSIENT
@@ -312,7 +312,7 @@ class TestPipelineTagTransient:
         memory = pipe.process(
             _record(
                 body="agent reported status=ok",
-                ref="/home/ubuntu/ari/agents/main/heartbeat/2026-04-27.md",
+                ref="/home/user/ari/agents/main/heartbeat/2026-04-27.md",
             )
         )
         assert memory is not None
@@ -594,7 +594,7 @@ def _session(
 ) -> MemoryRecord:
     return MemoryRecord(
         source=source,
-        ref="/home/ubuntu/ari/agents/main/agent/openclaw-agent.sqlite#session=abc",
+        ref="/home/user/ari/agents/main/agent/openclaw-agent.sqlite#session=abc",
         title=body[:80],
         body=body,
         tags=[],

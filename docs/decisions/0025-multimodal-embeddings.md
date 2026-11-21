@@ -29,7 +29,7 @@ Research (four independent passes) plus a **live validation on a g6/L4 24GB box*
   output, fits the L4 24GB. Server-side Matryoshka (`dimensions` param) is rejected by
   vLLM; client-side truncation preserves ranking.
 
-Full verdict + plan: RE-Shared Drive, *"MemStem Qwen3-VL Embedder — Verdict &
+Full verdict + plan: maintainer's private Drive, *"MemStem Qwen3-VL Embedder — Verdict &
 Implementation Plan"*.
 
 ## Decision (proposed)
@@ -119,5 +119,5 @@ adds a dependency; a reranker adds VRAM.
 - ADR 0003 — SQLite + FTS5 + sqlite-vec
 - ADR 0009 — pluggable embedders + embed queue (extended here)
 - ADR 0016 — MMR diversification; ADR 0017 — cross-encoder rerank (cross-modal impact)
-- RE-Shared Drive — *MemStem Qwen3-VL Embedder — Verdict & Implementation Plan* (2026-06-06)
+- Maintainer's private Drive — *MemStem Qwen3-VL Embedder — Verdict & Implementation Plan* (2026-06-06)
 - Live validation: g6.2xlarge / L4 24GB, vLLM 0.22.1, 2026-06-06

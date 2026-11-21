@@ -72,7 +72,7 @@ close ties."""
 DEFAULT_MAX_INPUT_CHARS = 12000
 """Cap on combined source-input length sent to the project summarizer.
 
-Brad's Woodfield project today is ~5 sessions of mixed length. As
+Brad's Northwind project today is ~5 sessions of mixed length. As
 projects grow we don't want to blow past the LLM's context window.
 This cap is per-prompt; the prompt template includes a continuation
 marker so the LLM knows when input was truncated. 12k chars ≈ 3k
@@ -81,8 +81,8 @@ under any modern model's context window."""
 
 PROVENANCE_REF_PREFIX = "project:"
 """Prefix on ``frontmatter.provenance.ref`` for project records.
-Combined with the slug it forms a stable id like ``project:home-ubuntu-
-woodfield-quotes`` so the writer can recognize its own outputs."""
+Combined with the slug it forms a stable id like ``project:home-user-
+northwind-quotes`` so the writer can recognize its own outputs."""
 
 PROJECT_KIND_TAG = "project:claude-code"
 """Static tag added to every project record. Lets agents filter
@@ -194,8 +194,8 @@ def project_tag_for_session(memory: Memory) -> str | None:
     """Return the Claude Code project tag from a session, or ``None``.
 
     A session's tags include the encoded project directory (e.g.
-    ``home-ubuntu-woodfield-quotes`` for sessions in
-    ``~/.claude/projects/-home-ubuntu-woodfield-quotes/``). Other tag
+    ``home-user-northwind-quotes`` for sessions in
+    ``~/.claude/projects/-home-user-northwind-quotes/``). Other tag
     shapes (``agent:*``, ``topic:*``, ``distillation:*``,
     ``project:*``, plus the literal ``instructions`` / ``core`` /
     ``shared``) are not project tags.

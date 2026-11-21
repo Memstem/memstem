@@ -158,7 +158,7 @@ ONE more attempt.
 
 The cap stops a genuinely-unsummarizable session from burning a summarizer call
 every tick, but making the exclusion *permanent* meant a session poisoned by a
-momentary backend blip stayed dead forever (the 2026-06 E1/techpro stalls: a
+momentary backend blip stayed dead forever (the 2026-06 E1/tenant-a stalls: a
 brief sidecar/tunnel outage silently excluded days of sessions). With a TTL the
 exclusion self-heals — after the cool-down the session is retried; success
 clears the record, another failure restarts the cool-down. The recency window

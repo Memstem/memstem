@@ -5,7 +5,7 @@ description = "Unified memory and skill infrastructure for AI agents"
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "Brad Besner", email = "bbesner@techprosecurity.com" }
+    { name = "Brad Besner", email = "bbesner@users.noreply.github.com" }
 ]
 requires-python = ">=3.11"
 keywords = ["mcp", "memory", "ai-agent", "claude", "llm", "second-brain"]

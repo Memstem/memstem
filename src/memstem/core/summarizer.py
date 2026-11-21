@@ -47,7 +47,7 @@ class TransientSummarizerError(Exception):
     (5xx / 429 / 408). Callers MUST treat this as "skip and retry next cycle",
     never as an empty result: counting a momentary outage toward the
     distill-retry cap permanently poisons otherwise-fine sessions (the 2026-06
-    E1/techpro distillation stalls, where a brief sidecar/tunnel blip silently
+    E1/tenant-a distillation stalls, where a brief sidecar/tunnel blip silently
     excluded sessions for days). A genuinely empty return — NoOp, or the model
     produced no usable text — is a candidate property and still counts toward
     the cap, exactly as before.

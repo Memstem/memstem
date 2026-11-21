@@ -24,7 +24,7 @@ self-recovery (the only cap reset fires on a *successful* write, which an
 excluded session can never reach).
 
 This caused the June 2026 fleet stalls: E1 lost 8 days of distillation behind a
-stopped `:9444` sidecar; techpro (`distill_fail:18`) and cargol
+stopped `:9444` sidecar; tenant-a (`distill_fail:18`) and tenant-b
 (`distill_fail:2`) were poisoned by brief tunnel blips. The embed path never had
 this problem — it retries transient failures indefinitely (`retry_count
 unchanged`). Distillation lacked the same grace.

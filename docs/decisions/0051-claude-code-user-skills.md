@@ -56,7 +56,7 @@ title and tag handling for every client's `SKILL.md`.
 
 - Claude-only installs see their own skills in search and `memstem_list_skills`.
 - Installs whose `~/.claude/skills` holds only symlinks, vendor copies or Codex duplicates
-  gain no records. Measured on brads-server: zero new records.
+  gain no records. Measured on main-server: zero new records.
 - A skill installed for both clients but edited in only one of them is indexed twice,
   once per client. That is correct: the two copies now say different things.
 - A user who keeps nested folders of their own skills deeper than one level will not see

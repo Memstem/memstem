@@ -719,7 +719,7 @@ class TestHybridRecallAgainstOllama:
             "fts5_notes": "FTS5 is SQLite's full-text search engine; pairs with sqlite-vec for hybrid retrieval.",
             "rrf_def": "Reciprocal Rank Fusion blends two ranked lists by 1/(k+rank).",
             "skill_storage": "Skills live in their own folder with title, scope, and verification fields.",
-            "person_brad": "Brad Besner runs TechPro Security and three related businesses.",
+            "person_brad": "Brad Besner runs Acme Security and three related businesses.",
             "person_ari": "Ari is the existing OpenClaw assistant powering Brad's daily workflow.",
             "weather": "It rained all afternoon and the wind picked up around dusk.",
             "deploy_steps": "Run pytest, then push to main, then PM2 restart for the affected service.",

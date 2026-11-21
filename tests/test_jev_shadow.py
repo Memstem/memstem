@@ -88,7 +88,7 @@ class TestSelectPassages:
     def test_matches_pilot_selector(self) -> None:
         rng = random.Random(7)
         vocab = [
-            "memstem", "jev", "rerank", "gateway", "stop-sign", "Oaks", "pm2", "zoho",
+            "memstem", "jev", "rerank", "gateway", "stop-sign", "warehouse", "pm2", "crm",
             "quote", "template", "the", "and", "ari", "deploy", "rollback", "ß", "naïve",
         ]  # fmt: skip
         mismatches = 0

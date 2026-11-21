@@ -19,10 +19,10 @@ Meanwhile the fleet's sidecar v3 (MEMSTEM.md 2026-08-22) added a
 cloud route serving a Gemma-class model with a **128k-token context
 (~400k+ chars)**. A host whose *primary* route is the cloud model can
 read all but freak-sized transcripts in a single pass. But the cap
-must stay per-host: on a gx10-primary host an oversized prompt gets a
+must stay per-host: on a gpu-primary host an oversized prompt gets a
 `400` from the 16k-context model, and the sidecar's failover triggers
 on network errors/5xx — not 4xx — so a fleet-wide raise would break
-distillation on every gx10-primary host.
+distillation on every gpu-primary host.
 
 The second problem is backfill: raising the cap does nothing for the
 hundreds of existing summaries generated from truncated reads. A
@@ -64,7 +64,7 @@ just built.
   host-by-host as each host flips to the large-context primary route.
 - Cost on a per-token cloud route scales with transcript size; the
   per-cycle cap remains the spend governor. The default cap keeps
-  gx10-primary hosts exactly as they are.
+  gpu-primary hosts exactly as they are.
 - If the cloud route fails while a raised-cap host distills an
   oversized session, the local fallback model returns `400` and that
   session is skipped for the cycle (existing empty-summary handling);

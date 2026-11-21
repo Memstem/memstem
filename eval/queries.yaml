@@ -1,13 +1,20 @@
-# Memstem recall-quality eval queries.
+# Memstem recall-quality eval queries — EXAMPLE SET.
 #
-# Hand-curated query set for measuring recall improvements before/after
-# each PR in RECALL-PLAN.md. Run via `scripts/run_eval.py`.
+# This file shows the shape of an eval set; it is not a set you can run
+# against your own vault and expect hits. Every name, host, number and
+# date below is invented (example.com, 555-01xx numbers, "Acme",
+# "Northwind"). A real eval set names your own hosts, people and
+# projects, so keep it outside the repo — e.g. copy this file to
+# `<vault>/_meta/eval/queries.yaml`, replace the queries with questions
+# your vault can actually answer, and run:
+#
+#   scripts/run_eval.py --queries <vault>/_meta/eval/queries.yaml
 #
 # Schema (see `src/memstem/eval/harness.py` for the full reference):
 #
 #   queries:
 #     - id: <unique-id>
-#       class: factual | conceptual | procedural | historical
+#       class: factual | conceptual | procedural | historical | current
 #       query: <natural-language query>
 #       expect:
 #         title_contains: ["substr1", "substr2", ...]   # logical OR
@@ -19,40 +26,50 @@
 # ANY listed field. Substrings are robust to dedup / rephrasing because
 # they don't tie to a specific memory_id.
 #
-# Starter set: 12 queries across 4 classes. Grow this as new failure
-# modes surface. Edit freely — this is a working eval set, not a
-# regression-test contract.
+# How to write a good query:
+#   - Phrase the query the way you would actually ask it, and avoid
+#     copying the expected substring into the query, so a plain keyword
+#     match can't score a hit on its own.
+#   - Pick expected substrings that only appear in the memory you want
+#     (a port number, a script name, a date), and list a few variants
+#     (e.g. both phone formats) so harmless rewording still matches.
+#   - Cover all four classes; the per-class breakdown shows which kind
+#     of recall a change helped or hurt.
+#
+# Starter shape: 12 queries across 4 classes plus 4 project-grain
+# queries. Grow this as new failure modes surface. Edit freely — this is
+# a working eval set, not a regression-test contract.
 
 queries:
   # ─── FACTUAL ──────────────────────────────────────────────────────────
-  - id: factual_ari_port
+  - id: factual_assistant_port
     class: factual
-    query: what gateway port does Ari run on
+    query: what gateway port does the assistant run on
     expect:
       body_contains: ["18789"]
 
-  - id: factual_brad_phone
+  - id: factual_owner_phone
     class: factual
-    query: what is Brad's phone number
+    query: what is the office phone number
     expect:
-      body_contains: ["561) 206-4382", "561-206-4382"]
+      body_contains: ["555) 010-0142", "555-010-0142"]
 
-  - id: factual_re_shared_folder
+  - id: factual_deliverables_folder
     class: factual
     query: shared drive folder ID for final deliverables
     expect:
-      body_contains: ["1_aZnqkKQ-dxYNz8Nx3uFCiI-xpzxzge5", "RE-Shared"]
+      body_contains: ["example-folder-id-0001", "Deliverables"]
 
-  - id: factual_techpro_ssh
+  - id: factual_website_ssh
     class: factual
-    query: SSH host for the TechPro Security site
+    query: SSH host for the company website
     expect:
-      body_contains: ["techpro-web", "ultraweb-clients"]
+      body_contains: ["acme-web", "web-01.example.com"]
 
   # ─── CONCEPTUAL ──────────────────────────────────────────────────────
   - id: conceptual_memory_architecture
     class: conceptual
-    query: Ari memory architecture overview
+    query: assistant memory architecture overview
     expect:
       title_contains: ["Memory Architecture"]
       path_contains: ["memory-architecture"]
@@ -64,43 +81,43 @@ queries:
       title_contains: ["dedup", "LLM-as-judge", "duplication"]
       path_contains: ["0012-llm-judge-dedup", "dedup"]
 
-  - id: conceptual_dreaming_phases
+  - id: conceptual_backup_rotation
     class: conceptual
-    query: OpenClaw Dreaming light deep REM phases
+    query: how the nightly backup rotation keeps daily weekly and monthly copies
     expect:
-      body_contains: ["Light phase", "Deep phase", "REM phase", "Dreaming"]
+      body_contains: ["grandfather-father-son", "daily copies", "weekly copies"]
 
   # ─── PROCEDURAL ──────────────────────────────────────────────────────
-  - id: procedural_send_telegram
+  - id: procedural_send_chat_alert
     class: procedural
-    query: how do I send a Telegram message to Brad
+    query: how do I send a chat notification to the on-call person
     expect:
-      body_contains: ["tg-send", "scripts/tg-send"]
+      body_contains: ["notify-send.sh", "scripts/notify-send.sh"]
 
-  - id: procedural_deploy_techpro
+  - id: procedural_deploy_website
     class: procedural
-    query: how do I deploy the TechPro Security site
+    query: how do I deploy the company website
     expect:
-      body_contains: ["techpro-site/deploy.sh", "deploy.sh"]
+      body_contains: ["acme-site/deploy.sh", "deploy.sh"]
 
   - id: procedural_send_email
     class: procedural
-    query: how do I send an email as Ari
+    query: how do I send an email as the assistant
     expect:
-      body_contains: ["gws-wrapper", "gmail users messages send", "EmailMessage"]
+      body_contains: ["send_mail.py", "EmailMessage"]
 
   # ─── HISTORICAL ──────────────────────────────────────────────────────
-  - id: historical_dreaming_migration
+  - id: historical_wiki_migration
     class: historical
-    query: when was the OpenClaw Dreaming migration
+    query: when did we move the team notes into the wiki
     expect:
-      body_contains: ["2026-04-09", "Dreaming + Memory Wiki"]
+      body_contains: ["2026-04-09", "Wiki Migration"]
 
-  - id: historical_qdrant_backfill
+  - id: historical_vector_backfill
     class: historical
-    query: when was the Qdrant memory backfill done
+    query: when was the vector store backfill done
     expect:
-      body_contains: ["2026-03-14", "Qdrant Memory Backfill", "10,313"]
+      body_contains: ["2026-03-14", "Vector Store Backfill", "10,313"]
 
   # ─── PROJECT-GRAIN (W8/W9: distillation + project records) ──────────
   # These queries exercise the recall failure mode that motivated ADRs
@@ -114,17 +131,17 @@ queries:
   # queries should land on shape-optimized records — that lift is the
   # eval gate for flipping any default-on knobs.
   #
-  # If your vault doesn't contain a Woodfield project, replace the
-  # body_contains substrings with terms from your actual project
-  # records. The structure is what matters, not the specific entity.
+  # "Northwind" is a placeholder project: replace the substrings with
+  # terms from your actual project records. The structure is what
+  # matters, not the specific entity.
 
-  - id: project_woodfield_ebike_video
+  - id: project_northwind_walkthrough_video
     class: conceptual
-    query: Woodfield Country Club e-bike video
+    query: Northwind Logistics warehouse walkthrough video
     expect:
-      title_contains: ["Woodfield"]
-      body_contains: ["Woodfield", "e-bike"]
-      path_contains: ["projects/home-ubuntu-woodfield", "distillations"]
+      title_contains: ["Northwind"]
+      body_contains: ["Northwind", "walkthrough"]
+      path_contains: ["projects/home-user-northwind", "distillations"]
 
   - id: project_aerial_demo_revision
     class: conceptual
@@ -142,7 +159,7 @@ queries:
 
   - id: project_distillation_ranks_above_raw
     class: conceptual
-    query: Woodfield e-bike & golf cart tracking proposal
+    query: Northwind forklift & loading dock tracking proposal
     expect:
       # A distillation or project record (path under
       # `distillations/` or `memories/projects/`) should outrank the

@@ -114,7 +114,7 @@ Patch release: adapter file parsing moved off the event loop, so a reconcile pas
 
 ### Fixed
 
-- Reconcile no longer blocks `/search` while parsing a transcript. The Claude Code, Codex, and OpenClaw adapters' `reconcile()` and `watch()` async generators read and JSON/frontmatter-parsed each file inline on the event loop; a py-spy capture on brads-server caught one such parse holding the loop (and `/search`) for 18.5s. `_reconcile_into_pipeline` already offloaded the per-record pipeline write via `asyncio.to_thread` (issue #142 / 0.24.2), but the read+parse feeding it did not. Each adapter's per-file parse now runs in a worker thread the same way.
+- Reconcile no longer blocks `/search` while parsing a transcript. The Claude Code, Codex, and OpenClaw adapters' `reconcile()` and `watch()` async generators read and JSON/frontmatter-parsed each file inline on the event loop; a py-spy capture on main-server caught one such parse holding the loop (and `/search`) for 18.5s. `_reconcile_into_pipeline` already offloaded the per-record pipeline write via `asyncio.to_thread` (issue #142 / 0.24.2), but the read+parse feeding it did not. Each adapter's per-file parse now runs in a worker thread the same way.
 
 ## [0.25.2] - 2026-09-26
 
@@ -139,7 +139,7 @@ Faster search and far less vector churn: MMR ~30x faster, optional AVX-accelerat
 
 ### Performance
 
-- Re-embedding a record keeps the vectors of chunks whose text did not change (ADR 0045). A new `vec_chunk_hashes` table (schema v15) stores each chunk's sha256; when the record's embed signature still matches, unchanged chunks are left alone, moved chunks are copied, and only the rest go to the embedder. A growing session now re-embeds its last chunk and new ones instead of the whole transcript. Vector rows are updated in place (`UPDATE ... WHERE chunk_id`) rather than deleted and re-inserted, so a rewrite no longer leaves a dead vec0 slot per chunk (brads-server was accumulating ~2.6K dead slots/hour, each one read by every search until the nightly compaction).
+- Re-embedding a record keeps the vectors of chunks whose text did not change (ADR 0045). A new `vec_chunk_hashes` table (schema v15) stores each chunk's sha256; when the record's embed signature still matches, unchanged chunks are left alone, moved chunks are copied, and only the rest go to the embedder. A growing session now re-embeds its last chunk and new ones instead of the whole transcript. Vector rows are updated in place (`UPDATE ... WHERE chunk_id`) rather than deleted and re-inserted, so a rewrite no longer leaves a dead vec0 slot per chunk (main-server was accumulating ~2.6K dead slots/hour, each one read by every search until the nightly compaction).
 - A memory's vector rows are found through the vec0 `_rowids` shadow table's unique index instead of `DELETE FROM memories_vec WHERE memory_id = ?`, which scanned the whole vector table (1.4 s on a 280K-slot index) under the writer lock on every re-embed and record delete.
 - MMR diversification is ~30x faster: cosine similarity uses `math.sumprod` (C, Python 3.12+; pure-Python fallback on 3.11) with per-candidate norms computed once, and the greedy loop updates each candidate's redundancy against only the newest pick instead of re-scanning every pick. Same selection rule; on 25 recent real queries the order was identical in all 25 and MMR time fell from 644 ms to 22 ms per search (~0.6–1.1 s of a ~4 s search on a 4096-dim vault).
 
@@ -563,7 +563,7 @@ straight to 0.19.1.
   3-strike `distill_fail` cap and **permanently excluded** the session, with no
   self-recovery. A brief backend blip (a stopped `:9444` sidecar, a CF-tunnel
   530) therefore silently stalled distillation for days (the June 2026 E1 /
-  techpro / cargol stalls). Now `Summarizer.generate` raises
+  tenant-a / tenant-b stalls). Now `Summarizer.generate` raises
   `TransientSummarizerError` on a retryable failure (network / timeout / 5xx /
   429 / 408) — propagated by `generate_cached` — and `compute_distillation_plan`
   skips the session that cycle **without** recording a failure, so it retries
@@ -1363,8 +1363,8 @@ writers at OpenAI; both are silently corrupting if not for our
 The "derived records" release. Five PRs (#90–#94) ship Block 4 of
 RECALL-PLAN.md: session distillation writer (W8, ADR 0020) and
 project records (W9, ADR 0021). Direct fix for the recall failure
-where natural-language queries like "the Woodfield Country Club
-e-bike video" or "the project where we revised the aerial demo"
+where natural-language queries like "the Northwind Logistics
+walkthrough video" or "the project where we revised the aerial demo"
 fail to surface project work that exists in the vault — the data
 is there, the *shape* is wrong. Both new commands ship CLI-driven
 and idempotent; the recommended workflow is one backfill pass per
@@ -1400,7 +1400,7 @@ both writers; non-canonical, drop-and-rebuild safe).
 - **Project records writer (ADR 0021 / W9).** `memstem hygiene
   project-records [--apply] [--force]` aggregates Claude Code
   sessions sharing a project tag (e.g.
-  `home-ubuntu-woodfield-quotes`) into a single `type: project`
+  `home-user-northwind-quotes`) into a single `type: project`
   record at `vault/memories/projects/<slug>.md` — canonical project
   name extracted from the work itself, description, participants,
   deliverables, accumulated decisions, latest known state. Reuses
@@ -1620,7 +1620,7 @@ rebuild safe).
   `sqlite3.IntegrityError: FOREIGN KEY constraint failed`, crashing
   the worker iteration. Surfaced on the busiest vault (Ari, 1.3 GB
   index) during the v0.7 → v0.8 embedder migration; never observed
-  on smaller vaults (Ultra, 79 MB) where the race window almost
+  on smaller vaults (a small hosted vault, 79 MB) where the race window almost
   never opens. `Index.record_embed_state` now treats the FK
   violation as a normal outcome — the cascade has already cleaned
   `embed_queue` / `embed_state`, so there's nothing to record — and

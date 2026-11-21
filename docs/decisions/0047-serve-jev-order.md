@@ -6,7 +6,7 @@
 
 ## Context
 
-Shadow mode ran on brads-server from 2026-09-26. After four days (348 runs)
+Shadow mode ran on main-server from 2026-09-26. After four days (348 runs)
 a seeded sample of 60 distinct real queries was relevance-labelled blind by
 Gil with the pilot's rubric, and Jev's would-be order was compared with the
 order actually served:
@@ -54,12 +54,12 @@ expectation by more than 0.03 while both were otherwise valid.
 ## Consequences
 
 - Searches that reach Jev take about 0.5 s longer at p50 and under 1 s at
-  p95 on brads-server; the ledger measures the live figure.
+  p95 on main-server; the ledger measures the live figure.
 - The query log (`_log_results`) still records the pre-Jev order, since it
   is written inside the retrieval step. The ledger holds both orders.
 - The candidate objects Jev reorders are the search's own `Result`s, so
   scores shown to the caller are the fused retrieval scores, not Jev's.
-- Rollout: brads-server first (Ari vault), the shadow report after a few
+- Rollout: main-server first (Ari vault), the shadow report after a few
   days, then other hosts with the usual notice. Rollback: `serve: false`
   (shadow continues) or `enabled: false`, then restart the daemon; MCP
   sessions pick the change up on restart.

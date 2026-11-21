@@ -426,16 +426,16 @@ embedder, and the configured adapter targets all reachable:
 
 ```text
 $ memstem doctor
-Memstem doctor (vault=/home/ubuntu/memstem-vault):
+Memstem doctor (vault=/home/user/memstem-vault):
 
   ✓ Python 3.11
   ✓ memstem 0.20.0
-  ✓ Vault: /home/ubuntu/memstem-vault
-  ✓ Config: /home/ubuntu/memstem-vault/_meta/config.yaml
+  ✓ Vault: /home/user/memstem-vault
+  ✓ Config: /home/user/memstem-vault/_meta/config.yaml
   ✓ Index opens cleanly
   ✓ Ollama at http://localhost:11434 (nomic-embed-text)  (768 dims)
-  ✓ OpenClaw workspace: /home/ubuntu/assistant (tag=assistant)
-  ✓ Claude Code root: /home/ubuntu/.claude/projects
+  ✓ OpenClaw workspace: /home/user/assistant (tag=assistant)
+  ✓ Claude Code root: /home/user/.claude/projects
 
 All checks passed.
 ```
@@ -453,7 +453,7 @@ $ memstem hygiene verify
 ============================================================
 MEMSTEM VERIFY
 ============================================================
-Vault:                    /home/ubuntu/memstem-vault
+Vault:                    /home/user/memstem-vault
 Total memories:           1722
 
 By type:

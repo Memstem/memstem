@@ -71,11 +71,11 @@ class TestExtractH1:
 
 class TestFileToRecord:
     def test_plain_markdown_uses_h1_as_title(self, tmp_path: Path) -> None:
-        path = _write(tmp_path / "people.md", "# People\n\nBrad runs TechPro.\n")
+        path = _write(tmp_path / "people.md", "# People\n\nBrad runs Acme.\n")
         record = _file_to_record(path, "openclaw")
         assert record is not None
         assert record.title == "People"
-        assert record.body == "# People\n\nBrad runs TechPro."
+        assert record.body == "# People\n\nBrad runs Acme."
         assert record.metadata["type"] == "memory"
         assert record.source == "openclaw"
         assert record.ref == str(path)
@@ -542,7 +542,7 @@ class TestTrajectoryParser:
                     "type": "session.started",
                     "ts": "2026-04-26T23:00:00.000Z",
                     "sessionId": "abc123",
-                    "workspaceDir": "/home/ubuntu/ari",
+                    "workspaceDir": "/home/user/ari",
                     "data": {"agentId": "main"},
                 },
                 {
@@ -579,7 +579,7 @@ class TestTrajectoryParser:
         assert parsed["title"] == "Hello, can you help?"
         assert parsed["first_timestamp"] == "2026-04-26T23:00:00.000Z"
         assert parsed["last_timestamp"] == "2026-04-26T23:00:07.000Z"
-        assert parsed["workspace_dir"] == "/home/ubuntu/ari"
+        assert parsed["workspace_dir"] == "/home/user/ari"
         assert parsed["agent_id"] == "main"
 
     def test_ws_path_recovers_turns_from_messages_snapshot(self, tmp_path: Path) -> None:
@@ -933,7 +933,7 @@ class TestTrajectorySizeCap:
                 "type": "session.started",
                 "ts": "2026-04-26T23:00:00.000Z",
                 "sessionId": "cap123",
-                "workspaceDir": "/home/ubuntu/ari",
+                "workspaceDir": "/home/user/ari",
                 "data": {"agentId": "main"},
             },
             {

@@ -22,12 +22,12 @@ the stage outright. Measured on 2026-09-10/11 across the fleet (all on
 
 | vault | live | dead | dead % | stage decision |
 |---|---|---|---|---|
-| snape-server | 30,816 | 19,360 | 39% | skip — dead < 25,000 |
+| small-server | 30,816 | 19,360 | 39% | skip — dead < 25,000 |
 | Damon | 17,930 | 12,790 | 42% | skip |
 | E1 | 13,534 | 16,162 | 54% | skip |
-| ramc (ultraclaw) | 69,100 | 10,772 | 14% | skip (correctly) |
+| customer-a (hosted) | 69,100 | 10,772 | 14% | skip (correctly) |
 
-On a 50k-slot table, 25k dead is 45% dead. The stage on snape-server logged
+On a 50k-slot table, 25k dead is 45% dead. The stage on small-server logged
 a skip every Wednesday for three weeks while the customer watched the table
 grow from 12% to 39% dead, then ran the CLI by hand and wrote his own cron.
 The gain he measured was real (39% fewer slots scanned) and, at that size,
@@ -54,17 +54,17 @@ Operators who want the old behaviour set `hygiene.vec_compact_min_dead_slots:
 
 ## Consequences
 
-- Small vaults compact themselves once they pass 20% dead: snape-server,
+- Small vaults compact themselves once they pass 20% dead: small-server,
   Damon and E1 are picked up on the first daily check after upgrading.
 - Cost on a small vault: a lock-free build of a few hundred MB plus a
-  ~10 s swap. On the 4-vCPU snape-server that is roughly a minute of
+  ~10 s swap. On the 4-vCPU small-server that is roughly a minute of
   slightly slower searches once a day at most.
 - A 0.22.0 daemon (blocking compaction) that pins this floor low would
   freeze search for the rebuild. The new default ships only with the
   ADR 0040 code, in the same release.
 - Not addressed here, noted for follow-up: a live session re-embeds its
   whole body every time it settles although only the tail changed (one
-  conversation produced 1,783 dead slots in three hours on snape-server).
+  conversation produced 1,783 dead slots in three hours on small-server).
   ADR 0036 rejected per-chunk reuse on the assumption that churned records
   change throughout; append-only sessions do not. Reusing unchanged leading
   chunks would cut churn and embedding spend at the source.

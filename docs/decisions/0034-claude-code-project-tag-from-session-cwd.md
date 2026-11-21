@@ -24,7 +24,7 @@ That distinction is invisible for a user who launches from inside each repo, and
 fatal for one who launches from `$HOME` and navigates — a pattern that any
 "pick a project first, then work in it" instruction produces. On the vault that
 surfaced this, **625 of 633 session transcripts carried the single tag
-`home-ubuntu`**, spanning roughly forty unrelated projects.
+`home-user`**, spanning roughly forty unrelated projects.
 
 The damage is not limited to search filtering. ADR 0021 defines a project as
 "a Claude Code project tag with ≥ 2 sessions" and aggregates each into a
@@ -92,7 +92,7 @@ entries against 3 for the project actually worked in — because orientation,
 planning, and cross-cutting commands run before and between the `cd`. Excluding
 the launch directory before ranking is the whole point; a plain mode does not.
 
-Tags keep their existing encoded shape (`home-ubuntu-projects-foo`), so ADR 0021
+Tags keep their existing encoded shape (`home-user-projects-foo`), so ADR 0021
 slugs, vault filenames under `memories/projects/`, and any saved query continue
 to work unchanged.
 

@@ -12,7 +12,8 @@
 - **Vault:** `~/memstem-vault` (1,268 memories)
 - **Embedder:** `nomic-embed-text` via Ollama (768-dim)
 - **Chat model:** `gpt-4o-mini` via OpenAI for both W5 and W6
-- **Query set:** `eval/queries.yaml` (12 queries, 4 classes)
+- **Query set:** the maintainer's private 12-query set (4 classes); the
+  repo's `eval/queries.yaml` is now an invented example of the same shape
 - **Configuration:**
   - W5: `rerank_top_n=20`
   - W6: `use_hyde=True` (no procedural gating override)

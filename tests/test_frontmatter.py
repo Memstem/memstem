@@ -198,7 +198,7 @@ class TestValidate:
         fm_obj = validate(
             _minimal_metadata(
                 type="skill",
-                title="deploy to kinsta",
+                title="deploy to staging",
                 scope="universal",
                 verification="run health check",
             )

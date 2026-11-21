@@ -44,7 +44,7 @@ should ingest as a memory record, tagged with the workspace's
 adapters:
   openclaw:
     agent_workspaces:
-      - path: /home/ubuntu/ari
+      - path: /home/user/ari
         tag: ari
         layout:
           extra_files:
