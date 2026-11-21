@@ -1,0 +1,11 @@
+# gitleaks configuration: the default rule set plus one allowlist.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake fixture keys used by the test suite (not real credentials)"
+# These test files hold made-up API keys to exercise key handling and redaction.
+paths = [
+  '''(^|/)tests/test_cli\.py$''',
+  '''(^|/)tests/test_jev_shadow\.py$''',
+]
