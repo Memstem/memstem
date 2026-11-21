@@ -90,9 +90,7 @@ class TestLoadPost:
         assert post.content.endswith("```")
 
     def test_quoted_quotes_and_alias_like_values(self) -> None:
-        text = (
-            '---\ndescription: WIRED (Robin: "All 5") — five hooks\nref: *not-an-alias\n---\nb\n'
-        )
+        text = '---\ndescription: WIRED (Robin: "All 5") — five hooks\nref: *not-an-alias\n---\nb\n'
         post, recovered = load_post(text)
         assert recovered
         assert post.metadata["description"] == 'WIRED (Robin: "All 5") — five hooks'
