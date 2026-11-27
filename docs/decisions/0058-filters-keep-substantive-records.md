@@ -101,6 +101,6 @@ overload error and a usage-policy refusal mid-way, saved during a 12-request
 pasted PM2 log containing heartbeat lines; a daily note that logs heartbeat
 runs; a standing to-do list with "by Friday" last edited 29 days ago; a session
 saying "merge ... by tomorrow" 29 days ago; and editing the deadline out. On the
-code before this change 11 of 16 checks fail; after it all 16 pass. Unit tests
+code before this change 11 of 15 checks fail; after it all 15 pass. Unit tests
 pin each rule, the stamp-and-lift path, the preserved unstamped expiry, the
 lift pass and the 408/425/429 classification.
