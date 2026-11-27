@@ -63,6 +63,14 @@ def _parse_iso(value: Any) -> datetime | None:
 _AUTHORED_TYPES = frozenset({MemoryType.MEMORY, MemoryType.SKILL, MemoryType.DAILY})
 
 
+def _noise_expiry_kind(fm: Frontmatter) -> str | None:
+    """The noise-filter kind that set ``fm.valid_to`` (ADR 0058), or ``None``."""
+    if fm.provenance is None:
+        return None
+    kind = fm.provenance.model_dump().get("noise_expiry")
+    return kind if isinstance(kind, str) and kind else None
+
+
 def _is_authored_type(record: MemoryRecord) -> bool:
     """True if the record's resolved type is an authored, user-deletable file
     type (memory/skill/daily) — ADR 0026. Keeps a session/derived body-hash
@@ -307,7 +315,11 @@ class Pipeline:
         existing = self._existing_memory(memory_id) if existing_id_for_ref is not None else None
         existing_fm = existing.frontmatter if existing is not None else None
         fm = self._build_frontmatter(
-            record, memory_id, valid_to=transient_valid_to, existing_fm=existing_fm
+            record,
+            memory_id,
+            valid_to=transient_valid_to,
+            existing_fm=existing_fm,
+            noise_expiry_kind=decision.kind if transient_valid_to is not None else None,
         )
         path = (existing.path if existing is not None else None) or _path_for_memory(fm, record)
         memory = Memory(frontmatter=fm, body=record.body, path=path)
@@ -318,8 +330,17 @@ class Pipeline:
         with self.index._lock, self.index.db:
             record_body_hash(self.index.db, body_dedup_hash, str(memory_id))
         already_expired = fm.valid_to is not None and fm.valid_to <= datetime.now(tz=UTC)
-        if not already_expired and self.index.needs_reembed(
-            str(memory_id), body_hash(record.body), self.embedding_signature
+        # ADR 0058: a lifted expiry re-embeds even if the body is unchanged —
+        # the expired-vectors pass may have stripped its chunks while keeping
+        # embed_state, so needs_reembed alone would leave it keyword-only.
+        expiry_lifted = (
+            existing_fm is not None and existing_fm.valid_to is not None and fm.valid_to is None
+        )
+        if not already_expired and (
+            expiry_lifted
+            or self.index.needs_reembed(
+                str(memory_id), body_hash(record.body), self.embedding_signature
+            )
         ):
             self.index.enqueue_embed(str(memory_id))
         return memory
@@ -412,6 +433,7 @@ class Pipeline:
         memory_id: UUID,
         valid_to: datetime | None = None,
         existing_fm: Frontmatter | None = None,
+        noise_expiry_kind: str | None = None,
     ) -> Frontmatter:
         meta = dict(record.metadata)
         type_str = meta.get("type", "memory")
@@ -466,9 +488,19 @@ class Pipeline:
         # Preserve lifecycle frontmatter that hygiene/cleanup owns and adapters
         # never emit, so a re-ingest doesn't resurrect a deprecated record or
         # drop an expiry. A fresh transient tag (valid_to arg) still wins.
+        # ADR 0058: an expiry the noise filter set is stamped with its kind in
+        # provenance and is lifted once the filter no longer tags the record
+        # (e.g. the deadline was edited out, or the rule changed); an expiry
+        # set any other way (cleanup-retro, by hand) is preserved as before.
         if valid_to is not None:
             payload["valid_to"] = valid_to.isoformat()
-        elif existing_fm is not None and existing_fm.valid_to is not None:
+            if noise_expiry_kind is not None:
+                provenance["noise_expiry"] = noise_expiry_kind
+        elif (
+            existing_fm is not None
+            and existing_fm.valid_to is not None
+            and not _noise_expiry_kind(existing_fm)
+        ):
             payload["valid_to"] = existing_fm.valid_to.isoformat()
         if existing_fm is not None:
             if existing_fm.deprecated_by is not None:

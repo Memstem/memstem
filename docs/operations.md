@@ -276,6 +276,22 @@ What the writer actually does:
 Skip `--noise` or `--dedup` independently with the matching
 `--no-*` flag if you want only one of the two passes.
 
+### Lifting expiries the old noise rules set (ADR 0058)
+
+Before ADR 0058 the filter expired any record mentioning e.g. "merge the
+fix by tomorrow" 28 days after its last save, and the heartbeat / cron /
+tool-dump rules could hide daily notes and conversations that only quoted a
+log. After upgrading, run once per install:
+
+```bash
+memstem hygiene lift-noise-expiry          # dry-run: lists the records
+memstem hygiene lift-noise-expiry --apply  # clears valid_to, re-queues embeds
+```
+
+It only touches unstamped expiries on records whose body matches one of
+the old rules and which the current filter keeps. Records the old rules
+dropped outright come back by themselves on the next reconcile.
+
 ### 2. Backfill session distillations
 
 After cleanup, run the session-distillation writer in backfill
