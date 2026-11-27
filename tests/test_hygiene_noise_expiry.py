@@ -98,6 +98,24 @@ def test_leaves_expiry_the_current_filter_still_sets(vault: Vault, index: Index)
     assert plan.hits == ()
 
 
+def test_leaves_expired_copy_whose_source_maps_to_another_record(
+    vault: Vault, index: Index
+) -> None:
+    # The source was re-ingested under a new id after this copy lost its
+    # mapping; lifting the old copy would leave two live records.
+    _save(
+        vault,
+        index,
+        "**User:** where is the shipping portal?\n\n**Assistant:** I'll merge the fix by tomorrow.",
+        "/s/3.jsonl",
+    )
+    index.db.execute(
+        "UPDATE record_map SET memory_id = ? WHERE source = ? AND ref = ?",
+        ("9b1e6f2a-4c7d-4e8b-a3f5-0d2c6e8a1b47", "claude-code", "/s/3.jsonl"),
+    )
+    assert find_liftable(vault, index).hits == ()
+
+
 def test_leaves_genuine_heartbeat_noise(vault: Vault, index: Index) -> None:
     _save(vault, index, "[heartbeat] ok\nHEARTBEAT_OK\nAll checks passed.", "/m/hb.md")
     assert find_liftable(vault, index).hits == ()
