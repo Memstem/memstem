@@ -13,7 +13,9 @@ A record qualifies when it has a ``valid_to``, is not deprecated or deleted,
 carries no ``noise_expiry`` stamp, its body matches one of the old rules
 (transient task, heartbeat, cron, tool dump), and the current filter keeps it.
 An expiry on a record whose body matches none of those rules was not set by
-the filter and is never touched. Lifting clears ``valid_to`` in the markdown
+the filter and is never touched, nor is a record whose ``(source, ref)`` now
+maps to a different record (the source was re-ingested under a new id, so the
+expired copy is a stale duplicate). Lifting clears ``valid_to`` in the markdown
 and index and re-queues the record for embedding (its vectors may have been
 stripped while it was expired).
 """
@@ -88,9 +90,15 @@ def find_liftable(
         rule = _old_rule(memory.body)
         if rule is None:
             continue  # not a filter expiry (set by hand or by another tool)
+        ref = str(prov.get("ref") or row["path"])
+        mapped = index.lookup_record_mapping(fm.source, ref)
+        if mapped is not None and mapped != str(fm.id):
+            # The source is already stored under another record (re-ingested
+            # after this one lost its mapping); lifting would make a duplicate.
+            continue
         record = MemoryRecord(
             source=fm.source,
-            ref=str(prov.get("ref") or row["path"]),
+            ref=ref,
             title=fm.title or "",
             body=memory.body,
             tags=list(fm.tags),
