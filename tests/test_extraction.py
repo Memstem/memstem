@@ -278,11 +278,11 @@ class TestNoiseFilterTagTransient:
         assert decision.kind == "automation_log"
         assert decision.ttl_days == 28
 
-    def test_transient_task_body_tagged_transient(self) -> None:
+    def test_transient_task_body_no_longer_expires(self) -> None:
+        # ADR 0058: the "deploy by Friday" body rule expired real conversations
+        # and standing to-do lists; it is no longer applied.
         decision = noise_filter(_record(body="deploy the new index by Friday."))
-        assert decision.action is NoiseAction.TAG_TRANSIENT
-        assert decision.kind == "transient_task"
-        assert decision.ttl_days == 28
+        assert decision.action is NoiseAction.KEEP
 
     def test_drop_takes_precedence_over_transient(self) -> None:
         # Heartbeat body wins over a transient body if both match.
@@ -298,14 +298,13 @@ class TestNoiseFilterTagTransient:
 
 
 class TestPipelineTagTransient:
-    def test_transient_record_persists_with_valid_to(self, vault: Vault, index: Index) -> None:
+    def test_deadline_note_persists_without_valid_to(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
         memory = pipe.process(
             _record(body="ship the staging deploy by Friday afternoon", ref="/note.md")
         )
         assert memory is not None
-        # valid_to is approximately 4 weeks from now.
-        assert memory.frontmatter.valid_to is not None
+        assert memory.frontmatter.valid_to is None
 
     def test_automation_log_persists_with_valid_to(self, vault: Vault, index: Index) -> None:
         pipe = Pipeline(vault, index)
@@ -671,3 +670,119 @@ class TestOpenClawScheduledSession:
         memory = Pipeline(vault, index).process(_session())
         assert memory is not None
         assert memory.frontmatter.valid_to is None
+
+
+# --- ADR 0058: filters must not hide substantive records ---
+
+_PROSE_LINE = (
+    "- The owner approved the new proposal template; Q-1001 is the first quote that uses it, "
+    "and the site recorder stays on firmware 4.2.1 until the vendor fixes the motion-zone bug."
+)
+
+
+def _prose(lines: int = 12) -> str:
+    return "\n".join(f"{_PROSE_LINE} ({i})" for i in range(lines))
+
+
+class TestSubstantiveRecordsKept:
+    def test_substantive_chars_ignores_noise_lines_and_markers(self) -> None:
+        from memstem.core.extraction import substantive_chars
+
+        body = "\n".join(
+            [
+                "**User:** hello there",
+                "[tool_use: Bash]",
+                "**Assistant:** [tool_result]",
+                '{"permissions": {"allow": []}}',
+                "HEARTBEAT_OK",
+                "[heartbeat] tick",
+                "Running cron job: nightly",
+            ]
+        )
+        assert substantive_chars(body) == len("hellothere")
+
+    def test_daily_note_with_logged_heartbeats_kept(self) -> None:
+        body = "[HEARTBEAT] 12:19 PM full heartbeat complete.\nHEARTBEAT_OK\n\n" + _prose()
+        decision = noise_filter(_record(body=body, ref="/home/user/atlas/memory/2026-07-16.md"))
+        assert decision.action is NoiseAction.KEEP
+
+    def test_note_with_cron_line_kept(self) -> None:
+        body = "Running cron job: backup\n" + _prose()
+        assert noise_filter(_record(body=body)).action is NoiseAction.KEEP
+
+    def test_short_heartbeat_note_still_dropped(self) -> None:
+        body = "[heartbeat] ok\nHEARTBEAT_OK\nAll checks passed."
+        assert noise_filter(_record(body=body)).action is NoiseAction.DROP
+
+    def test_openclaw_transcript_keeps_strict_heartbeat_rule(self) -> None:
+        # An OpenClaw agent's own heartbeat run is noise however long its output.
+        body = "**User:** Run the full heartbeat.\n\n**Assistant:** " + _prose() + "\nHEARTBEAT_OK"
+        rec = _session(body).model_copy(update={"ref": "/x.sqlite#session=hb"})
+        decision = noise_filter(rec)
+        assert decision.action is NoiseAction.DROP
+        assert decision.kind == "heartbeat"
+
+    def test_claude_code_session_with_pasted_heartbeat_log_kept(self) -> None:
+        body = (
+            "**User:** here is the sidecar log:\n[heartbeat] tick ok\nHEARTBEAT_OK\n\n"
+            "**Assistant:** " + _prose()
+        )
+        rec = _session(body, source="claude-code")
+        assert noise_filter(rec).action is NoiseAction.KEEP
+
+    def test_session_with_large_pasted_json_kept(self) -> None:
+        pasted = "\n".join(f'    "Bash(tool-{i} *)",' for i in range(3000))
+        body = "**User:** why the prompts?\n" + pasted + "\n\n**Assistant:** " + _prose()
+        rec = _session(body, source="claude-code")
+        assert is_tool_dump(body) is True  # the line ratio alone still says dump
+        assert noise_filter(rec).action is NoiseAction.KEEP
+
+    def test_tool_dump_without_prose_still_dropped(self) -> None:
+        body = "\n".join(['{"output": "result with long enough text to push past min chars"}'] * 40)
+        decision = noise_filter(_record(body=body))
+        assert decision.action is NoiseAction.DROP
+        assert decision.kind == "tool_dump"
+
+
+class TestNoiseExpiryLifted:
+    def test_filter_expiry_is_stamped_and_lifted(self, vault: Vault, index: Index) -> None:
+        pipe = Pipeline(vault, index, openclaw_scheduled_session_ttl_days=28)
+        tagged = pipe.process(_session())
+        assert tagged is not None and tagged.frontmatter.valid_to is not None
+        assert tagged.frontmatter.provenance is not None
+        assert tagged.frontmatter.provenance.model_dump()["noise_expiry"] == (
+            "openclaw_scheduled_session"
+        )
+        # The same source no longer looks like a scheduled run: the expiry goes.
+        plain = _session("**User:** a real question about the north gate.\n\n**Assistant:** answer")
+        lifted = Pipeline(vault, index).process(plain)
+        assert lifted is not None
+        assert lifted.frontmatter.valid_to is None
+        assert lifted.frontmatter.provenance is not None
+        assert "noise_expiry" not in lifted.frontmatter.provenance.model_dump()
+        # A lifted expiry re-embeds even though embed_state may look current.
+        pending = index.db.execute(
+            "SELECT COUNT(*) FROM embed_queue WHERE memory_id = ?", (str(lifted.id),)
+        ).fetchone()[0]
+        assert pending == 1
+
+    def test_expiry_not_set_by_filter_is_preserved(self, vault: Vault, index: Index) -> None:
+        from datetime import UTC, datetime
+
+        from memstem.core.storage import Memory
+
+        pipe = Pipeline(vault, index)
+        first = pipe.process(
+            _record(body="A decision about the Cloudflare migration.", ref="/d.md")
+        )
+        assert first is not None
+        # Expired by hand / cleanup-retro: no noise_expiry stamp.
+        until = datetime(2026, 1, 1, tzinfo=UTC)
+        fm = first.frontmatter.model_copy(update={"valid_to": until})
+        vault.write(Memory(frontmatter=fm, body=first.body, path=first.path))
+        index.upsert(Memory(frontmatter=fm, body=first.body, path=first.path))
+        again = pipe.process(
+            _record(body="A decision about the Cloudflare migration, edited.", ref="/d.md")
+        )
+        assert again is not None
+        assert again.frontmatter.valid_to == until

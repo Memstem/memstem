@@ -115,6 +115,16 @@ class TestTransientClassification:
         exc = httpx.HTTPStatusError("server error", request=request, response=response)
         assert _classify_http_error(exc) is TransientEmbeddingError
 
+    @pytest.mark.parametrize("status", [408, 425, 429])
+    def test_retry_later_4xx_classified_transient(self, status: int) -> None:
+        # ADR 0058: 429 is also a failover sidecar's "every route is down"
+        # reply; counting it as permanent failed records for good during a
+        # few-minute provider outage.
+        request = httpx.Request("POST", "https://api.example.com/embed")
+        response = httpx.Response(status, text="all routes failed", request=request)
+        exc = httpx.HTTPStatusError("client error", request=request, response=response)
+        assert _classify_http_error(exc) is TransientEmbeddingError
+
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 499])
     def test_4xx_classified_permanent(self, status: int) -> None:
         request = httpx.Request("POST", "https://api.example.com/embed")

@@ -81,6 +81,9 @@ class TransientEmbeddingError(EmbeddingError):
     """
 
 
+_TRANSIENT_4XX = frozenset({408, 425, 429})
+
+
 def _classify_http_error(exc: httpx.HTTPError) -> type[EmbeddingError]:
     """Pick the right exception class for an httpx failure.
 
@@ -93,11 +96,17 @@ def _classify_http_error(exc: httpx.HTTPError) -> type[EmbeddingError]:
     base for both ``RequestError`` (network/transport, no response)
     and ``HTTPStatusError`` (got a response, status was 4xx/5xx).
     """
-    # 5xx server errors: transient. 4xx client errors: permanent (the
-    # request will keep failing the same way until the input changes).
+    # 5xx server errors and the "try again later" 4xx codes (408 request
+    # timeout, 425 too early, 429 rate limited) are transient. 429 is also what
+    # a failover sidecar answers when every route is down, so treating it as
+    # permanent failed a record for good after five tries during a provider
+    # outage of a few minutes (ADR 0058). Other 4xx client errors stay
+    # permanent: the request will keep failing until the input changes.
     if isinstance(exc, httpx.HTTPStatusError):
         response = exc.response
-        if response is not None and 500 <= response.status_code < 600:
+        if response is not None and (
+            500 <= response.status_code < 600 or response.status_code in _TRANSIENT_4XX
+        ):
             return TransientEmbeddingError
         return EmbeddingError
     # All RequestError subclasses (TimeoutException, ConnectError,

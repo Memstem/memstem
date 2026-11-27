@@ -3388,6 +3388,46 @@ def hygiene_strip_expired_vectors(
         index.close()
 
 
+@hygiene_app.command("lift-noise-expiry")
+def hygiene_lift_noise_expiry(
+    vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Clear the expiries and re-queue embeds. Default: dry-run."),
+    ] = False,
+) -> None:
+    """Lift expiries that retired noise-filter rules set (ADR 0058).
+
+    Before ADR 0058 the filter expired any record saying e.g. "deploy by
+    Friday" 28 days after its last save, and cleanup-retro could expire
+    records the heartbeat / cron / tool-dump rules no longer drop. Lists
+    (or, with --apply, un-expires and re-embeds) unstamped expiries whose body
+    matches one of those rules and which the current filter keeps. Expiries on
+    records matching none of the rules are never touched.
+    """
+    from memstem.hygiene.noise_expiry import apply_lift, find_liftable
+
+    cfg = _load_config(_resolve_vault_path(vault))
+    index = _open_index(cfg)
+    try:
+        vault_obj = Vault(cfg.vault_path)
+        plan = find_liftable(
+            vault_obj,
+            index,
+            openclaw_scheduled_session_ttl_days=cfg.adapters.openclaw.scheduled_session_ttl_days,
+        )
+        typer.echo(f"records with an expiry: {plan.examined}; liftable: {len(plan.hits)}")
+        for h in plan.hits:
+            typer.echo(f"  {h.id}  {h.type:<8} {h.old_rule:<14} {h.valid_to[:10]}  {h.title or ''}")
+        if apply:
+            n = apply_lift(vault_obj, index, plan)
+            typer.echo(f"lifted {n} expiries; their embeds are queued")
+        else:
+            typer.echo("dry-run: re-run with --apply to lift these expiries")
+    finally:
+        index.close()
+
+
 @hygiene_app.command("verify")
 def hygiene_verify(
     vault: Annotated[str | None, typer.Option(help="Vault path override")] = None,

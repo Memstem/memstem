@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-11-27
+
+Patch release: write-time filters no longer hide substantive records, and a short embedding-provider outage no longer fails saves (ADR 0058).
+
+### Added
+- `memstem hygiene lift-noise-expiry` (ADR 0058): lists, and with `--apply` lifts, expiries that the retired transient-task rule or the old heartbeat / cron / tool-dump rules set on records the filter now keeps, and re-queues their embeds. Dry-run by default; expiries on records that match none of those rules are never touched.
+
+### Changed
+- The write-time noise filter no longer hides substantive records (ADR 0058). A record with at least 1,000 characters of prose outside machine, heartbeat and cron lines is kept even when it contains a heartbeat or cron line (a daily note that logs heartbeat runs, a pasted log) or is mostly pasted JSON by line count. OpenClaw agent session transcripts keep the strict heartbeat/cron rule. The transient-task rule ("deploy by Friday" expired the record 28 days after its last save) is retired. An expiry the filter sets is now stamped `provenance.noise_expiry` and lifted, with a re-embed, once the filter stops tagging the record.
+- Embedding replies 408, 425 and 429 are now transient (ADR 0058): the worker backs off and retries without spending the record's retries. A failover sidecar answers 429 when every route is down, so a record saved during a provider outage of a few minutes used to end up `failed` until `memstem embed --retry-failed`.
+
+### Fixed
+- `memstem hygiene lift-noise-expiry` does not lift an expired copy whose source is already stored under a different record (the source was re-ingested under a new id after the copy lost its `(source, ref)` mapping); lifting it would leave two live records with the same content.
+
 ## [0.33.0] - 2026-10-22
 
 Minor release: opt-in recency for search ranking and for Jev's judgement (ADR 0054). Both switches are off by default, so behaviour is unchanged until a vault turns one on.
