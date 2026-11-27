@@ -184,6 +184,62 @@ _BOOT_ECHO_SKIP_DIRS: frozenset[str] = frozenset(
 _BOOT_ECHO_MAX_DEPTH = 4
 
 
+_SUBSTANTIVE_PROSE_CHARS = 1000
+"""ADR 0058: a record carrying at least this much prose outside noise lines is kept.
+
+The heartbeat, cron and tool-dump rules match single lines or a line-count
+ratio, so one logged heartbeat line, or a pasted 3,000-line JSON file, used to
+drop a whole daily note or conversation. ~1,000 characters is about 150-200
+words of human text: a heartbeat/cron run's own output is well below it once
+its marker lines are removed, and every real record the rules dropped on the
+maintainer's install was well above it (4,000 to 65,000)."""
+
+_ROLE_PREFIX_RE = re.compile(
+    r"^\s*\*\*(?:user|assistant|system|tool)[^*]{0,20}:\*\*\s*", re.IGNORECASE
+)
+_TOOL_MARKER_RE = re.compile(r"\[tool_(?:use|result)[^\]]*\]")
+
+
+def _is_noise_line(line: str) -> bool:
+    return (
+        _TOOL_LINE_RE.match(line) is not None
+        or any(p.search(line) for p in _HEARTBEAT_PATTERNS)
+        or any(p.search(line) for p in _CRON_PATTERNS)
+    )
+
+
+def substantive_chars(body: str) -> int:
+    """Characters of prose in ``body`` outside machine, heartbeat and cron lines.
+
+    Role prefixes (``**User:**``) and tool markers (``[tool_use: Bash]``) are
+    not prose and are removed before counting; whitespace is not counted.
+    """
+    total = 0
+    for line in body.splitlines():
+        if not line.strip() or _is_noise_line(line):
+            continue
+        text = _TOOL_MARKER_RE.sub("", _ROLE_PREFIX_RE.sub("", line))
+        total += len("".join(text.split()))
+    return total
+
+
+def _is_substantive(body: str) -> bool:
+    return substantive_chars(body) >= _SUBSTANTIVE_PROSE_CHARS
+
+
+def _is_openclaw_transcript(record: MemoryRecord) -> bool:
+    """An OpenClaw agent's own session transcript (ADR 0058 keeps the strict rule there).
+
+    In an agent transcript a heartbeat or cron marker is the agent's own run,
+    so the whole transcript is that run. Everywhere else (daily notes, memory
+    files, Claude Code / Codex / OpenCode sessions) a marker is quoted
+    material: a logged heartbeat, a pasted log.
+    """
+    if record.source != "openclaw":
+        return False
+    return (record.metadata or {}).get("type") in (None, "session")
+
+
 def is_heartbeat(body: str) -> bool:
     """Return True if ``body`` matches a known heartbeat pattern."""
     if not body or not body.strip():
@@ -369,8 +425,15 @@ def noise_filter(
 
     DROP patterns (heartbeat / cron_output / tool_dump / boot_echo) drop
     the record without persisting. TAG_TRANSIENT patterns
-    (transient_task / automation_log) stamp ``valid_to`` so the record
-    auto-expires after the documented TTL.
+    (openclaw_scheduled_session / automation_log) stamp ``valid_to`` so the
+    record auto-expires after the documented TTL.
+
+    ADR 0058: heartbeat, cron and tool-dump matches drop a record only when it
+    carries less than :data:`_SUBSTANTIVE_PROSE_CHARS` of prose outside those
+    lines (OpenClaw agent transcripts keep the strict heartbeat/cron rule). The
+    ``transient_task`` body rule ("deploy by Friday") is no longer applied: it
+    expired real conversations and standing to-do lists 28 days after their
+    last edit. :func:`is_transient_task` stays available for callers.
 
     ``boot_echo_hashes`` is optional. When omitted, boot-echo detection
     is skipped (this is the case for tests and offline migrations).
@@ -382,22 +445,32 @@ def noise_filter(
     default) keeps OpenClaw scheduled-job sessions as ordinary sessions.
     """
     body = record.body
+    # Computed lazily: most records match no DROP rule.
+    substantive: bool | None = None
 
-    if is_heartbeat(body):
+    def keeps_prose() -> bool:
+        nonlocal substantive
+        if substantive is None:
+            substantive = _is_substantive(body)
+        return substantive
+
+    strict = _is_openclaw_transcript(record)
+
+    if is_heartbeat(body) and (strict or not keeps_prose()):
         return NoiseDecision(
             action=NoiseAction.DROP,
             kind="heartbeat",
             reason="body matches a heartbeat marker",
         )
 
-    if is_cron_output(body):
+    if is_cron_output(body) and (strict or not keeps_prose()):
         return NoiseDecision(
             action=NoiseAction.DROP,
             kind="cron_output",
             reason="body matches a cron job runner marker",
         )
 
-    if is_tool_dump(body):
+    if is_tool_dump(body) and not keeps_prose():
         return NoiseDecision(
             action=NoiseAction.DROP,
             kind="tool_dump",
@@ -433,14 +506,6 @@ def noise_filter(
             ttl_days=_TRANSIENT_TTL_DAYS,
         )
 
-    if is_transient_task(body):
-        return NoiseDecision(
-            action=NoiseAction.TAG_TRANSIENT,
-            kind="transient_task",
-            reason="body matches an ephemeral task-state pattern",
-            ttl_days=_TRANSIENT_TTL_DAYS,
-        )
-
     return NoiseDecision(action=NoiseAction.KEEP)
 
 
@@ -457,4 +522,5 @@ __all__ = [
     "is_tool_dump",
     "is_transient_task",
     "noise_filter",
+    "substantive_chars",
 ]
